@@ -276,7 +276,7 @@
   .sched-item button:hover { background: var(--line); color: var(--text); }
 
   .toolbar .right { display: flex; gap: 10px; align-items: center; }
-  .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 20; display: flex; flex-direction: column; gap: 10px; max-width: min(380px, calc(100vw - 40px)); }
+  .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: flex; flex-direction: column; gap: 10px; max-width: min(380px, calc(100vw - 40px)); }
   .toast { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 14px; cursor: pointer; font-size: 13px; }
   .toast.finished { border-left-color: var(--ok); }
   .toast.context, .toast.approval, .toast.paused { border-left-color: var(--caution); }
@@ -379,3 +379,29 @@
   .codeblock:hover .copy, .copy:focus-visible { opacity: 1; }
   .code-bar .copy:hover { color: var(--text); border-color: var(--line); }
   .msg.user .codeblock { background: color-mix(in srgb, var(--bg) 70%, transparent); }
+
+  .history-btn { position: relative; width: 36px; height: 36px; }
+  .history-btn[aria-expanded=true] { color: var(--text); border-color: var(--accent); }
+  .bell-badge { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--accent); color: #fff; font: 700 10px/17px var(--sans); text-align: center; box-shadow: 0 0 0 2px var(--bg); }
+  .notif-panel { position: absolute; top: calc(100% + 6px); right: 20px; width: min(420px, calc(100vw - 24px)); max-height: min(70vh, 580px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 18px 60px rgba(0, 0, 0, .35); overflow: hidden; z-index: 10; }
+  .notif-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--line); }
+  .notif-head h3 { margin: 0; flex: 1; font: 500 17px/1.3 var(--serif); }
+  .notif-head .btn { padding: 2px 10px; font-size: 12px; }
+  .notif-head .btn:disabled { opacity: .45; cursor: default; }
+  .notif-list { overflow-y: auto; scrollbar-width: thin; }
+  .notif-empty { padding: 36px 24px; text-align: center; color: var(--muted); font: 400 15px/1.5 var(--serif); }
+  .notif-item { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 12px 18px; border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; color: var(--text); }
+  .notif-item:last-child { border-bottom: 0; }
+  .notif-item:hover { background: var(--surface-2); }
+  .notif-item.unread { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+  .notif-item > .icon { margin-top: 2px; color: var(--muted); }
+  .notif-item.finished > .icon { color: var(--ok); }
+  .notif-item.question > .icon { color: var(--accent); }
+  .notif-item.context > .icon, .notif-item.approval > .icon, .notif-item.paused > .icon { color: var(--caution); }
+  .notif-item.failed > .icon, .notif-item.blocked > .icon { color: var(--danger); }
+  .notif-body { min-width: 0; flex: 1; }
+  .notif-top { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
+  .notif-top .t { font-weight: 600; overflow-wrap: anywhere; }
+  .notif-top time { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .notif-item .m { color: var(--muted); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+  @media (max-width: 720px) { .notif-panel { right: 12px; } }

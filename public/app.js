@@ -1,6 +1,7 @@
 import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './alerts.js'
 import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
+import { addEvents, markAllRead, markRead, unreadCount } from './history.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/search': 'search', '/usage': 'usage' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', search: 'Search', usage: 'Usage' }
@@ -18,6 +19,9 @@ const state = {
   cols: 'auto',
   expanded: null,
   flashId: null,
+  history: [],
+  historyOpen: false,
+  historyNew: new Set(),
   flashUntil: 0,
   drafts: new Map(),
   notes: new Map(),
@@ -155,6 +159,86 @@ function beep() {
   } catch {}
 }
 
+function readHistory() {
+  try {
+    const stored = JSON.parse(localStorage.getItem('board.history') ?? '[]')
+    return Array.isArray(stored) ? stored : []
+  } catch {
+    return []
+  }
+}
+
+function writeHistory(history) {
+  state.history = history
+  try { localStorage.setItem('board.history', JSON.stringify(history)) } catch {}
+  renderHistoryBadge()
+  if (state.historyOpen) renderHistoryPanel()
+}
+
+function recordHistory(events) {
+  writeHistory(addEvents(readHistory(), events))
+}
+
+function renderHistoryBadge() {
+  const count = unreadCount(state.history)
+  const badge = $('history-count')
+  badge.hidden = count === 0
+  badge.textContent = count > 9 ? '9+' : String(count)
+  $('history').title = count ? `Notification history (${count} unread)` : 'Notification history'
+}
+
+function openFromHistory(entry) {
+  writeHistory(markRead(state.history, entry.uid))
+  setHistoryOpen(false)
+  if (state.cards.some((c) => c.id === entry.id)) goToCard(entry.id)
+  else window.location.href = `claude://code/continue?session=${encodeURIComponent(entry.id)}`
+}
+
+function renderHistoryPanel() {
+  const panel = $('notif-panel')
+  panel.replaceChildren()
+  const head = el('div', 'notif-head')
+  head.append(el('h3', undefined, 'Notifications'))
+  const readAll = el('button', 'btn', 'Mark all read')
+  readAll.disabled = unreadCount(state.history) === 0
+  readAll.onclick = () => { state.historyNew = new Set(); writeHistory(markAllRead(state.history)) }
+  const clear = el('button', 'btn', 'Clear')
+  clear.disabled = state.history.length === 0
+  clear.onclick = () => { state.historyNew = new Set(); writeHistory([]) }
+  head.append(readAll, clear)
+  const list = el('div', 'notif-list')
+  if (!state.history.length) {
+    list.append(el('div', 'notif-empty', 'Nothing yet. Alerts are listed here when a focused session finishes, asks a question or may need approval.'))
+  }
+  for (const entry of state.history) {
+    const row = el('button', `notif-item ${entry.kind}${entry.read && !state.historyNew.has(entry.uid) ? '' : ' unread'}`)
+    row.type = 'button'
+    const body = el('div', 'notif-body')
+    const top = el('div', 'notif-top')
+    top.append(el('span', 't', entry.title), el('time', undefined, relative(entry.at)))
+    body.append(top, el('div', 'm', entry.message))
+    row.append(icon(ALERT_ICONS[entry.kind] ?? 'check-circle', { size: 18 }), body)
+    row.onclick = () => openFromHistory(entry)
+    list.append(row)
+  }
+  panel.append(head, list)
+}
+
+function setHistoryOpen(open) {
+  if (open === state.historyOpen) return
+  state.historyOpen = open
+  $('history').setAttribute('aria-expanded', String(open))
+  $('notif-panel').hidden = !open
+  if (open) {
+    state.history = readHistory()
+    state.historyNew = new Set(state.history.filter((entry) => !entry.read).map((entry) => entry.uid))
+    renderHistoryPanel()
+  } else {
+    state.historyNew = new Set()
+    writeHistory(markAllRead(readHistory()))
+  }
+}
+
 function updateTitle() {
   const base = `${PAGE_TITLES[state.tab]} · Claude Session Board`
   document.title = state.unseen > 0 ? `(${state.unseen}) ${base}` : base
@@ -178,7 +262,7 @@ function notify(events) {
 function renderAlertsButton() {
   const button = $('alerts')
   button.setAttribute('aria-pressed', String(state.alertsOn))
-  button.replaceChildren(icon(state.alertsOn ? 'bell' : 'bell-off', { size: 16 }), text(state.alertsOn ? 'Alerts on' : 'Alerts off'))
+  button.replaceChildren(icon(state.alertsOn ? 'volume-2' : 'volume-x', { size: 16 }), text(state.alertsOn ? 'Alerts on' : 'Alerts off'))
 }
 
 async function toggleAlerts() {
@@ -1171,7 +1255,10 @@ async function refresh() {
     const { events, next } = diffAlerts(state.alertSnap, focus.cards)
     const hadBaseline = state.alertSnap !== null
     state.alertSnap = next
-    if (hadBaseline && state.alertsOn && events.length) notify(events)
+    if (hadBaseline && events.length) {
+      recordHistory(events)
+      if (state.alertsOn) notify(events)
+    }
     const signature = JSON.stringify([sessions, focus, Math.floor(Date.now() / 30000)])
     if (signature !== state.signature) {
       state.signature = signature
@@ -1208,6 +1295,15 @@ $('q').oninput = () => { renderRows(); writeFilters() }
 $('archived').onchange = () => { renderSummary(); renderRows(); writeFilters() }
 $('interval').onchange = schedule
 $('alerts').onclick = toggleAlerts
+$('history').onclick = (event) => { event.stopPropagation(); setHistoryOpen(!state.historyOpen) }
+$('notif-panel').onclick = (event) => event.stopPropagation()
+document.addEventListener('click', () => setHistoryOpen(false))
+window.addEventListener('storage', (event) => {
+  if (event.key !== 'board.history') return
+  state.history = readHistory()
+  renderHistoryBadge()
+  if (state.historyOpen) renderHistoryPanel()
+})
 $('search-q').oninput = () => { clearTimeout(state.search.timer); state.search.timer = setTimeout(runSearch, 250) }
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()
@@ -1227,6 +1323,7 @@ document.querySelectorAll('#usage-days button').forEach((b) => {
 })
 $('backdrop').onclick = () => setExpanded(null)
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.historyOpen) { setHistoryOpen(false); return }
   if (event.key !== 'Escape' || $('broadcast').open || !state.expanded) return
   const ui = uiOf(state.expanded)
   if (ui.popover) { ui.popover = null; renderFocus() } else setExpanded(null)
@@ -1239,6 +1336,9 @@ setInterval(() => {
 }, 1000)
 
 if (location.hash === '#focus') history.replaceState({}, '', '/focus')
+$('history').append(icon('bell', { size: 18 }))
+state.history = readHistory()
+renderHistoryBadge()
 renderAlertsButton()
 $('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), text('Broadcast'))
 $('brand-mark').replaceChildren(icon('asterisk', { size: 22, strokeWidth: 2.4 }))
