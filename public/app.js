@@ -887,6 +887,7 @@ function renderNowDoing(c) {
 }
 
 function renderChat(c) {
+  const wrap = el('div', 'chat-wrap')
   const chat = el('div', 'chat')
   const inner = el('div', 'chat-inner')
   const messages = c.details?.chat ?? []
@@ -896,7 +897,26 @@ function renderChat(c) {
     inner.append(...messages.map(renderMessage))
     chat.append(inner)
   }
-  return chat
+  const jump = el('button', 'jump')
+  jump.type = 'button'
+  jump.title = 'Scroll to latest'
+  jump.setAttribute('aria-label', 'Scroll to latest message')
+  jump.append(icon('arrow-down', { size: 18, strokeWidth: 2.4 }))
+  jump.onclick = () => {
+    chat.closest('.card').dataset.stick = 'true'
+    chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' })
+  }
+  wrap.append(chat, jump)
+  return wrap
+}
+
+const JUMP_THRESHOLD = 120
+
+function syncJump(card) {
+  const chat = card.querySelector('.chat')
+  const jump = card.querySelector('.jump')
+  if (!chat || !jump) return
+  jump.classList.toggle('show', chat.scrollHeight - chat.clientHeight - chat.scrollTop > JUMP_THRESHOLD)
 }
 
 function section(title, ...children) {
@@ -1063,9 +1083,11 @@ function renderFocus() {
       if (prev) card.querySelectorAll('.toolbox').forEach((d, i) => { d.open = Boolean(prev.open[i]) })
       const place = () => { chat.scrollTop = card.dataset.stick === 'true' ? chat.scrollHeight : prev.top }
       place()
-      requestAnimationFrame(place)
+      syncJump(card)
+      requestAnimationFrame(() => { place(); syncJump(card) })
       chat.addEventListener('scroll', () => {
         card.dataset.stick = String(chat.scrollHeight - chat.clientHeight - chat.scrollTop < 40)
+        syncJump(card)
       })
     }
     const changes = card.querySelector('.changes')
