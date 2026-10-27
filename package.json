@@ -1,0 +1,30 @@
+{
+  "name": "claude-session-board",
+  "version": "0.1.0",
+  "description": "Local dashboard for Claude desktop Code sessions: live cards, prompt queue, schedules, search and usage charts.",
+  "license": "MIT",
+  "author": "Dachawatsathon Kunwiroj",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PunchBui/claude-session-board.git"
+  },
+  "homepage": "https://github.com/PunchBui/claude-session-board#readme",
+  "bugs": {
+    "url": "https://github.com/PunchBui/claude-session-board/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "dashboard",
+    "sessions"
+  ],
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

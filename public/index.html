@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Session Board</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="mark" id="brand-mark"></span>Sessions</div>
+  <nav class="tabs" role="tablist">
+    <a role="tab" id="tab-all" href="/" aria-selected="true">All sessions</a>
+    <a role="tab" id="tab-focus" href="/focus" aria-selected="false">Focus<span class="badge" id="focus-count" hidden></span></a>
+    <a role="tab" id="tab-search" href="/search" aria-selected="false">Search</a>
+    <a role="tab" id="tab-usage" href="/usage" aria-selected="false">Usage</a>
+  </nav>
+  <div class="spacer"></div>
+  <input id="q" class="field" type="search" placeholder="Filter sessions">
+  <label class="toggle"><input id="archived" type="checkbox"> Archived</label>
+  <button id="alerts" class="icon-btn" aria-pressed="false" title="Notify when a focused session finishes, asks a question or needs approval">Alerts</button>
+  <label class="toggle">Refresh
+    <select id="interval" class="field">
+      <option value="0">off</option>
+      <option value="3000" selected>3s</option>
+      <option value="10000">10s</option>
+      <option value="60000">60s</option>
+    </select>
+  </label>
+</header>
+<main>
+  <section id="view-all">
+    <div class="pills" id="summary"></div>
+    <div class="sheet">
+      <div class="scroll-x">
+        <table>
+          <colgroup><col style="width:48px"><col><col style="width:230px"><col style="width:120px"><col style="width:170px"><col style="width:70px"><col style="width:120px"><col style="width:96px"></colgroup>
+          <thead><tr><th></th><th>Session</th><th>Project</th><th>Status</th><th>Model</th><th>Turns</th><th>Last activity</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>No sessions match.</div>
+    </div>
+  </section>
+  <section id="view-focus" hidden>
+    <div class="toolbar">
+      <h2>Focus</h2>
+      <div class="right">
+        <button id="broadcast-open" class="icon-btn" title="Queue one prompt on several sessions">Broadcast</button>
+        <div class="seg" id="layout" role="group" aria-label="Columns">
+          <button data-cols="1" aria-pressed="false">1</button>
+          <button data-cols="2" aria-pressed="false">2</button>
+          <button data-cols="auto" aria-pressed="true">Auto</button>
+        </div>
+      </div>
+    </div>
+    <div class="cards cols-auto" id="cards"></div>
+    <div class="empty" id="focus-empty" hidden>Nothing in focus yet.<br>Star a session on the All sessions tab to pin it here.</div>
+  </section>
+  <section id="view-search" hidden>
+    <div class="page-head"><h2>Search conversations</h2></div>
+    <input id="search-q" class="field big-search" type="search" placeholder="Search what you and Claude said in every session" autocomplete="off">
+    <div class="status-line" id="search-status"></div>
+    <div id="search-results"></div>
+  </section>
+  <section id="view-usage" hidden>
+    <div class="page-head">
+      <h2>Usage</h2>
+      <div class="right" style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="seg" id="usage-metric" role="group" aria-label="Metric">
+          <button data-metric="output" aria-pressed="true">Output</button>
+          <button data-metric="fresh" aria-pressed="false">Input + cache write</button>
+          <button data-metric="cacheRead" aria-pressed="false">Cache read</button>
+        </div>
+        <div class="seg" id="usage-days" role="group" aria-label="Range">
+          <button data-days="7" aria-pressed="false">7d</button>
+          <button data-days="14" aria-pressed="false">14d</button>
+          <button data-days="30" aria-pressed="true">30d</button>
+          <button data-days="60" aria-pressed="false">60d</button>
+        </div>
+      </div>
+    </div>
+    <div class="stat-cards" id="usage-cards"></div>
+    <div class="chart-wrap"><div id="usage-chart"></div><div class="legend" id="usage-legend"></div></div>
+    <div class="sheet">
+      <div class="scroll-x">
+        <table>
+          <thead><tr><th>Session</th><th>Project</th><th>Output</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Responses</th><th></th></tr></thead>
+          <tbody id="usage-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+<div class="backdrop" id="backdrop" hidden></div>
+<div class="toasts" id="toasts"></div>
+<dialog id="broadcast">
+  <h3>Broadcast a prompt</h3>
+  <textarea id="broadcast-text" placeholder="This prompt is queued on every selected session and sent when each is idle."></textarea>
+  <div class="presets" id="broadcast-snippets"></div>
+  <div class="targets" id="broadcast-targets"></div>
+  <div class="status-line" id="broadcast-status"></div>
+  <div class="actions">
+    <button class="btn" id="broadcast-cancel">Cancel</button>
+    <button class="btn primary" id="broadcast-send">Queue on selected</button>
+  </div>
+</dialog>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,549 @@
+import { createServer } from 'node:http'
+import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join, extname, basename } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createScanStore } from './lib/scan.js'
+import { usageOf, liveOf } from './lib/live.js'
+import { gitInfo } from './lib/git.js'
+import { REPEATS, nextAfter } from './lib/schedule.js'
+import { searchSessions } from './lib/search.js'
+import { aggregateUsage } from './lib/usage.js'
+
+const PORT = Number(process.env.PORT ?? 4747)
+const HOST = '127.0.0.1'
+const SESSIONS_DIR = process.env.SESSIONS_DIR ?? join(homedir(), 'Library/Application Support/Claude/claude-code-sessions')
+const PROJECTS_DIR = process.env.PROJECTS_DIR ?? join(homedir(), '.claude/projects')
+const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
+const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL('./data/', import.meta.url))
+const FOCUS_FILE = join(DATA_DIR, 'focus.json')
+const QUEUE_FILE = join(DATA_DIR, 'queue.json')
+const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
+const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
+const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
+const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'default'
+const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
+const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
+const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
+const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
+const PAGES = new Set(['/', '/focus', '/search', '/usage'])
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' }
+const ALIASES = { 'favicon.ico': 'favicon.png' }
+const ACTIVE_WINDOW_MS = 20_000
+const CHAT_ITEMS = 60
+const MAX_PROMPT_CHARS = 8000
+const MAX_QUEUE = 20
+const MAX_SCHEDULES = 50
+const MAX_SNIPPETS = 40
+const RUN_TIMEOUT_MS = 15 * 60_000
+const DEFAULT_SNIPPETS = [
+  { sid: 'default-continue', label: 'Continue', text: 'Continue.' },
+  { sid: 'default-left', label: 'What is left?', text: 'List briefly what is still left to do.' },
+  { sid: 'default-wrap', label: 'Wrap up', text: 'Summarize what you did and what is left, then stop.' },
+  { sid: 'default-tests', label: 'Run tests', text: 'Run the relevant tests and report the result.' },
+  { sid: 'default-compact', label: 'Compact context', text: '/compact' },
+]
+
+const scanStore = createScanStore()
+const transcriptPaths = new Map()
+const runs = new Map()
+const queues = new Map()
+let schedules = []
+let customSnippets = null
+const indexStatus = { done: 0, total: 0, running: false }
+
+async function findSessionFiles(dir) {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) return findSessionFiles(path)
+      return SESSION_FILE.test(entry.name) ? [path] : []
+    })
+  )
+  return nested.flat()
+}
+
+function projectName(raw) {
+  const commonDir = raw.gitAnchors?.[0]?.commonDir
+  const root = commonDir?.endsWith('/.git') ? commonDir.slice(0, -5) : (raw.gitAnchors?.[0]?.gitRoot ?? raw.originCwd ?? raw.cwd)
+  return root ? basename(root) : null
+}
+
+function toSummary(raw) {
+  return {
+    id: raw.sessionId,
+    title: raw.title ?? '(untitled)',
+    cwd: raw.cwd ?? null,
+    project: projectName(raw),
+    model: raw.model ?? null,
+    effort: raw.effort ?? null,
+    permissionMode: raw.permissionMode ?? null,
+    archived: Boolean(raw.isArchived),
+    createdAt: raw.createdAt ?? null,
+    lastActivityAt: raw.lastActivityAt ?? raw.createdAt ?? null,
+    completedTurns: raw.completedTurns ?? 0,
+    status: raw.interruptedAwaitingPerson ? 'needs-input' : (raw.postTurnSummary?.status_category ?? 'unknown'),
+    detail: raw.postTurnSummary?.status_detail ?? raw.turnWrapUp?.description ?? null,
+    cliSessionId: raw.cliSessionId ?? null,
+  }
+}
+
+async function readRawSessions() {
+  const files = await findSessionFiles(SESSIONS_DIR)
+  const parsed = await Promise.all(
+    files.map(async (file) => {
+      try {
+        const raw = JSON.parse(await readFile(file, 'utf8'))
+        return raw.sessionId ? raw : null
+      } catch {
+        return null
+      }
+    })
+  )
+  return parsed.filter(Boolean)
+}
+
+async function loadSessions() {
+  const raws = await readRawSessions()
+  return raws
+    .map(toSummary)
+    .map(({ cliSessionId, ...rest }) => rest)
+    .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+}
+
+async function findTranscript(cliSessionId) {
+  if (!cliSessionId) return null
+  const cached = transcriptPaths.get(cliSessionId)
+  if (cached && (await stat(cached).catch(() => null))) return cached
+  const dirs = await readdir(PROJECTS_DIR, { withFileTypes: true }).catch(() => [])
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue
+    const candidate = join(PROJECTS_DIR, dir.name, `${cliSessionId}.jsonl`)
+    if (await stat(candidate).catch(() => null)) {
+      transcriptPaths.set(cliSessionId, candidate)
+      return candidate
+    }
+  }
+  return null
+}
+
+async function scanSession(raw) {
+  const path = await findTranscript(raw.cliSessionId)
+  if (!path) return null
+  const info = await stat(path)
+  return { path, info, state: await scanStore.scan(path, info.size) }
+}
+
+async function buildCard(raw) {
+  const { cliSessionId, ...base } = toSummary(raw)
+  const scanned = await scanSession(raw)
+  const touchedAt = Math.max(base.lastActivityAt ?? 0, scanned?.info.mtimeMs ?? 0)
+  const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS
+  const running = runs.get(raw.sessionId)?.state === 'running'
+  return {
+    ...base,
+    touchedAt,
+    active,
+    transcriptFound: Boolean(scanned),
+    details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
+    usage: scanned ? usageOf(scanned.state) : null,
+    live: scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running }) : null,
+  }
+}
+
+async function readJson(file, fallback) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+async function writeJson(file, value) {
+  await mkdir(DATA_DIR, { recursive: true })
+  await writeFile(file, JSON.stringify(value, null, 2))
+}
+
+async function readFocus() {
+  const parsed = await readJson(FOCUS_FILE, {})
+  return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+}
+
+function queueFor(id) {
+  if (!queues.has(id)) queues.set(id, { items: [], paused: false })
+  return queues.get(id)
+}
+
+async function persistQueues() {
+  const out = {}
+  for (const [id, queue] of queues) if (queue.items.length) out[id] = queue
+  await writeJson(QUEUE_FILE, out)
+}
+
+async function loadStores() {
+  const storedQueues = await readJson(QUEUE_FILE, {})
+  for (const [id, queue] of Object.entries(storedQueues)) {
+    if (SESSION_ID.test(id) && Array.isArray(queue.items)) queues.set(id, { items: queue.items, paused: Boolean(queue.paused) })
+  }
+  const storedSchedules = await readJson(SCHEDULE_FILE, {})
+  schedules = Array.isArray(storedSchedules.items) ? storedSchedules.items : []
+  const storedSnippets = await readJson(SNIPPET_FILE, null)
+  customSnippets = Array.isArray(storedSnippets?.items) ? storedSnippets.items : null
+}
+
+const persistSchedules = () => writeJson(SCHEDULE_FILE, { items: schedules })
+const snippets = () => customSnippets ?? DEFAULT_SNIPPETS
+const persistSnippets = () => writeJson(SNIPPET_FILE, { items: snippets() })
+
+function publicQueue(id) {
+  const queue = queues.get(id)
+  return { items: queue?.items ?? [], paused: Boolean(queue?.paused) }
+}
+
+function publicRun(id) {
+  const run = runs.get(id)
+  if (!run) return null
+  const { stop, ...rest } = run
+  return rest
+}
+
+function schedulesFor(id) {
+  return schedules.filter((item) => item.id === id).sort((a, b) => a.at - b.at)
+}
+
+function clip(value, max) {
+  const flat = String(value ?? '').replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+function pauseQueueAfter(id, run) {
+  const queue = queues.get(id)
+  if (queue?.items.length && run.state !== 'done') {
+    queue.paused = true
+    persistQueues()
+  }
+}
+
+function startRun(raw, prompt) {
+  const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE }
+  const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE]
+  const child = spawn(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), stdio: ['pipe', 'ignore', 'pipe'] })
+  run.stop = () => child.kill('SIGTERM')
+  let stderr = ''
+  child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-2000) })
+  const timer = setTimeout(() => { run.state = 'stopped'; child.kill('SIGTERM') }, RUN_TIMEOUT_MS)
+  child.on('error', (error) => {
+    clearTimeout(timer)
+    Object.assign(run, { state: 'failed', endedAt: Date.now(), error: String(error.message) })
+    pauseQueueAfter(raw.sessionId, run)
+  })
+  child.on('close', (code, signal) => {
+    clearTimeout(timer)
+    run.endedAt = Date.now()
+    if (run.state === 'stopped' || signal) run.state = 'stopped'
+    else if (code === 0) run.state = 'done'
+    else Object.assign(run, { state: 'failed', error: clip(stderr, 400) || `exit code ${code}` })
+    pauseQueueAfter(raw.sessionId, run)
+    pump()
+  })
+  child.stdin.on('error', () => {})
+  child.stdin.end(prompt)
+  runs.set(raw.sessionId, run)
+}
+
+let pumping = false
+
+async function pump() {
+  if (pumping) return
+  pumping = true
+  try {
+    const pending = [...queues].filter(([, queue]) => queue.items.length && !queue.paused)
+    if (!pending.length) return
+    const raws = await readRawSessions()
+    for (const [id, queue] of pending) {
+      const raw = raws.find((session) => session.sessionId === id)
+      if (!raw?.cliSessionId) continue
+      const run = runs.get(id)
+      if (run?.state === 'running') continue
+      const card = await buildCard(raw)
+      const idleSinceOwnRun = run?.endedAt && card.touchedAt <= run.endedAt + 3000
+      if (card.active && !idleSinceOwnRun) continue
+      const next = queue.items.shift()
+      await persistQueues()
+      startRun(raw, next.prompt)
+    }
+  } finally {
+    pumping = false
+  }
+}
+
+async function enqueue(id, prompt) {
+  const queue = queueFor(id)
+  if (queue.items.length >= MAX_QUEUE) return false
+  queue.items.push({ qid: randomUUID(), prompt, addedAt: Date.now() })
+  await persistQueues()
+  return true
+}
+
+async function fireDueSchedules() {
+  const now = Date.now()
+  const due = schedules.filter((item) => item.at <= now)
+  if (!due.length) return
+  for (const item of due) {
+    await enqueue(item.id, item.prompt)
+    const next = nextAfter(item.at, item.repeat, now)
+    if (next) item.at = next
+    else schedules = schedules.filter((existing) => existing !== item)
+  }
+  await persistSchedules()
+  pump()
+}
+
+async function tick() {
+  try {
+    await fireDueSchedules()
+    await pump()
+  } catch {}
+}
+
+async function loadFocusCards() {
+  const [ids, raws] = await Promise.all([readFocus(), readRawSessions()])
+  const byId = new Map(raws.map((raw) => [raw.sessionId, raw]))
+  const cards = await Promise.all(
+    ids.filter((id) => byId.has(id)).map((id) =>
+      buildCard(byId.get(id)).then((card) => ({
+        ...card,
+        run: publicRun(id),
+        queue: publicQueue(id),
+        schedules: schedulesFor(id),
+      }))
+    )
+  )
+  return { ids, cards }
+}
+
+async function warmIndex() {
+  if (indexStatus.running) return
+  indexStatus.running = true
+  try {
+    const raws = await readRawSessions()
+    indexStatus.total = raws.length
+    indexStatus.done = 0
+    for (const raw of raws) {
+      try {
+        await scanSession(raw)
+      } catch {}
+      indexStatus.done += 1
+    }
+  } finally {
+    indexStatus.running = false
+  }
+}
+
+async function indexedEntries() {
+  const raws = await readRawSessions()
+  const entries = []
+  for (const raw of raws) {
+    const path = transcriptPaths.get(raw.cliSessionId)
+    const state = path ? scanStore.states.get(path) : null
+    if (!state) continue
+    const summary = toSummary(raw)
+    entries.push({ id: raw.sessionId, title: summary.title, project: summary.project, cwd: summary.cwd, archived: summary.archived, messages: state.messages, byId: state.byId })
+  }
+  return entries
+}
+
+async function changesFor(id) {
+  const raw = (await readRawSessions()).find((session) => session.sessionId === id)
+  if (!raw) return null
+  const scanned = await scanSession(raw)
+  const cwd = raw.cwd ?? raw.originCwd ?? null
+  const relative = (path) => (cwd && path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path)
+  const state = scanned?.state
+  const files = state
+    ? [...state.files].map(([path, info]) => ({ path, rel: relative(path), count: info.count, lastAt: info.lastAt, tools: [...info.tools] })).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, 80)
+    : []
+  const tickets = state ? [...state.tickets].map(([key, count]) => ({ key, count, url: JIRA_BASE_URL ? `${JIRA_BASE_URL.replace(/\/$/, '')}/browse/${key}` : null })).sort((a, b) => b.count - a.count).slice(0, 12) : []
+  const links = state ? [...state.links].map(([url, info]) => ({ url, count: info.count, lastAt: info.lastAt })).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, 12) : []
+  return { id, cwd, files, tickets, links, git: await gitInfo(cwd) }
+}
+
+function send(res, status, body, type) {
+  res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+const json = (res, status, value) => send(res, status, JSON.stringify(value), 'application/json')
+
+async function readBody(req) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > 20_000) throw new Error('body too large')
+    chunks.push(chunk)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+}
+
+async function serveStatic(res, pathname) {
+  const trimmed = pathname.replace(/(.)\/+$/, '$1')
+  const requested = pathname.slice(1)
+  const name = PAGES.has(trimmed) ? 'index.html' : (ALIASES[requested] ?? requested)
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) return send(res, 404, 'not found', 'text/plain')
+  const file = join(PUBLIC_DIR, name)
+  const info = await stat(file).catch(() => null)
+  if (!info?.isFile()) return send(res, 404, 'not found', 'text/plain')
+  send(res, 200, await readFile(file), TYPES[extname(file)] ?? 'application/octet-stream')
+}
+
+const validPrompt = (prompt) => typeof prompt === 'string' && prompt.trim() && prompt.length <= MAX_PROMPT_CHARS
+const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSessions()).find((s) => s.sessionId === id) : null)
+
+const postRoutes = {
+  async '/api/focus'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
+    const current = await readFocus()
+    const next = body.focused ? [...new Set([...current, body.id])] : current.filter((existing) => existing !== body.id)
+    await writeJson(FOCUS_FILE, { ids: next })
+    return json(res, 200, { ids: next })
+  },
+  async '/api/prompt'(body, res) {
+    if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
+    const raw = await findRaw(body.id)
+    if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+    if (runs.get(body.id)?.state === 'running') return json(res, 409, { error: 'a prompt is already running for this session' })
+    const card = await buildCard(raw)
+    if (card.active) return json(res, 409, { error: 'session is busy in the desktop app; try again when it is idle' })
+    startRun(raw, body.prompt.trim())
+    return json(res, 202, { run: publicRun(body.id) })
+  },
+  async '/api/prompt/stop'(body, res) {
+    const run = runs.get(body.id)
+    if (!run || run.state !== 'running') return json(res, 404, { error: 'nothing running' })
+    run.state = 'stopped'
+    run.stop()
+    return json(res, 200, { run: publicRun(body.id) })
+  },
+  async '/api/queue'(body, res) {
+    if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
+    const raw = await findRaw(body.id)
+    if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+    if (!(await enqueue(body.id, body.prompt.trim()))) return json(res, 409, { error: `queue is full (${MAX_QUEUE})` })
+    pump()
+    return json(res, 202, { queue: publicQueue(body.id) })
+  },
+  async '/api/queue/remove'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '')) return json(res, 400, { error: 'bad request' })
+    const queue = queueFor(body.id)
+    queue.items = queue.items.filter((item) => item.qid !== body.qid)
+    await persistQueues()
+    return json(res, 200, { queue: publicQueue(body.id) })
+  },
+  async '/api/queue/resume'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '')) return json(res, 400, { error: 'bad request' })
+    queueFor(body.id).paused = false
+    await persistQueues()
+    pump()
+    return json(res, 200, { queue: publicQueue(body.id) })
+  },
+  async '/api/broadcast'(body, res) {
+    if (!validPrompt(body.prompt) || !Array.isArray(body.ids) || body.ids.length > 20) return json(res, 400, { error: 'bad request' })
+    const raws = await readRawSessions()
+    const queued = []
+    const skipped = []
+    for (const id of body.ids) {
+      const raw = raws.find((s) => s.sessionId === id)
+      if (raw?.cliSessionId && (await enqueue(id, body.prompt.trim()))) queued.push(id)
+      else skipped.push(id)
+    }
+    pump()
+    return json(res, 202, { queued, skipped })
+  },
+  async '/api/schedule'(body, res) {
+    const now = Date.now()
+    if (!validPrompt(body.prompt) || !Number.isFinite(body.at) || body.at < now - 60_000 || body.at > now + 365 * 86_400_000) return json(res, 400, { error: 'pick a time in the future' })
+    const repeat = body.repeat ?? 'none'
+    if (!REPEATS.has(repeat)) return json(res, 400, { error: 'bad repeat' })
+    const raw = await findRaw(body.id)
+    if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+    if (schedules.length >= MAX_SCHEDULES) return json(res, 409, { error: `too many schedules (${MAX_SCHEDULES})` })
+    schedules.push({ sid: randomUUID(), id: body.id, prompt: body.prompt.trim(), at: Math.max(body.at, now), repeat })
+    await persistSchedules()
+    return json(res, 201, { schedules: schedulesFor(body.id) })
+  },
+  async '/api/schedule/remove'(body, res) {
+    const before = schedules.length
+    schedules = schedules.filter((item) => item.sid !== body.sid)
+    if (schedules.length !== before) await persistSchedules()
+    return json(res, 200, { ok: true })
+  },
+  async '/api/snippets'(body, res) {
+    const label = String(body.label ?? '').trim().slice(0, 40)
+    if (!label || !validPrompt(body.text)) return json(res, 400, { error: 'bad request' })
+    if (snippets().length >= MAX_SNIPPETS) return json(res, 409, { error: `too many snippets (${MAX_SNIPPETS})` })
+    customSnippets = [...snippets(), { sid: randomUUID(), label, text: body.text.trim() }]
+    await persistSnippets()
+    return json(res, 201, { items: snippets() })
+  },
+  async '/api/snippets/remove'(body, res) {
+    customSnippets = snippets().filter((item) => item.sid !== body.sid)
+    await persistSnippets()
+    return json(res, 200, { items: snippets() })
+  },
+}
+
+const getRoutes = {
+  async '/api/sessions'(url, res) {
+    return json(res, 200, await loadSessions())
+  },
+  async '/api/focus'(url, res) {
+    return json(res, 200, await loadFocusCards())
+  },
+  async '/api/snippets'(url, res) {
+    return json(res, 200, { items: snippets() })
+  },
+  async '/api/changes'(url, res) {
+    const id = url.searchParams.get('id')
+    if (!SESSION_ID.test(id ?? '')) return json(res, 400, { error: 'bad request' })
+    const result = await changesFor(id)
+    return result ? json(res, 200, result) : json(res, 404, { error: 'session not found' })
+  },
+  async '/api/search'(url, res) {
+    const q = (url.searchParams.get('q') ?? '').slice(0, 200)
+    const result = searchSessions(await indexedEntries(), q)
+    return json(res, 200, { ...result, query: q, indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running } })
+  },
+  async '/api/usage'(url, res) {
+    const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 120)
+    return json(res, 200, aggregateUsage(await indexedEntries(), days))
+  },
+}
+
+await loadStores()
+setInterval(tick, 2000)
+warmIndex()
+setInterval(warmIndex, 60_000)
+
+createServer(async (req, res) => {
+  if (!ALLOWED_HOSTS.has(req.headers.host ?? '')) return send(res, 403, 'forbidden', 'text/plain')
+  const url = new URL(req.url, `http://${req.headers.host}`)
+  try {
+    if (req.method === 'POST') {
+      if (!ALLOWED_ORIGINS.has(req.headers.origin ?? '')) return send(res, 403, 'forbidden', 'text/plain')
+      const route = postRoutes[url.pathname]
+      if (!route) return send(res, 404, 'not found', 'text/plain')
+      return await route(await readBody(req), res)
+    }
+    if (req.method !== 'GET') return send(res, 405, 'method not allowed', 'text/plain')
+    const route = getRoutes[url.pathname]
+    if (route) return await route(url, res)
+    return await serveStatic(res, url.pathname)
+  } catch (error) {
+    return send(res, 500, String(error), 'text/plain')
+  }
+}).listen(PORT, HOST, () => console.log(`Claude session board on http://localhost:${PORT}`))
