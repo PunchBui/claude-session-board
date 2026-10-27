@@ -1,5 +1,6 @@
 import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './alerts.js'
 import { icon } from './icons.js'
+import { splitFences } from './richtext.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/search': 'search', '/usage': 'usage' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', search: 'Search', usage: 'Usage' }
@@ -317,6 +318,56 @@ function inline(parent, value) {
   })
 }
 
+function linkifyPlain(parent, value) {
+  value.split(/(https?:\/\/[^\s<>"'`]+)/g).forEach((part) => {
+    if (!part) return
+    if (/^https?:\/\//.test(part)) {
+      const [url, tail] = splitTrailing(part)
+      const href = safeUrl(url)
+      if (href) parent.append(linkNode(href, url), text(tail))
+      else parent.append(text(part))
+    } else {
+      parent.append(text(part))
+    }
+  })
+}
+
+function codeBlock(part) {
+  const wrap = el('div', 'codeblock')
+  const pre = document.createElement('pre')
+  const code = document.createElement('code')
+  linkifyPlain(code, part.text)
+  pre.append(code)
+  const bar = el('div', 'code-bar')
+  if (part.lang) bar.append(el('span', 'lang', part.lang))
+  const copy = el('button', 'copy')
+  copy.type = 'button'
+  copy.title = 'Copy'
+  copy.append(icon('copy', { size: 14 }))
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(part.text)
+      copy.replaceChildren(icon('check', { size: 14 }))
+      setTimeout(() => copy.replaceChildren(icon('copy', { size: 14 })), 1400)
+    } catch {}
+  }
+  bar.append(copy)
+  wrap.append(bar, pre)
+  return wrap
+}
+
+function richText(parent, value) {
+  for (const part of splitFences(value)) {
+    if (part.type === 'code') {
+      parent.append(codeBlock(part))
+    } else {
+      const para = el('div', 'para')
+      inline(para, part.text)
+      parent.append(para)
+    }
+  }
+}
+
 function renderMessage(m) {
   if (m.role === 'tools') {
     const wrap = el('div', 'msg tools')
@@ -336,7 +387,7 @@ function renderMessage(m) {
   }
   const wrap = el('div', `msg ${m.role}`)
   const body = el('div', 'body')
-  inline(body, m.text)
+  richText(body, m.text)
   wrap.append(body, el('time', undefined, clock(m.at)))
   return wrap
 }

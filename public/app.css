@@ -367,3 +367,15 @@
   .body a.chat-link { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
   .body a.chat-link:hover { text-decoration-thickness: 2px; }
   .body a.chat-link code { color: inherit; }
+
+  .body .para + .codeblock, .body .codeblock + .para, .body .codeblock + .codeblock { margin-top: 10px; }
+  .codeblock { position: relative; background: color-mix(in srgb, var(--text) 6%, transparent); border: 1px solid var(--line); border-radius: 12px; text-align: left; }
+  .codeblock pre { margin: 0; padding: 12px 48px 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 13px/1.6 var(--mono); }
+  .codeblock code { font: inherit; background: none; padding: 0; color: var(--text); }
+  .codeblock a.chat-link { text-underline-offset: 2px; }
+  .code-bar { position: absolute; top: 6px; right: 6px; display: flex; gap: 8px; align-items: center; }
+  .code-bar .lang { font: 11px/1 var(--mono); color: var(--faint); text-transform: lowercase; }
+  .code-bar .copy { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: var(--surface); color: var(--muted); opacity: 0; transition: opacity .15s; }
+  .codeblock:hover .copy, .copy:focus-visible { opacity: 1; }
+  .code-bar .copy:hover { color: var(--text); border-color: var(--line); }
+  .msg.user .codeblock { background: color-mix(in srgb, var(--bg) 70%, transparent); }
