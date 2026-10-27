@@ -4,6 +4,38 @@ Local web app that lists your Claude desktop Code sessions, opens any of them in
 
 > Unofficial community project. It is not made by, affiliated with or endorsed by Anthropic. It reads the files the Claude desktop app and Claude Code already write on your machine, and those formats are undocumented and may change without notice.
 
+## Screenshots
+
+All screenshots use the fictional sessions from `npm run demo`. No real conversations are shown.
+
+### Focus: live cards for the sessions you star
+
+Chat with expandable tool calls, a live "now running" strip, token usage with context warnings, the prompt queue and a prompt box.
+
+![Focus page with four live session cards](docs/screenshots/focus.png)
+
+### Enlarge a card and answer a question
+
+A session that ended on an unanswered question is flagged, and any card can be opened as a large modal. The URL keeps the card open after a reload.
+
+![An enlarged card showing a waiting-for-answer banner](docs/screenshots/card.png)
+
+### Changes: git state, edited files, tickets and merge requests
+
+![The Changes tab of a card](docs/screenshots/changes.png)
+
+### All sessions
+
+![The all-sessions table](docs/screenshots/sessions.png)
+
+### Search inside every conversation
+
+![Search results with highlighted matches](docs/screenshots/search.png)
+
+### Usage over time
+
+![Token usage per day and project](docs/screenshots/usage.png)
+
 ## Requirements
 
 - Node.js 20 or newer. There are no dependencies to install.
@@ -17,6 +49,14 @@ npm start
 ```
 
 Then open http://localhost:4747. Run `npm test` for the unit tests.
+
+### Try it without Claude desktop
+
+```bash
+npm run demo
+```
+
+This generates fictional sessions, transcripts and git repositories in a temporary folder (`DEMO_DIR` to choose another) and starts the board on `PORT` (default 4747). Prompts are not sent anywhere in demo mode.
 
 ## Pages
 

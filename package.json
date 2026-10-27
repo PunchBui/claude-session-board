@@ -25,6 +25,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "demo": "node scripts/demo.mjs"
   }
 }

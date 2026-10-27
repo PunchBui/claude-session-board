@@ -104,7 +104,7 @@ const openLink = (id, primary) => {
 }
 const statusBadge = (status) => {
   const span = el('span', `status ${status}`)
-  span.append(el('span', 'dot'), text(status))
+  span.append(el('span', 'dot'), text(status.replace(/_/g, ' ')))
   return span
 }
 const uiOf = (id) => {
@@ -228,7 +228,7 @@ function renderSummary() {
     box.append(b)
   }
   make(`All ${pool.length}`, null)
-  Object.entries(counts).forEach(([status, n]) => make(`${status} ${n}`, status))
+  Object.entries(counts).forEach(([status, n]) => make(`${status.replace(/_/g, ' ')} ${n}`, status))
 }
 
 function renderRows() {
