@@ -84,3 +84,23 @@ test('localDay formats local dates and rejects junk', () => {
   assert.match(localDay('2026-10-27T08:00:00.000Z'), /^\d{4}-\d{2}-\d{2}$/)
   assert.equal(localDay('nope'), null)
 })
+
+test('slash commands become a user message and local command output becomes a command item', () => {
+  const state = newScanState()
+  absorbLine(state, user('<command-message>hello</command-message>\n<command-name>/hello</command-name>\n<command-args>world</command-args>'))
+  absorbLine(state, user('<local-command-caveat>ignore me</local-command-caveat>', { isMeta: true }))
+  absorbLine(state, user('<command-name>/context</command-name>\n   <command-message>context</command-message>\n   <command-args></command-args>'))
+  absorbLine(state, line({ type: 'system', subtype: 'local_command', timestamp: '2026-10-27T08:00:09.000Z', content: '<local-command-stdout>## Context Usage\n\n**Tokens:** 43k / 1m</local-command-stdout>' }))
+  const roles = state.chat.map((item) => item.role)
+  assert.deepEqual(roles, ['user', 'user', 'command'])
+  assert.equal(state.chat[0].text, '/hello world')
+  assert.equal(state.chat[1].text, '/context')
+  assert.equal(state.chat[2].command, '/context')
+  assert.match(state.chat[2].text, /Tokens/)
+})
+
+test('empty local command output adds nothing', () => {
+  const state = newScanState()
+  absorbLine(state, line({ type: 'system', subtype: 'local_command', timestamp: '2026-10-27T08:00:09.000Z', content: '<local-command-stdout></local-command-stdout>' }))
+  assert.equal(state.chat.length, 0)
+})

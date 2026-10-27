@@ -20,6 +20,7 @@ const state = {
   expanded: null,
   flashId: null,
   history: [],
+  commands: new Map(),
   historyOpen: false,
   historyNew: new Set(),
   flashUntil: 0,
@@ -453,6 +454,17 @@ function richText(parent, value) {
 }
 
 function renderMessage(m) {
+  if (m.role === 'command') {
+    const wrap = el('div', 'msg command')
+    const box = el('div', 'cmd-output')
+    const head = el('div', 'cmd-head')
+    head.append(icon('terminal', { size: 14 }), text(m.command ? `${m.command} output` : 'Command output'))
+    const pre = document.createElement('pre')
+    linkifyPlain(pre, m.text)
+    box.append(head, pre)
+    wrap.append(box)
+    return wrap
+  }
   if (m.role === 'tools') {
     const wrap = el('div', 'msg tools')
     const box = document.createElement('details')
@@ -515,6 +527,73 @@ async function createSchedule(c, box) {
     setNote(c.id, data.error ?? 'Could not schedule')
   }
   await resync()
+}
+
+async function loadCommands(id) {
+  const known = state.commands.get(id)
+  if (known && (known.loading || Date.now() - known.at < 60_000)) return
+  state.commands.set(id, { items: known?.items ?? null, loading: true, at: Date.now() })
+  let items = known?.items ?? []
+  try {
+    items = (await getJson(`/api/commands?id=${encodeURIComponent(id)}`)).items ?? []
+  } catch {}
+  state.commands.set(id, { items, loading: false, at: Date.now() })
+  resyncSlash(id)
+}
+
+function slashMatches(id, value) {
+  if (!value.startsWith('/') || /\s/.test(value)) return null
+  const items = state.commands.get(id)?.items
+  if (!items) return null
+  const query = value.slice(1).toLowerCase()
+  const starts = []
+  const contains = []
+  for (const item of items) {
+    const name = item.name.toLowerCase()
+    if (name.startsWith(query)) starts.push(item)
+    else if (name.includes(query) || (query.length > 1 && item.description.toLowerCase().includes(query))) contains.push(item)
+  }
+  return [...starts, ...contains].slice(0, 40)
+}
+
+function acceptSlash(id, box, item) {
+  const next = `/${item.name} `
+  box.value = next
+  state.drafts.set(id, next)
+  autosize(box)
+  box.focus()
+  box.setSelectionRange(next.length, next.length)
+  resyncSlash(id)
+}
+
+function syncSlash(id, dock, box) {
+  dock.querySelector('.slash-menu')?.remove()
+  const ui = uiOf(id)
+  if (box.value.startsWith('/') && !state.commands.has(id)) loadCommands(id)
+  const matches = ui.slashDismissed === box.value ? null : slashMatches(id, box.value)
+  ui.slashItems = matches ?? []
+  if (!matches?.length) return
+  ui.slashIndex = Math.min(ui.slashIndex ?? 0, matches.length - 1)
+  const menu = el('div', 'popover slash-menu')
+  matches.forEach((item, index) => {
+    const row = el('div', `slash-item${index === ui.slashIndex ? ' active' : ''}`)
+    const main = el('div', 'slash-main')
+    main.append(el('span', 'slash-name', `/${item.name}`))
+    if (item.hint) main.append(el('span', 'slash-hint', item.hint))
+    main.append(el('span', `slash-src ${item.source}`, item.source))
+    row.append(main)
+    if (item.description) row.append(el('div', 'slash-desc', item.description))
+    row.onmousedown = (event) => { event.preventDefault(); acceptSlash(id, box, item) }
+    menu.append(row)
+  })
+  dock.append(menu)
+  menu.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
+}
+
+function resyncSlash(id) {
+  const box = document.querySelector(`[data-keep="composer:${id}"]`)
+  const dock = box?.closest('.dock')
+  if (box && dock) syncSlash(id, dock, box)
 }
 
 function renderQueue(c) {
@@ -651,11 +730,41 @@ function renderComposer(c) {
   const composer = el('div', 'composer')
   const box = document.createElement('textarea')
   box.rows = 1
-  box.placeholder = busy ? 'Add a prompt to the queue' : 'Reply to this session'
+  box.placeholder = busy ? 'Add a prompt to the queue · / for commands' : 'Reply to this session · / for commands'
   box.value = state.drafts.get(c.id) ?? ''
   box.dataset.keep = `composer:${c.id}`
-  box.oninput = () => { state.drafts.set(c.id, box.value); autosize(box) }
+  box.onfocus = () => loadCommands(c.id)
+  box.oninput = () => {
+    state.drafts.set(c.id, box.value)
+    ui.slashDismissed = null
+    ui.slashIndex = 0
+    autosize(box)
+    syncSlash(c.id, dock, box)
+  }
   box.onkeydown = (event) => {
+    const options = ui.slashItems ?? []
+    if (options.length) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        ui.slashIndex = (ui.slashIndex + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
+        syncSlash(c.id, dock, box)
+        return
+      }
+      const chosen = options[ui.slashIndex]
+      const typedInFull = box.value === `/${chosen.name}`
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !typedInFull)) {
+        event.preventDefault()
+        acceptSlash(c.id, box, chosen)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        ui.slashDismissed = box.value
+        syncSlash(c.id, dock, box)
+        return
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault()
       submitPrompt(c.id, box)
@@ -708,6 +817,7 @@ function renderComposer(c) {
   if (ui.popover === 'snippets') dock.append(renderSnippetPopover(c, box))
   if (ui.popover === 'schedule') dock.append(renderSchedulePopover(c, box))
   dock.append(composer, note)
+  syncSlash(c.id, dock, box)
   requestAnimationFrame(() => autosize(box))
   return dock
 }

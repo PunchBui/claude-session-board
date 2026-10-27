@@ -82,6 +82,15 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 - Queues persist in `data/queue.json` and schedules in `data/schedules.json`. Due schedules are added to the queue, so they follow the same rules.
 - The desktop app may not show turns sent from the board until you reopen the session.
 
+## Slash commands
+
+Typing `/` in a card's prompt box opens an autocomplete list of the commands that work in headless runs: your project commands (`<session folder>/.claude/commands`), your user commands (`~/.claude/commands`), skills, enabled plugin commands and skills, and the built-ins `/compact`, `/context`, `/cost` and `/model`. Arrow keys move, Tab or Enter completes, Esc closes.
+
+- Custom commands and skills run as normal turns.
+- Output from `/context`, `/cost` and `/model` is shown in the chat as a command panel.
+- `/clear`, `/reset` and `/new` are refused, because headless mode answers them by starting a new session and the board would lose track of the old one.
+- Interactive-only commands such as `/help`, `/status` and `/config` are not available in headless mode.
+
 ## Alerts
 
 The 🔔 button turns on toasts, a short beep, browser notifications and a tab-title counter when a focused session finishes, asks a question, may need approval, passes 100k or 200k context, is marked blocked, or a prompt fails or pauses the queue.
@@ -90,6 +99,7 @@ The 🔔 button turns on toasts, a short beep, browser notifications and a tab-t
 
 - `PORT` (default `4747`), `SESSIONS_DIR`, `PROJECTS_DIR`, `DATA_DIR`
 - `PROMPT_PERMISSION_MODE`, `CLAUDE_BIN`, `JIRA_BASE_URL`
+- `CLAUDE_HOME` (where `.claude/commands`, `.claude/skills` and `.claude/plugins` are read from, default your home folder)
 
 The server binds to `127.0.0.1`, rejects other Host headers, and only accepts POSTs from its own origin. It reads session files and transcripts and never edits them.
 

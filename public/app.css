@@ -405,3 +405,18 @@
   .notif-top time { color: var(--faint); font-size: 12px; white-space: nowrap; }
   .notif-item .m { color: var(--muted); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
   @media (max-width: 720px) { .notif-panel { right: 12px; } }
+
+  .slash-menu { max-height: 320px; padding: 6px; gap: 2px; width: min(640px, calc(100% - 32px)); }
+  .slash-item { padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+  .slash-item.active, .slash-item:hover { background: var(--surface-2); }
+  .slash-main { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .slash-name { font: 600 13px/1.4 var(--mono); }
+  .slash-hint { color: var(--faint); font: 12px/1.4 var(--mono); }
+  .slash-src { margin-left: auto; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; }
+  .slash-src.project { color: var(--accent); border-color: var(--accent); }
+  .slash-desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; overflow-wrap: anywhere; }
+  .msg.command { align-self: stretch; }
+  .cmd-output { width: 100%; max-width: var(--col, 820px); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+  .cmd-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); color: var(--muted); font: 12px/1.4 var(--mono); }
+  .cmd-output pre { margin: 0; padding: 12px 14px; max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.6 var(--mono); scrollbar-width: thin; }
+  .cmd-output pre a.chat-link { text-underline-offset: 2px; }

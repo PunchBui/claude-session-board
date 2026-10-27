@@ -25,6 +25,7 @@ const SHAPES = {
   check: [['path', { d: 'M20 6 9 17l-5-5' }]],
   'volume-2': [['polygon', { points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' }], ['path', { d: 'M15.54 8.46a5 5 0 0 1 0 7.07' }], ['path', { d: 'M19.07 4.93a10 10 0 0 1 0 14.14' }]],
   'volume-x': [['polygon', { points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' }], ['path', { d: 'm22 9-6 6' }], ['path', { d: 'm16 9 6 6' }]],
+  terminal: [['polyline', { points: '4 17 10 11 4 5' }], ['line', { x1: 12, x2: 20, y1: 19, y2: 19 }]],
   asterisk: [['path', { d: 'M12 3v18' }], ['path', { d: 'm4.2 7.5 15.6 9' }], ['path', { d: 'm4.2 16.5 15.6-9' }]],
 }
 

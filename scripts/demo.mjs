@@ -60,6 +60,7 @@ const dirs = {
   projects: join(ROOT, 'projects'),
   data: join(ROOT, 'data'),
   work: join(ROOT, 'work'),
+  commands: join(ROOT, 'home', '.claude', 'commands'),
 }
 rmSync(ROOT, { recursive: true, force: true })
 for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true })
@@ -214,6 +215,9 @@ writeFileSync(join(dirs.data, 'schedules.json'), JSON.stringify({ items: [
   { sid: randomUUID(), id: notes, prompt: 'Summarize today\'s merged changes into the changelog draft.', at: nextSix.getTime(), repeat: 'weekdays' },
 ] }, null, 2))
 
+writeFileSync(join(dirs.commands, 'review.md'), '---\ndescription: Review the current branch before merging\nargument-hint: "[focus area]"\n---\nReview the current branch.\n')
+writeFileSync(join(dirs.commands, 'standup.md'), '---\ndescription: Summarize what changed today\n---\nSummarize what changed today.\n')
+
 const stub = join(ROOT, 'claude-stub.sh')
 writeFileSync(stub, '#!/bin/sh\necho "Demo mode: prompts are not sent to Claude." >&2\nexit 1\n')
 chmodSync(stub, 0o755)
@@ -227,7 +231,7 @@ setInterval(() => {
 console.log(`Demo data in ${ROOT}`)
 const child = spawn(process.execPath, [SERVER], {
   stdio: 'inherit',
-  env: { ...process.env, PORT, SESSIONS_DIR: join(ROOT, 'sessions'), PROJECTS_DIR: dirs.projects, DATA_DIR: dirs.data, CLAUDE_BIN: stub },
+  env: { ...process.env, PORT, SESSIONS_DIR: join(ROOT, 'sessions'), PROJECTS_DIR: dirs.projects, DATA_DIR: dirs.data, CLAUDE_BIN: stub, CLAUDE_HOME: join(ROOT, 'home') },
 })
 const stop = () => { child.kill('SIGTERM'); process.exit(0) }
 process.on('SIGINT', stop)

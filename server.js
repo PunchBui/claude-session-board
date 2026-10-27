@@ -11,10 +11,12 @@ import { gitInfo } from './lib/git.js'
 import { REPEATS, nextAfter } from './lib/schedule.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
+import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
 const SESSIONS_DIR = process.env.SESSIONS_DIR ?? join(homedir(), 'Library/Application Support/Claude/claude-code-sessions')
+const CLAUDE_HOME = process.env.CLAUDE_HOME ?? homedir()
 const PROJECTS_DIR = process.env.PROJECTS_DIR ?? join(homedir(), '.claude/projects')
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
 const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL('./data/', import.meta.url))
@@ -402,6 +404,17 @@ async function serveStatic(res, pathname) {
 }
 
 const validPrompt = (prompt) => typeof prompt === 'string' && prompt.trim() && prompt.length <= MAX_PROMPT_CHARS
+const BLOCKED_MESSAGE = 'That command starts a new session, so the board would lose track of this one. Run it in the desktop app instead.'
+const isBlocked = (prompt) => typeof prompt === 'string' && BLOCKED_PROMPT.test(prompt)
+const commandCache = new Map()
+
+async function commandsFor(cwd) {
+  const hit = commandCache.get(cwd)
+  if (hit && Date.now() - hit.at < 30_000) return hit.items
+  const items = await listCommands({ cwd, home: CLAUDE_HOME })
+  commandCache.set(cwd, { at: Date.now(), items })
+  return items
+}
 const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSessions()).find((s) => s.sessionId === id) : null)
 
 const postRoutes = {
@@ -413,6 +426,7 @@ const postRoutes = {
     return json(res, 200, { ids: next })
   },
   async '/api/prompt'(body, res) {
+    if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
     if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
     const raw = await findRaw(body.id)
     if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
@@ -430,6 +444,7 @@ const postRoutes = {
     return json(res, 200, { run: publicRun(body.id) })
   },
   async '/api/queue'(body, res) {
+    if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
     if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
     const raw = await findRaw(body.id)
     if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
@@ -452,6 +467,7 @@ const postRoutes = {
     return json(res, 200, { queue: publicQueue(body.id) })
   },
   async '/api/broadcast'(body, res) {
+    if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
     if (!validPrompt(body.prompt) || !Array.isArray(body.ids) || body.ids.length > 20) return json(res, 400, { error: 'bad request' })
     const raws = await readRawSessions()
     const queued = []
@@ -465,6 +481,7 @@ const postRoutes = {
     return json(res, 202, { queued, skipped })
   },
   async '/api/schedule'(body, res) {
+    if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
     const now = Date.now()
     if (!validPrompt(body.prompt) || !Number.isFinite(body.at) || body.at < now - 60_000 || body.at > now + 365 * 86_400_000) return json(res, 400, { error: 'pick a time in the future' })
     const repeat = body.repeat ?? 'none'
@@ -512,6 +529,11 @@ const getRoutes = {
     if (!SESSION_ID.test(id ?? '')) return json(res, 400, { error: 'bad request' })
     const result = await changesFor(id)
     return result ? json(res, 200, result) : json(res, 404, { error: 'session not found' })
+  },
+  async '/api/commands'(url, res) {
+    const raw = await findRaw(url.searchParams.get('id'))
+    if (!raw) return json(res, 404, { error: 'session not found' })
+    return json(res, 200, { items: await commandsFor(raw.cwd ?? raw.originCwd ?? null) })
   },
   async '/api/search'(url, res) {
     const q = (url.searchParams.get('q') ?? '').slice(0, 200)
