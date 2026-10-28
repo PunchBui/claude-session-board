@@ -426,3 +426,8 @@
   .jump.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
   .jump:hover { border-color: var(--accent); color: var(--accent); }
   .jump:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .msg.pending .body { opacity: .7; }
+  .msg time.sending { opacity: 1; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .spinner { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }

@@ -21,6 +21,7 @@ const state = {
   flashId: null,
   history: [],
   commands: new Map(),
+  pending: new Map(),
   historyOpen: false,
   historyNew: new Set(),
   flashUntil: 0,
@@ -453,6 +454,54 @@ function richText(parent, value) {
   }
 }
 
+const normalizeText = (value) => String(value).replace(/\n{3,}/g, '\n\n').trim()
+const PENDING_TTL_MS = 45_000
+
+function isDelivered(entry, messages) {
+  return messages.some((m) => m.role === 'user' && Date.parse(m.at) >= entry.at - 2000)
+}
+
+function addPending(id, text) {
+  const list = state.pending.get(id) ?? []
+  list.push({ text: normalizeText(text), at: Date.now() })
+  state.pending.set(id, list)
+}
+
+function dropPending(id, text) {
+  const list = (state.pending.get(id) ?? []).filter((entry) => entry.text !== normalizeText(text))
+  if (list.length) state.pending.set(id, list)
+  else state.pending.delete(id)
+}
+
+function prunePending() {
+  let changed = false
+  for (const [id, list] of [...state.pending]) {
+    const card = state.cards.find((c) => c.id === id)
+    const messages = card?.details?.chat ?? []
+    const keep = list.filter((entry) => {
+      const expired = Date.now() - entry.at > PENDING_TTL_MS
+      const failed = card?.run?.state === 'failed' && card.run.startedAt >= entry.at - 5000
+      return !expired && !failed && !isDelivered(entry, messages)
+    })
+    if (keep.length !== list.length) changed = true
+    if (keep.length) state.pending.set(id, keep)
+    else state.pending.delete(id)
+  }
+  return changed
+}
+
+let burstTimer = null
+
+function burstRefresh() {
+  clearInterval(burstTimer)
+  let ticks = 0
+  burstTimer = setInterval(() => {
+    ticks += 1
+    refresh()
+    if (ticks >= 25 || state.pending.size === 0) clearInterval(burstTimer)
+  }, 600)
+}
+
 function renderMessage(m) {
   if (m.role === 'command') {
     const wrap = el('div', 'msg command')
@@ -481,10 +530,16 @@ function renderMessage(m) {
     wrap.append(box)
     return wrap
   }
-  const wrap = el('div', `msg ${m.role}`)
+  const wrap = el('div', `msg ${m.role}${m.pending ? ' pending' : ''}`)
   const body = el('div', 'body')
   richText(body, m.text)
-  wrap.append(body, el('time', undefined, clock(m.at)))
+  if (m.pending) {
+    const status = el('time', 'sending')
+    status.append(el('span', 'spinner'), text('Sending…'))
+    wrap.append(body, status)
+  } else {
+    wrap.append(body, el('time', undefined, clock(m.at)))
+  }
   return wrap
 }
 
@@ -498,18 +553,31 @@ async function submitPrompt(id, box) {
   if (!prompt) return
   const card = state.cards.find((c) => c.id === id)
   const busy = card?.run?.state === 'running' || card?.active || card?.queue?.items.length > 0
+  box.value = ''
+  state.drafts.delete(id)
+  autosize(box)
+  if (!busy) {
+    addPending(id, prompt)
+    const view = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`)
+    if (view) view.dataset.stick = 'true'
+    renderFocus()
+  }
   setNote(id, 'Sending…')
   let result = await postJson(busy ? '/api/queue' : '/api/prompt', { id, prompt })
   if (!result.ok && !busy && /busy|already running/.test(result.data.error ?? '')) {
+    dropPending(id, prompt)
     result = await postJson('/api/queue', { id, prompt })
   }
   if (result.ok) {
-    state.drafts.delete(id)
     setNote(id, null)
   } else {
+    dropPending(id, prompt)
+    state.drafts.set(id, prompt)
     setNote(id, result.data.error ?? 'Could not send')
   }
-  await resync()
+  state.signature = ''
+  await refresh()
+  if (state.pending.size) burstRefresh()
 }
 
 async function createSchedule(c, box) {
@@ -891,10 +959,11 @@ function renderChat(c) {
   const chat = el('div', 'chat')
   const inner = el('div', 'chat-inner')
   const messages = c.details?.chat ?? []
-  if (!c.transcriptFound) chat.append(el('div', 'chat-empty', 'Transcript file not found for this session.'))
-  else if (!messages.length) chat.append(el('div', 'chat-empty', 'No messages yet.'))
+  const waiting = (state.pending.get(c.id) ?? []).filter((entry) => !isDelivered(entry, messages))
+  if (!c.transcriptFound && !waiting.length) chat.append(el('div', 'chat-empty', 'Transcript file not found for this session.'))
+  else if (!messages.length && !waiting.length) chat.append(el('div', 'chat-empty', 'No messages yet.'))
   else {
-    inner.append(...messages.map(renderMessage))
+    inner.append(...messages.map(renderMessage), ...waiting.map((entry) => renderMessage({ role: 'user', text: entry.text, pending: true })))
     chat.append(inner)
   }
   const jump = el('button', 'jump')
@@ -1401,6 +1470,7 @@ async function refresh() {
       renderRows()
       renderFocus()
     }
+    if (prunePending()) renderFocus()
     pollChanges()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
   } catch {}
