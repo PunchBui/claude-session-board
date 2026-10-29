@@ -68,9 +68,26 @@
   .spacer { flex: 1; }
   .field { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; outline: none; }
   .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  select.field { -webkit-appearance: none; appearance: none; cursor: pointer; padding-right: 34px; text-overflow: ellipsis; white-space: nowrap; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2373726c' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 16px; }
+  select.field:hover { border-color: var(--faint); }
+  select.field option { background: var(--surface); color: var(--text); }
+  @media (prefers-color-scheme: dark) {
+    select.field { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a8a69e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+  }
+  @supports (appearance: base-select) {
+    select.field, select.field::picker(select) { appearance: base-select; }
+    select.field { background-image: none; padding-right: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    select.field::picker-icon { color: var(--muted); transition: rotate .15s ease; }
+    select.field:open::picker-icon { rotate: 180deg; }
+    select.field::picker(select) { box-sizing: border-box; min-width: anchor-size(width); max-width: max(anchor-size(width), 240px); margin-top: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+    select.field option { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    select.field option:hover, select.field option:focus-visible { background: var(--surface-2); outline: none; }
+    select.field option:checked { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    select.field option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
+  }
   input[type=search] { width: 240px; }
   .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); user-select: none; }
-  .toggle select { padding: 5px 8px; }
+  .toggle select { padding-block: 5px; padding-left: 10px; }
 
   main { padding: 24px; max-width: 1800px; margin: 0 auto; }
   .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
@@ -254,6 +271,14 @@
   .tools { display: flex; gap: 2px; flex: none; align-self: flex-end; }
   .tool { width: 36px; height: 36px; border: 0; background: none; border-radius: 10px; color: var(--muted); font-size: 16px; display: grid; place-items: center; }
   .tool:hover, .tool[aria-pressed=true] { background: var(--surface-2); color: var(--text); }
+  .attachments { max-width: var(--col, 820px); margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .attachment { display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 4px 6px 4px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); font-size: 13px; color: var(--text); }
+  .attachment img { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; flex: none; }
+  .attachment .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+  .attachment .size { color: var(--faint); font-size: 12px; flex: none; }
+  .attachment button { border: 0; background: none; color: var(--muted); display: grid; place-items: center; padding: 2px; border-radius: 6px; }
+  .attachment button:hover { background: var(--surface-2); color: var(--text); }
+  .dock.dropping .composer { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), var(--shadow); }
   .popover { position: absolute; left: 50%; bottom: calc(100% - 8px); transform: translateX(-50%); width: min(560px, calc(100% - 32px)); z-index: 4; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow: auto; }
   .popover h4 { margin: 0; font: 500 14px/1.3 var(--serif); color: var(--muted); }
   .snip-list { display: flex; flex-direction: column; gap: 2px; }
@@ -291,11 +316,14 @@
   dialog .targets { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; max-height: 220px; overflow: auto; }
   dialog .targets label { display: flex; gap: 10px; align-items: center; padding: 4px 6px; border-radius: 8px; }
   dialog .targets label:hover { background: var(--surface-2); }
+  dialog #new-chat-folder, dialog #new-chat-custom { width: 100%; margin-bottom: 10px; }
   dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
   .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
   .page-head h2 { margin: 0; font: 500 22px/1.2 var(--serif); letter-spacing: -.01em; }
-  input.big-search[type=search] { width: 100%; font-size: 16px; padding: 12px 16px; border-radius: 14px; margin-bottom: 8px; }
+  .search-bar { display: flex; align-items: stretch; gap: 8px; margin-bottom: 8px; }
+  .search-bar select.field { font-size: 14px; border-radius: 14px; padding-block: 0; padding-left: 12px; max-width: 220px; align-self: stretch; }
+  input.big-search[type=search] { flex: 1; min-width: 0; width: 100%; font-size: 16px; padding: 12px 16px; border-radius: 14px; }
   .status-line { color: var(--muted); font-size: 12px; margin-bottom: 16px; min-height: 18px; }
   .result { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 16px 20px; margin-bottom: 14px; }
   .result-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }

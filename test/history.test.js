@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { addEvents, markAllRead, markRead, unreadCount, HISTORY_LIMIT } from '../public/history.js'
+import { addEvents, markAllRead, markRead, markSessionRead, unreadCount, HISTORY_LIMIT } from '../public/history.js'
 
 const event = (over = {}) => ({ id: 'local_1', title: 'T', kind: 'finished', message: 'Finished working', ...over })
 
@@ -34,4 +34,10 @@ test('keeps at most the limit', () => {
   for (let i = 0; i < HISTORY_LIMIT + 20; i += 1) list = addEvents(list, [event({ message: `m${i}` })], i * 20_000)
   assert.equal(list.length, HISTORY_LIMIT)
   assert.equal(list[0].message, `m${HISTORY_LIMIT + 19}`)
+})
+
+test('marks only the given session read', () => {
+  const list = addEvents([], [event({ message: 'a' }), event({ id: 'local_2', message: 'b' }), event({ message: 'c' })], 1000)
+  const next = markSessionRead(list, 'local_1')
+  assert.deepEqual(next.filter((e) => !e.read).map((e) => e.id), ['local_2'])
 })

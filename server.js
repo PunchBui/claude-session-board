@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile, mkdir, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,7 @@ import { REPEATS, nextAfter } from './lib/schedule.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
+import { pickFolder } from './lib/folder.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -20,19 +21,22 @@ const CLAUDE_HOME = process.env.CLAUDE_HOME ?? homedir()
 const PROJECTS_DIR = process.env.PROJECTS_DIR ?? join(homedir(), '.claude/projects')
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
 const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL('./data/', import.meta.url))
+const UPLOAD_DIR = join(DATA_DIR, 'uploads')
+const MAX_UPLOAD_BYTES = 25_000_000
+const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
-const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'default'
+const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
 const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
 const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
 const PAGES = new Set(['/', '/focus', '/search', '/usage'])
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' }
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
 const CHAT_ITEMS = 60
@@ -69,10 +73,28 @@ async function findSessionFiles(dir) {
   return nested.flat()
 }
 
-function projectName(raw) {
+function projectRoot(raw) {
   const commonDir = raw.gitAnchors?.[0]?.commonDir
-  const root = commonDir?.endsWith('/.git') ? commonDir.slice(0, -5) : (raw.gitAnchors?.[0]?.gitRoot ?? raw.originCwd ?? raw.cwd)
+  return commonDir?.endsWith('/.git') ? commonDir.slice(0, -5) : (raw.gitAnchors?.[0]?.gitRoot ?? raw.originCwd ?? raw.cwd ?? null)
+}
+
+function projectName(raw) {
+  const root = projectRoot(raw)
   return root ? basename(root) : null
+}
+
+const TURN_IN_PROGRESS_MS = 5 * 60_000
+const lastSummaries = new Map()
+
+function statusOf(raw) {
+  if (raw.interruptedAwaitingPerson) return 'needs-input'
+  const category = raw.postTurnSummary?.status_category
+  if (category) {
+    lastSummaries.set(raw.sessionId, category)
+    return category
+  }
+  const recent = Date.now() - (raw.lastActivityAt ?? 0) < TURN_IN_PROGRESS_MS
+  return recent ? 'in_progress' : (lastSummaries.get(raw.sessionId) ?? 'unknown')
 }
 
 function toSummary(raw) {
@@ -81,6 +103,7 @@ function toSummary(raw) {
     title: raw.title ?? '(untitled)',
     cwd: raw.cwd ?? null,
     project: projectName(raw),
+    projectRoot: projectRoot(raw),
     model: raw.model ?? null,
     effort: raw.effort ?? null,
     permissionMode: raw.permissionMode ?? null,
@@ -88,10 +111,18 @@ function toSummary(raw) {
     createdAt: raw.createdAt ?? null,
     lastActivityAt: raw.lastActivityAt ?? raw.createdAt ?? null,
     completedTurns: raw.completedTurns ?? 0,
-    status: raw.interruptedAwaitingPerson ? 'needs-input' : (raw.postTurnSummary?.status_category ?? 'unknown'),
+    status: statusOf(raw),
     detail: raw.postTurnSummary?.status_detail ?? raw.turnWrapUp?.description ?? null,
     cliSessionId: raw.cliSessionId ?? null,
   }
+}
+
+const knownTitles = new Map()
+
+function keepTitle(raw) {
+  if (raw.title) knownTitles.set(raw.sessionId, raw.title)
+  else if (knownTitles.has(raw.sessionId)) raw.title = knownTitles.get(raw.sessionId)
+  return raw
 }
 
 async function readRawSessions() {
@@ -106,7 +137,7 @@ async function readRawSessions() {
       }
     })
   )
-  return parsed.filter(Boolean)
+  return parsed.filter(Boolean).map(keepTitle)
 }
 
 async function loadSessions() {
@@ -132,6 +163,8 @@ async function findTranscript(cliSessionId) {
   }
   return null
 }
+
+const hasTranscript = async (raw) => Boolean(await findTranscript(raw.cliSessionId))
 
 async function scanSession(raw) {
   const path = await findTranscript(raw.cliSessionId)
@@ -232,7 +265,7 @@ function pauseQueueAfter(id, run) {
 
 function startRun(raw, prompt) {
   const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE }
-  const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE]
+  const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE, '--add-dir', UPLOAD_DIR]
   const child = spawn(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), stdio: ['pipe', 'ignore', 'pipe'] })
   run.stop = () => child.kill('SIGTERM')
   let stderr = ''
@@ -268,7 +301,7 @@ async function pump() {
     const raws = await readRawSessions()
     for (const [id, queue] of pending) {
       const raw = raws.find((session) => session.sessionId === id)
-      if (!raw?.cliSessionId) continue
+      if (!raw?.cliSessionId || !(await hasTranscript(raw))) continue
       const run = runs.get(id)
       if (run?.state === 'running') continue
       const card = await buildCard(raw)
@@ -403,8 +436,48 @@ async function serveStatic(res, pathname) {
   send(res, 200, await readFile(file), TYPES[extname(file)] ?? 'application/octet-stream')
 }
 
+const IMAGE_TYPE = /^image\/(png|jpe?g|gif|webp)$/
+
+function safeName(value) {
+  const name = basename(String(value ?? '')).replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^\.+/, '').slice(-120)
+  return name || 'file'
+}
+
+async function readUpload(req) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > MAX_UPLOAD_BYTES) throw new Error('file too large')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
+async function saveUpload(req, res, url) {
+  if (Number(req.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) return json(res, 413, { error: `File is larger than ${MAX_UPLOAD_BYTES / 1_000_000} MB.` })
+  const data = await readUpload(req).catch(() => null)
+  if (!data?.length) return json(res, 400, { error: 'Empty or oversized file.' })
+  const name = safeName(url.searchParams.get('name'))
+  const dir = join(UPLOAD_DIR, randomUUID())
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, name)
+  await writeFile(path, data)
+  return json(res, 201, { path, name, size: data.length, image: IMAGE_TYPE.test(req.headers['content-type'] ?? '') })
+}
+
+async function pruneUploads() {
+  const dirs = await readdir(UPLOAD_DIR, { withFileTypes: true }).catch(() => [])
+  for (const dir of dirs) {
+    const path = join(UPLOAD_DIR, dir.name)
+    const info = await stat(path).catch(() => null)
+    if (info && Date.now() - info.mtimeMs > UPLOAD_TTL_MS) await rm(path, { recursive: true, force: true })
+  }
+}
+
 const validPrompt = (prompt) => typeof prompt === 'string' && prompt.trim() && prompt.length <= MAX_PROMPT_CHARS
 const BLOCKED_MESSAGE = 'That command starts a new session, so the board would lose track of this one. Run it in the desktop app instead.'
+const NO_TRANSCRIPT_MESSAGE = 'This session has no transcript yet, so there is nothing to resume. Send its first message in the desktop app, then try again.'
 const isBlocked = (prompt) => typeof prompt === 'string' && BLOCKED_PROMPT.test(prompt)
 const commandCache = new Map()
 
@@ -418,6 +491,13 @@ async function commandsFor(cwd) {
 const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSessions()).find((s) => s.sessionId === id) : null)
 
 const postRoutes = {
+  async '/api/pick-folder'(body, res) {
+    try {
+      return json(res, 200, await pickFolder())
+    } catch (error) {
+      return json(res, 500, { error: String(error.message ?? error) })
+    }
+  },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
     const current = await readFocus()
@@ -430,6 +510,7 @@ const postRoutes = {
     if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
     const raw = await findRaw(body.id)
     if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+    if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
     if (runs.get(body.id)?.state === 'running') return json(res, 409, { error: 'a prompt is already running for this session' })
     const card = await buildCard(raw)
     if (card.active) return json(res, 409, { error: 'session is busy in the desktop app; try again when it is idle' })
@@ -448,6 +529,7 @@ const postRoutes = {
     if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
     const raw = await findRaw(body.id)
     if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+    if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
     if (!(await enqueue(body.id, body.prompt.trim()))) return json(res, 409, { error: `queue is full (${MAX_QUEUE})` })
     pump()
     return json(res, 202, { queue: publicQueue(body.id) })
@@ -474,7 +556,7 @@ const postRoutes = {
     const skipped = []
     for (const id of body.ids) {
       const raw = raws.find((s) => s.sessionId === id)
-      if (raw?.cliSessionId && (await enqueue(id, body.prompt.trim()))) queued.push(id)
+      if (raw?.cliSessionId && (await hasTranscript(raw)) && (await enqueue(id, body.prompt.trim()))) queued.push(id)
       else skipped.push(id)
     }
     pump()
@@ -537,8 +619,9 @@ const getRoutes = {
   },
   async '/api/search'(url, res) {
     const q = (url.searchParams.get('q') ?? '').slice(0, 200)
-    const result = searchSessions(await indexedEntries(), q)
-    return json(res, 200, { ...result, query: q, indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running } })
+    const project = (url.searchParams.get('project') ?? '').slice(0, 200)
+    const result = searchSessions(await indexedEntries(), q, project)
+    return json(res, 200, { ...result, query: q, project, indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running } })
   },
   async '/api/usage'(url, res) {
     const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 120)
@@ -547,6 +630,7 @@ const getRoutes = {
 }
 
 await loadStores()
+pruneUploads()
 setInterval(tick, 2000)
 warmIndex()
 setInterval(warmIndex, 60_000)
@@ -557,6 +641,7 @@ createServer(async (req, res) => {
   try {
     if (req.method === 'POST') {
       if (!ALLOWED_ORIGINS.has(req.headers.origin ?? '')) return send(res, 403, 'forbidden', 'text/plain')
+      if (url.pathname === '/api/upload') return await saveUpload(req, res, url)
       const route = postRoutes[url.pathname]
       if (!route) return send(res, 404, 'not found', 'text/plain')
       return await route(await readBody(req), res)

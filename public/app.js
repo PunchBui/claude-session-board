@@ -1,7 +1,8 @@
 import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './alerts.js'
 import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
-import { addEvents, markAllRead, markRead, unreadCount } from './history.js'
+import { newSessionIds } from './autofocus.js'
+import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/search': 'search', '/usage': 'usage' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', search: 'Search', usage: 'Usage' }
@@ -32,7 +33,9 @@ const state = {
   snippets: [],
   alertsOn: false,
   alertSnap: null,
+  knownIds: null,
   unseen: 0,
+  attachments: new Map(),
   search: { timer: null, runId: 0 },
   usage: { days: 30, metric: 'output', data: null, at: 0 },
 }
@@ -119,6 +122,74 @@ const uiOf = (id) => {
   return state.ui.get(id)
 }
 
+const bytesLabel = (n) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1000))} KB`)
+
+function attachmentsOf(id) {
+  return state.attachments.get(id) ?? []
+}
+
+function withAttachments(id, prompt) {
+  const files = attachmentsOf(id)
+  if (!files.length) return prompt
+  const lines = files.map((file) => `- ${file.path}`).join('\n')
+  return `${prompt || 'Please look at the attached files.'}\n\nAttached files:\n${lines}`
+}
+
+async function attachFiles(id, files) {
+  const list = [...files]
+  if (!list.length) return
+  setNote(id, `Uploading ${list.length} file${list.length === 1 ? '' : 's'}…`)
+  renderFocus()
+  const added = []
+  for (const file of list) {
+    const type = file.type || 'application/octet-stream'
+    try {
+      const res = await fetch(`/api/upload?name=${encodeURIComponent(file.name || 'pasted')}`, { method: 'POST', headers: { 'content-type': type }, body: file })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setNote(id, data.error ?? `Could not upload ${file.name}`); renderFocus(); return }
+      added.push({ ...data, preview: data.image ? URL.createObjectURL(file) : null })
+    } catch {
+      setNote(id, `Could not upload ${file.name}`)
+      renderFocus()
+      return
+    }
+  }
+  state.attachments.set(id, [...attachmentsOf(id), ...added])
+  setNote(id, null)
+  renderFocus()
+}
+
+function removeAttachment(id, path) {
+  const removed = attachmentsOf(id).find((file) => file.path === path)
+  if (removed?.preview) URL.revokeObjectURL(removed.preview)
+  const rest = attachmentsOf(id).filter((file) => file.path !== path)
+  if (rest.length) state.attachments.set(id, rest)
+  else state.attachments.delete(id)
+  renderFocus()
+}
+
+function renderAttachments(c) {
+  const files = attachmentsOf(c.id)
+  if (!files.length) return null
+  const row = el('div', 'attachments')
+  for (const file of files) {
+    const chip = el('div', 'attachment')
+    if (file.preview) {
+      const thumb = document.createElement('img')
+      thumb.src = file.preview
+      thumb.alt = file.name
+      chip.append(thumb)
+    } else chip.append(icon('paperclip', { size: 14 }))
+    const remove = el('button')
+    remove.append(icon('x', { size: 14 }))
+    remove.title = 'Remove attachment'
+    remove.onclick = () => removeAttachment(c.id, file.path)
+    chip.append(el('span', 'n', file.name), el('span', 'size', bytesLabel(file.size)), remove)
+    row.append(chip)
+  }
+  return row
+}
+
 async function postJson(path, body) {
   const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
   return { ok: res.ok, data: await res.json().catch(() => ({})) }
@@ -133,6 +204,7 @@ function setNote(id, message) {
 
 function toast(event) {
   const box = el('div', `toast ${event.kind}`)
+  box.dataset.session = event.id
   const heading = el('b')
   heading.append(icon(ALERT_ICONS[event.kind] ?? 'check-circle', { size: 16 }), el('span', undefined, event.title))
   box.append(heading, el('span', 'msg-text', event.message))
@@ -143,6 +215,13 @@ function toast(event) {
   }
   $('toasts').append(box)
   setTimeout(() => box.remove(), 9000)
+}
+
+function clearNotifications(id) {
+  document.querySelectorAll('#toasts .toast').forEach((t) => { if (t.dataset.session === id) t.remove() })
+  if (!state.history.some((entry) => entry.id === id && !entry.read)) return
+  state.historyNew = new Set([...state.historyNew].filter((uid) => state.history.find((entry) => entry.uid === uid)?.id !== id))
+  writeHistory(markSessionRead(state.history, id))
 }
 
 function beep() {
@@ -549,12 +628,16 @@ function autosize(box) {
 }
 
 async function submitPrompt(id, box) {
-  const prompt = box.value.trim()
-  if (!prompt) return
+  const typed = box.value.trim()
+  const files = attachmentsOf(id)
+  if (!typed && !files.length) return
+  const prompt = withAttachments(id, typed)
+  clearNotifications(id)
   const card = state.cards.find((c) => c.id === id)
   const busy = card?.run?.state === 'running' || card?.active || card?.queue?.items.length > 0
   box.value = ''
   state.drafts.delete(id)
+  state.attachments.delete(id)
   autosize(box)
   if (!busy) {
     addPending(id, prompt)
@@ -572,7 +655,8 @@ async function submitPrompt(id, box) {
     setNote(id, null)
   } else {
     dropPending(id, prompt)
-    state.drafts.set(id, prompt)
+    state.drafts.set(id, typed)
+    if (files.length) state.attachments.set(id, files)
     setNote(id, result.data.error ?? 'Could not send')
   }
   state.signature = ''
@@ -582,9 +666,10 @@ async function submitPrompt(id, box) {
 
 async function createSchedule(c, box) {
   const ui = uiOf(c.id)
-  const prompt = box.value.trim()
+  const typed = box.value.trim()
   const at = new Date(ui.at).getTime()
-  if (!prompt) return setNote(c.id, 'Type the prompt to schedule first.') || renderFocus()
+  if (!typed && !attachmentsOf(c.id).length) return setNote(c.id, 'Type the prompt to schedule first.') || renderFocus()
+  const prompt = withAttachments(c.id, typed)
   if (!Number.isFinite(at)) return setNote(c.id, 'Pick a date and time.') || renderFocus()
   const { ok, data } = await postJson('/api/schedule', { id: c.id, prompt, at, repeat: ui.repeat })
   if (ok) {
@@ -838,9 +923,25 @@ function renderComposer(c) {
       submitPrompt(c.id, box)
     }
   }
+  box.onpaste = (event) => {
+    const files = [...(event.clipboardData?.files ?? [])]
+    if (!files.length) return
+    event.preventDefault()
+    attachFiles(c.id, files)
+  }
   composer.append(box)
 
   const tools = el('div', 'tools')
+  const picker = document.createElement('input')
+  picker.type = 'file'
+  picker.multiple = true
+  picker.hidden = true
+  picker.onchange = () => { attachFiles(c.id, picker.files); picker.value = '' }
+  const attach = el('button', 'tool')
+  attach.append(icon('paperclip', { size: 18 }))
+  attach.title = 'Attach files or images (you can also paste or drop them)'
+  attach.onclick = () => picker.click()
+  tools.append(attach, picker)
   for (const [name, glyph, title] of [['snippets', 'zap', 'Prompt shortcuts'], ['schedule', 'clock', 'Schedule this prompt']]) {
     const b = el('button', 'tool')
     b.append(icon(glyph, { size: 18 }))
@@ -884,7 +985,17 @@ function renderComposer(c) {
   for (const part of [renderSchedules(c), renderQueue(c)]) if (part) dock.append(part)
   if (ui.popover === 'snippets') dock.append(renderSnippetPopover(c, box))
   if (ui.popover === 'schedule') dock.append(renderSchedulePopover(c, box))
+  const attachments = renderAttachments(c)
+  if (attachments) dock.append(attachments)
   dock.append(composer, note)
+  dock.ondragover = (event) => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); dock.classList.add('dropping') } }
+  dock.ondragleave = (event) => { if (!dock.contains(event.relatedTarget)) dock.classList.remove('dropping') }
+  dock.ondrop = (event) => {
+    if (!event.dataTransfer?.files.length) return
+    event.preventDefault()
+    dock.classList.remove('dropping')
+    attachFiles(c.id, event.dataTransfer.files)
+  }
   syncSlash(c.id, dock, box)
   requestAnimationFrame(() => autosize(box))
   return dock
@@ -1142,6 +1253,8 @@ function renderFocus() {
   const active = document.activeElement
   const keep = active?.dataset?.keep
   const caret = keep && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null
+  const pageTop = window.scrollY
+  const pageLeft = window.scrollX
   const nodes = state.cards.map(renderCard)
   grid.replaceChildren(...nodes)
   nodes.forEach((card) => {
@@ -1165,10 +1278,11 @@ function renderFocus() {
   if (keep) {
     const field = grid.querySelector(`[data-keep="${keep}"]`)
     if (field && !field.disabled) {
-      field.focus()
+      field.focus({ preventScroll: true })
       if (caret && field.setSelectionRange && field.type !== 'datetime-local') field.setSelectionRange(...caret)
     }
   }
+  if (window.scrollY !== pageTop || window.scrollX !== pageLeft) window.scrollTo(pageLeft, pageTop)
   if (state.expanded && !state.cards.some((c) => c.id === state.expanded) && state.cards.length) state.expanded = null
   document.body.classList.toggle('modal-open', Boolean(state.expanded))
   $('backdrop').hidden = !state.expanded
@@ -1213,6 +1327,87 @@ function setExpanded(id) {
   renderFocus()
 }
 
+function openNewChat() {
+  const roots = new Map()
+  for (const s of state.sessions) {
+    const root = s.projectRoot ?? s.cwd
+    if (root && !roots.has(root)) roots.set(root, s.project ?? root.split('/').pop())
+  }
+  const select = $('new-chat-folder')
+  const previous = select.value
+  select.replaceChildren(...[...roots].map(([root, name]) => new Option(`${name} — ${home(root)}`, root)), new Option('Other folder…', ''))
+  select.value = roots.has(previous) ? previous : ([...roots.keys()][0] ?? '')
+  state.lastFolder = select.value || null
+  syncCustomFolder()
+  $('new-chat-status').textContent = ''
+  $('new-chat').blur()
+  $('new-chat-dialog').showModal()
+  $('new-chat-text').focus()
+}
+
+function showCustomFolder(show) {
+  $('new-chat-custom').hidden = !show
+  if (show) $('new-chat-custom').focus()
+}
+
+function syncCustomFolder() {
+  showCustomFolder($('new-chat-folder').value === '')
+}
+
+function addPickedFolder(path) {
+  const select = $('new-chat-folder')
+  const existing = [...select.options].find((o) => o.value === path)
+  if (existing) return void (select.value = path)
+  const option = new Option(`${path.split('/').filter(Boolean).pop() ?? path} — ${home(path)}`, path)
+  select.insertBefore(option, select.querySelector('option[value=""]'))
+  select.value = path
+}
+
+async function chooseFolder() {
+  const select = $('new-chat-folder')
+  if (select.value !== '') {
+    state.lastFolder = select.value
+    showCustomFolder(false)
+    return
+  }
+  const status = $('new-chat-status')
+  status.textContent = 'Choose a folder in the Finder window…'
+  select.disabled = true
+  const { ok, data } = await postJson('/api/pick-folder', {}).catch(() => ({ ok: false, data: {} }))
+  const result = ok ? data : { error: true }
+  select.disabled = false
+  status.textContent = ''
+  if (result.path) {
+    addPickedFolder(result.path)
+    state.lastFolder = result.path
+    showCustomFolder(false)
+  } else if (result.unsupported || result.error) {
+    showCustomFolder(true)
+  } else {
+    select.value = state.lastFolder ?? ''
+    if (select.value === '') showCustomFolder(true)
+  }
+  select.focus()
+}
+
+function startNewChat() {
+  const folder = ($('new-chat-folder').value || $('new-chat-custom').value).trim()
+  const prompt = $('new-chat-text').value.trim()
+  if (folder && !folder.startsWith('/')) {
+    $('new-chat-status').textContent = 'Use an absolute folder path, like /Users/you/project.'
+    return
+  }
+  const params = new URLSearchParams()
+  if (folder) params.set('folder', folder)
+  if (prompt) params.set('q', prompt)
+  const link = el('a')
+  link.href = `claude://code/new${params.size ? `?${params}` : ''}`
+  link.click()
+  $('new-chat-dialog').close()
+  $('new-chat-text').value = ''
+  toast({ id: 'new-chat', title: 'Opening Claude', kind: 'finished', message: 'The new session joins Focus once the app records it.' })
+}
+
 function openBroadcast() {
   const targets = $('broadcast-targets')
   targets.replaceChildren()
@@ -1250,6 +1445,7 @@ async function sendBroadcast() {
   }
   $('broadcast').close()
   $('broadcast-text').value = ''
+  data.queued.forEach(clearNotifications)
   toast({ id: 'broadcast', title: 'Queued', kind: 'finished', message: `${data.queued.length} session${data.queued.length === 1 ? '' : 's'} queued${data.skipped.length ? `, ${data.skipped.length} skipped` : ''}.` })
   await resync()
 }
@@ -1263,9 +1459,21 @@ function highlight(parent, value, tokens) {
   })
 }
 
+function renderProjectOptions(projects, selected) {
+  const select = $('search-project')
+  const names = selected && !projects.includes(selected) ? [selected, ...projects] : projects
+  const key = names.join('\n')
+  if (select.dataset.key !== key) {
+    select.dataset.key = key
+    select.replaceChildren(new Option('All projects', ''), ...names.map((name) => new Option(name, name)))
+  }
+  select.value = selected
+}
+
 function renderSearch(data) {
   const box = $('search-results')
   box.replaceChildren()
+  renderProjectOptions(data.projects, data.project)
   const { indexed } = data
   $('search-status').textContent = data.tokens.length
     ? `${data.totalHits} message${data.totalHits === 1 ? '' : 's'} in ${data.sessions.length} session${data.sessions.length === 1 ? '' : 's'}${indexed.running ? ` · still indexing (${indexed.done}/${indexed.total})` : ` · ${indexed.total} sessions indexed`}`
@@ -1289,11 +1497,15 @@ function renderSearch(data) {
 
 async function runSearch() {
   const q = $('search-q').value.trim()
-  history.replaceState(history.state, '', q ? `/search?q=${encodeURIComponent(q)}` : '/search')
+  const project = $('search-project').value
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  if (project) params.set('project', project)
+  history.replaceState(history.state, '', params.size ? `/search?${params}` : '/search')
   const runId = ++state.search.runId
   clearTimeout(state.search.timer)
   try {
-    const data = await getJson(`/api/search?q=${encodeURIComponent(q.length >= 2 ? q : '')}`)
+    const data = await getJson(`/api/search?q=${encodeURIComponent(q.length >= 2 ? q : '')}&project=${encodeURIComponent(project)}`)
     if (runId !== state.search.runId || state.tab !== 'search') return
     renderSearch(data)
     if (data.indexed.running) state.search.timer = setTimeout(runSearch, 2500)
@@ -1442,7 +1654,9 @@ function applyRoute() {
   renderRows()
   renderFocus()
   if (tab === 'search') {
-    $('search-q').value = new URLSearchParams(location.search).get('q') ?? ''
+    const params = new URLSearchParams(location.search)
+    $('search-q').value = params.get('q') ?? ''
+    renderProjectOptions([], params.get('project') ?? '')
     runSearch()
     $('search-q').focus()
   }
@@ -1452,7 +1666,14 @@ function applyRoute() {
 
 async function refresh() {
   try {
-    const [sessions, focus] = await Promise.all([getJson('/api/sessions'), getJson('/api/focus')])
+    const [sessions, firstFocus] = await Promise.all([getJson('/api/sessions'), getJson('/api/focus')])
+    let focus = firstFocus
+    const { fresh, next: knownIds } = newSessionIds(state.knownIds, sessions, focus.ids)
+    state.knownIds = knownIds
+    if (fresh.length) {
+      for (const id of fresh) await postJson('/api/focus', { id, focused: true })
+      focus = await getJson('/api/focus')
+    }
     const { events, next } = diffAlerts(state.alertSnap, focus.cards)
     const hadBaseline = state.alertSnap !== null
     state.alertSnap = next
@@ -1506,7 +1727,12 @@ window.addEventListener('storage', (event) => {
   renderHistoryBadge()
   if (state.historyOpen) renderHistoryPanel()
 })
+$('search-project').onchange = runSearch
 $('search-q').oninput = () => { clearTimeout(state.search.timer); state.search.timer = setTimeout(runSearch, 250) }
+$('new-chat').onclick = openNewChat
+$('new-chat-cancel').onclick = () => $('new-chat-dialog').close()
+$('new-chat-start').onclick = startNewChat
+$('new-chat-folder').onchange = chooseFolder
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()
 $('broadcast-send').onclick = sendBroadcast
@@ -1524,9 +1750,14 @@ document.querySelectorAll('#usage-days button').forEach((b) => {
   b.onclick = () => { state.usage.days = Number(b.dataset.days); remember('board.usageDays', String(state.usage.days)); loadUsage() }
 })
 $('backdrop').onclick = () => setExpanded(null)
+$('cards').addEventListener('focusin', (event) => {
+  const card = event.target.closest?.('.card')
+  if (card) clearNotifications(card.dataset.id)
+})
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && state.historyOpen) { setHistoryOpen(false); return }
-  if (event.key !== 'Escape' || $('broadcast').open || !state.expanded) return
+  if (event.key !== 'Escape' || $('broadcast').open || $('new-chat-dialog').open || !state.expanded) return
   const ui = uiOf(state.expanded)
   if (ui.popover) { ui.popover = null; renderFocus() } else setExpanded(null)
 })
@@ -1542,8 +1773,10 @@ $('history').append(icon('bell', { size: 18 }))
 state.history = readHistory()
 renderHistoryBadge()
 renderAlertsButton()
+$('new-chat').replaceChildren(icon('plus', { size: 16 }), text('New chat'))
 $('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), text('Broadcast'))
 $('brand-mark').replaceChildren(icon('asterisk', { size: 22, strokeWidth: 2.4 }))
 loadSnippets()
 applyRoute()
 schedule()
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})

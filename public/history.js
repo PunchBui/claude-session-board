@@ -14,3 +14,4 @@ export function addEvents(history, events, now = Date.now()) {
 export const markAllRead = (history) => history.map((entry) => (entry.read ? entry : { ...entry, read: true }))
 export const unreadCount = (history) => history.reduce((count, entry) => count + (entry.read ? 0 : 1), 0)
 export const markRead = (history, uid) => history.map((entry) => (entry.uid === uid && !entry.read ? { ...entry, read: true } : entry))
+export const markSessionRead = (history, id) => history.map((entry) => (entry.id === id && !entry.read ? { ...entry, read: true } : entry))

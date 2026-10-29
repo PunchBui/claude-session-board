@@ -26,6 +26,21 @@ test('search requires every token, groups by session and returns snippets', () =
   assert.equal(searchSessions(entries, '   ').sessions.length, 0)
 })
 
+test('search can be limited to one project and lists every project', () => {
+  const entries = [
+    { id: 'a', title: 'A', project: 'p', cwd: '/p', archived: false, messages: [{ role: 'user', at: '2026-10-01T00:00:00Z', text: 'deploy' }] },
+    { id: 'b', title: 'B', project: 'q', cwd: '/q', archived: false, messages: [{ role: 'user', at: '2026-10-03T00:00:00Z', text: 'deploy' }] },
+  ]
+  const all = searchSessions(entries, 'deploy')
+  assert.deepEqual(all.sessions.map((s) => s.id), ['b', 'a'])
+  assert.deepEqual(all.projects, ['p', 'q'])
+  const only = searchSessions(entries, 'deploy', 'p')
+  assert.deepEqual(only.sessions.map((s) => s.id), ['a'])
+  assert.equal(only.totalHits, 1)
+  assert.deepEqual(only.projects, ['p', 'q'])
+  assert.deepEqual(searchSessions(entries, '', 'p').projects, ['p', 'q'])
+})
+
 test('usage aggregates per project and day inside the window only', () => {
   const today = new Date(2026, 9, 27)
   const entries = [{ id: 'a', title: 'A', project: 'p', byId: new Map([

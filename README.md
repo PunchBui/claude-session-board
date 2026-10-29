@@ -62,7 +62,8 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 
 - `/` all sessions. Search, status filter and the archived toggle are kept in the URL (`?q=`, `?status=`, `?archived=1`).
 - `/focus` one live card per starred session. The 1, 2 or Auto column layout is remembered.
-- `/search` full-text search inside every conversation, grouped by session with highlighted snippets.
+- **New chat** (top bar) opens the desktop app's new session screen on a folder you pick, with an optional prompt filled in. You press send in the app, and the session joins Focus once the app records it.
+- `/search` full-text search inside every conversation, grouped by session with highlighted snippets. A project dropdown narrows it to one project (`?project=`).
 - `/usage` tokens per day and per project (stacked chart) plus the top sessions.
 
 ## Focus cards
@@ -72,12 +73,13 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 - Attention banner when a transcript ends on an unanswered question (AskUserQuestion, ExitPlanMode) or a tool has been pending for 45s or more, which usually means it is waiting for approval.
 - Token usage with a yellow warning at 100k context and red at 200k.
 - Changes tab: git branch, ahead and behind, uncommitted files and diff size for the session folder, the files Claude edited, ticket keys (set `JIRA_BASE_URL` to link them) and merge request links mentioned in the chat.
+- Attach files and images with the paperclip, by pasting, or by dropping them on the prompt box (25 MB each). They are saved under `data/uploads/` (deleted after 7 days) and their paths are added to the prompt, so Claude reads them from disk.
 - Prompt box with a queue, ⚡ shortcuts (stored in `data/snippets.json`) and ⏰ scheduling (once, daily or weekdays).
 - 📣 Broadcast queues one prompt on several focused sessions.
 
 ## Prompts, queue and schedules
 
-- Prompts run as headless `claude -p --resume <id>` in the session folder with `PROMPT_PERMISSION_MODE` (default `default`, where tools that need approval are denied). Setting it to `acceptEdits` or `bypassPermissions` lets prompts sent from this page edit files and run commands without asking, so only do that on a machine you trust and never expose the server beyond localhost.
+- Prompts run as headless `claude -p --resume <id>` in the session folder with `PROMPT_PERMISSION_MODE` (default `bypassPermissions`, so prompts sent from this page edit files and run commands without asking). Set it to `default` to deny tools that need approval, or `acceptEdits` to allow edits only. Only run this on a machine you trust and never expose the server beyond localhost.
 - While a prompt is running, or the session is busy in the desktop app, new prompts are queued and sent in order when it is idle. A failed or stopped run pauses the queue until you press Resume.
 - Queues persist in `data/queue.json` and schedules in `data/schedules.json`. Due schedules are added to the queue, so they follow the same rules.
 - The desktop app may not show turns sent from the board until you reopen the session.
