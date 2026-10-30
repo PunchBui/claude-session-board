@@ -1,6 +1,6 @@
-const CACHE = 'board-shell-v1'
-const SHELL = ['/', '/app.css', '/app.js', '/alerts.js', '/autofocus.js', '/history.js', '/icons.js', '/richtext.js', '/favicon.svg', '/icon-192.png', '/icon-512.png']
-const PAGES = new Set(['/', '/focus', '/search', '/usage'])
+const CACHE = 'board-shell-v4'
+const SHELL = ['/', '/app.css', '/app.js', '/alerts.js', '/autofocus.js', '/loops.js', '/tip.js', '/drafts.js', '/history.js', '/icons.js', '/richtext.js', '/favicon.svg', '/icon-192.png', '/icon-512.png']
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/search', '/usage'])
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()))

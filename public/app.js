@@ -2,11 +2,14 @@ import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './ale
 import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
+import { diffLoops, withoutTickFinishes, untilLabel, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
+import { attachTip, hideTip } from './tip.js'
+import { DraftStore } from './drafts.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
-const ROUTES = { '/': 'all', '/focus': 'focus', '/search': 'search', '/usage': 'usage' }
-const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', search: 'Search', usage: 'Usage' }
-const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', context: 'triangle-alert', failed: 'x-circle', paused: 'pause-circle' }
+const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/search': 'search', '/usage': 'usage' }
+const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', search: 'Search', usage: 'Usage' }
+const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', context: 'triangle-alert', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
 const state = {
@@ -26,24 +29,30 @@ const state = {
   historyOpen: false,
   historyNew: new Set(),
   flashUntil: 0,
-  drafts: new Map(),
+  drafts: new DraftStore((() => { try { return localStorage } catch { return null } })()),
   notes: new Map(),
   ui: new Map(),
   changes: new Map(),
   snippets: [],
   alertsOn: false,
   alertSnap: null,
+  loopSnap: null,
+  backgroundSnap: null,
+  backgroundSeenAt: 0,
   knownIds: null,
   unseen: 0,
   attachments: new Map(),
   search: { timer: null, runId: 0 },
   usage: { days: 30, metric: 'output', data: null, at: 0 },
+  loops: { data: null, filter: 'all', at: 0, open: new Set() },
+  background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
 }
 
 try {
   state.cols = localStorage.getItem('board.cols') || 'auto'
   state.alertsOn = localStorage.getItem('board.alerts') === '1'
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
+state.backgroundSeenAt = Number(localStorage.getItem('board.backgroundSeen')) || 0
   state.usage.metric = localStorage.getItem('board.usageMetric') || 'output'
 } catch {}
 
@@ -112,10 +121,19 @@ const openLink = (id, primary) => {
   a.title = 'Open in Claude desktop'
   return a
 }
-const statusBadge = (status) => {
+const statusBadge = (status, session) => {
   const span = el('span', `status ${status}`)
   span.append(el('span', 'dot'), text(status.replace(/_/g, ' ')))
-  return span
+  return session ? attachTip(span, () => statusTip(status, session.detail, session.lastActivityAt)) : span
+}
+const loopBadge = (loop) => {
+  if (!loop) return null
+  const span = el('span', `loop-badge ${loop.state}`)
+  span.append(icon('repeat', { size: 13 }))
+  if (loop.state === 'looping') span.append(text(loop.nextAt ? `Looping · next ${untilLabel(loop.nextAt)}` : `Looping · ${loop.every ? `every ${loop.every}m` : 'waiting'}`))
+  else if (loop.state === 'stalled') span.append(text('Loop stalled'))
+  else span.append(text(`Loop finished · ${relative(loop.endedAt)}`))
+  return attachTip(span, () => loopTip(loop))
 }
 const uiOf = (id) => {
   if (!state.ui.has(id)) state.ui.set(id, { pane: 'chat', popover: null, at: '', repeat: 'none', snippetLabel: '' })
@@ -382,6 +400,35 @@ function visible() {
     (!q || `${s.title} ${s.cwd} ${s.project}`.toLowerCase().includes(q)))
 }
 
+function renderBackgroundBadge() {
+  const progress = backgroundProgress(state.sessions, state.backgroundSeenAt)
+  const badge = $('background-count')
+  badge.className = `badge bg-${progress.mode}`
+  badge.hidden = progress.mode === 'idle'
+  badge.replaceChildren()
+  badge.style.setProperty('--pct', `${progress.pct}%`)
+  if (progress.mode === 'running') {
+    badge.append(text(`${progress.done}/${progress.total}`))
+    badge.title = `${progress.running} running, ${progress.done} finished in the last hour`
+  } else if (progress.mode !== 'idle') {
+    badge.append(icon(progress.mode === 'failed' ? 'x-circle' : 'check', { size: 11, strokeWidth: 3 }), text(String(progress.done)))
+    badge.title = progress.mode === 'failed' ? `${progress.done} finished, ${progress.failed} failed` : `${progress.done} finished`
+  }
+}
+
+function markBackgroundSeen() {
+  state.backgroundSeenAt = Date.now()
+  remember('board.backgroundSeen', String(state.backgroundSeenAt))
+  renderBackgroundBadge()
+}
+
+function renderLoopsBadge() {
+  const count = state.sessions.reduce((sum, s) => sum + (s.loop && s.loop.state !== 'ended' ? s.loop.count : 0), 0)
+  const badge = $('loops-count')
+  badge.hidden = count === 0
+  badge.textContent = String(count)
+}
+
 function renderSummary() {
   const pool = state.sessions.filter((s) => $('archived').checked || !s.archived)
   const counts = pool.reduce((acc, s) => ({ ...acc, [s.status]: (acc[s.status] ?? 0) + 1 }), {})
@@ -397,7 +444,16 @@ function renderSummary() {
   Object.entries(counts).forEach(([status, n]) => make(`${status.replace(/_/g, ' ')} ${n}`, status))
 }
 
+function statusCell(s) {
+  const box = el('div', 'status-cell')
+  box.append(statusBadge(s.status, s))
+  const badge = loopBadge(s.loop)
+  if (badge) box.append(badge)
+  return box
+}
+
 function renderRows() {
+  hideTip()
   const rows = visible()
   const body = $('rows')
   body.replaceChildren()
@@ -405,7 +461,13 @@ function renderRows() {
   for (const s of rows) {
     const tr = document.createElement('tr')
     const title = el('div')
-    title.append(el('div', 'row-title', s.title))
+    const heading = el('div', 'row-title', s.title)
+    if (state.drafts.has(s.id)) {
+      const draft = el('span', 'draft-chip', 'Draft')
+      draft.title = state.drafts.get(s.id).trim().slice(0, 200)
+      heading.append(draft)
+    }
+    title.append(heading)
     if (s.detail) title.append(el('div', 'row-sub', s.detail))
     const project = el('div')
     project.append(projectChip(s), el('div', 'path', home(s.cwd)))
@@ -413,7 +475,7 @@ function renderRows() {
       cell(starButton(s.id)),
       cell(title),
       cell(project),
-      cell(statusBadge(s.status)),
+      cell(statusCell(s)),
       cell(el('span', 'num', s.model ?? '—')),
       cell(el('span', 'num', String(s.completedTurns))),
       cell(el('span', 'num', relative(s.lastActivityAt))),
@@ -1215,7 +1277,7 @@ function renderCard(c) {
   expand.title = isExpanded ? 'Shrink (Esc)' : 'Enlarge this card'
   expand.onclick = () => setExpanded(isExpanded ? null : c.id)
   const actions = el('div', 'head-actions')
-  actions.append(live, openLink(c.id), expand)
+  actions.append(...[loopBadge(c.loop), live, openLink(c.id), expand].filter(Boolean))
   row.append(starButton(c.id), titleBox, actions)
   head.append(row)
   for (const part of [renderAttention(c), renderNowDoing(c)]) if (part) head.append(part)
@@ -1237,6 +1299,7 @@ function renderCard(c) {
 }
 
 function renderFocus() {
+  hideTip()
   const grid = $('cards')
   grid.className = `cards cols-${state.cols}`
   const saved = new Map()
@@ -1604,6 +1667,204 @@ function renderUsagePage() {
   document.querySelectorAll('#usage-days button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.days) === state.usage.days)))
 }
 
+const END_SHORT = { deleted: 'Deleted', fired: 'Ran once', stopped: 'Stopped', finished: 'Finished', expired: 'Expired', removed: 'Removed' }
+const END_REASONS = { deleted: 'Deleted by Claude', fired: 'Ran once', stopped: 'Stopped', finished: 'Finished', expired: 'Expired after 7 days', removed: 'Dropped by the session' }
+
+function scheduleLabel(r) {
+  if (r.kind === 'wakeup') return 'Self-paced'
+  if (!r.recurring) return `Once · ${r.cron}`
+  return r.every ? `Every ${r.every} min` : r.cron
+}
+
+function loopStatus(r) {
+  const span = el('span', `loop-badge ${r.status}`)
+  span.append(icon('repeat', { size: 13 }))
+  if (r.status === 'looping') span.append(text(r.nextAt ? `Looping · next ${untilLabel(r.nextAt)}` : 'Looping'))
+  else if (r.status === 'stalled') span.append(text('Stalled'))
+  else span.append(text(END_SHORT[r.endReason] ?? 'Ended'))
+  return attachTip(span, () => loopTip(r))
+}
+
+function loopDetail(r) {
+  const box = el('div', 'loop-detail')
+  box.append(el('div', 'loop-prompt', r.prompt || '(no prompt recorded)'))
+  const facts = el('div', 'loop-facts')
+  for (const [label, value] of [
+    ['Schedule', r.cron ?? scheduleLabel(r)],
+    ['Started', new Date(r.createdAt).toLocaleString()],
+    ['Ended', r.endedAt ? `${new Date(r.endedAt).toLocaleString()} · ${END_REASONS[r.endReason] ?? r.endReason}` : '—'],
+  ]) facts.append(el('span', undefined, `${label}: ${value}`))
+  box.append(facts)
+  const runs = el('div', 'loop-runs')
+  if (!r.fires.length) runs.append(el('span', 'dim', 'No runs recorded yet.'))
+  for (const at of [...r.fires].reverse()) runs.append(el('span', 'run-chip', new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (new Date(at).toDateString() === new Date().toDateString() ? '' : ` · ${new Date(at).toLocaleDateString([], { month: 'short', day: 'numeric' })}`)))
+  if (r.fireCount > r.fires.length) runs.append(el('span', 'dim', `+${r.fireCount - r.fires.length} earlier`))
+  box.append(runs)
+  return box
+}
+
+function renderLoopsPage() {
+  hideTip()
+  const data = state.loops.data
+  if (!data) return
+  const { filter, open } = state.loops
+  const all = [...data.loops].sort(byLatestEnded)
+  const rows = all.filter((r) => filter === 'all' || (filter === 'active' ? r.status !== 'ended' : r.status === 'ended'))
+  const active = all.filter((r) => r.status !== 'ended').length
+  $('loops-status').textContent = `${all.length} loop${all.length === 1 ? '' : 's'} · ${active} active${data.indexed?.running ? ` · indexing ${data.indexed.done}/${data.indexed.total} sessions` : ''}`
+  $('loops-empty').hidden = rows.length > 0
+  const body = $('loops-rows')
+  body.replaceChildren()
+  for (const r of rows) {
+    const key = `${r.sessionId}:${r.id}`
+    const tr = document.createElement('tr')
+    tr.className = 'loop-row'
+    const title = el('div')
+    title.append(el('div', 'row-title', (r.prompt || '(no prompt)').replace(/\s+/g, ' ').slice(0, 90)))
+    const session = el('div')
+    session.append(el('div', 'row-title', r.title), projectChip(r))
+    tr.append(
+      cell(title),
+      cell(session),
+      cell(loopStatus(r)),
+      cell(el('span', 'num', scheduleLabel(r))),
+      cell(el('span', 'num', String(r.fireCount))),
+      cell(el('span', 'num', relative(r.createdAt))),
+      cell(el('span', 'num', r.lastFiredAt ? relative(r.lastFiredAt) : '—')),
+      cell(el('span', 'num', r.endedAt ? relative(r.endedAt) : '—')),
+      cell(openLink(r.sessionId))
+    )
+    tr.onclick = (event) => {
+      if (event.target.closest('a')) return
+      if (open.has(key)) open.delete(key)
+      else open.add(key)
+      renderLoopsPage()
+    }
+    body.append(tr)
+    if (open.has(key)) {
+      const detail = document.createElement('tr')
+      detail.className = 'loop-detail-row'
+      const td = cell(loopDetail(r))
+      td.colSpan = 9
+      detail.append(td)
+      body.append(detail)
+    }
+  }
+  document.querySelectorAll('#loops-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
+}
+
+async function loadLoops() {
+  try {
+    state.loops.data = await getJson('/api/loops')
+    state.loops.at = Date.now()
+    renderLoopsPage()
+  } catch {}
+}
+
+const BG_LABELS = { running: 'Running', completed: 'Completed', failed: 'Failed', killed: 'Killed', stopped: 'Stopped', expired: 'Expired', unknown: 'Unknown' }
+
+function backgroundStatus(task) {
+  const span = el('span', `bg-status ${task.status}`)
+  span.append(el('span', 'dot'), text(BG_LABELS[task.status] ?? task.status))
+  return attachTip(span, () => backgroundTip(task))
+}
+
+function backgroundResult(task) {
+  if (task.status === 'running') return task.kind === 'monitor' ? `${task.eventCount} event${task.eventCount === 1 ? '' : 's'} so far` : '—'
+  if (task.kind === 'monitor') return `${task.eventCount} event${task.eventCount === 1 ? '' : 's'}`
+  return task.exitCode === null ? '—' : `exit ${task.exitCode}`
+}
+
+function backgroundDetail(task, key) {
+  const box = el('div', 'loop-detail')
+  box.append(el('div', 'bg-command', task.command || task.description || '(no command recorded)'))
+  if (task.summary) box.append(el('div', 'loop-facts', task.summary))
+  if (task.events.length) {
+    const list = el('div', 'bg-events')
+    for (const event of [...task.events].reverse()) {
+      const row = el('div', 'bg-event')
+      row.append(el('span', 'dim', new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })), el('span', undefined, event.text))
+      list.append(row)
+    }
+    box.append(list)
+  }
+  if (task.hasOutput) {
+    const out = state.background.output.get(key)
+    const pre = el('pre', 'bg-output', out ? (out.available ? `${out.truncated ? '… (showing the last part)\n' : ''}${out.text || '(no output)'}` : 'Output is no longer available.') : 'Loading output…')
+    box.append(pre)
+    if (!out) loadBackgroundOutput(task, key)
+  }
+  return box
+}
+
+async function loadBackgroundOutput(task, key) {
+  try {
+    const out = await getJson(`/api/background/output?session=${encodeURIComponent(task.sessionId)}&task=${encodeURIComponent(task.id)}`)
+    state.background.output.set(key, out)
+  } catch {
+    state.background.output.set(key, { available: false })
+  }
+  if (state.tab === 'background') renderBackgroundPage()
+}
+
+function renderBackgroundPage() {
+  hideTip()
+  const data = state.background.data
+  if (!data) return
+  const { filter, open } = state.background
+  const all = [...data.tasks].sort(byBackgroundOrder)
+  const rows = all.filter(BACKGROUND_FILTERS[filter] ?? BACKGROUND_FILTERS.all)
+  const running = all.filter((t) => t.status === 'running').length
+  $('background-status').textContent = `${all.length} command${all.length === 1 ? '' : 's'} · ${running} running${data.indexed?.running ? ` · indexing ${data.indexed.done}/${data.indexed.total} sessions` : ''}`
+  $('background-empty').hidden = rows.length > 0
+  const body = $('background-rows')
+  body.replaceChildren()
+  for (const task of rows) {
+    const key = `${task.sessionId}:${task.id}`
+    const tr = document.createElement('tr')
+    tr.className = 'loop-row'
+    const title = el('div')
+    title.append(el('div', 'row-title', (task.description || task.command || '(no description)').replace(/\s+/g, ' ').slice(0, 90)))
+    if (task.description && task.command) title.append(el('div', 'row-sub mono', task.command.replace(/\s+/g, ' ').slice(0, 110)))
+    const session = el('div')
+    session.append(el('div', 'row-title', task.title), projectChip(task))
+    tr.append(
+      cell(title),
+      cell(session),
+      cell(backgroundStatus(task)),
+      cell(el('span', 'num', task.kind === 'monitor' ? 'Monitor' : 'Command')),
+      cell(el('span', 'num', relative(task.startedAt))),
+      cell(el('span', 'num', duration(task.durationMs))),
+      cell(el('span', 'num', backgroundResult(task))),
+      cell(openLink(task.sessionId))
+    )
+    tr.onclick = (event) => {
+      if (event.target.closest('a')) return
+      if (open.has(key)) open.delete(key)
+      else open.add(key)
+      renderBackgroundPage()
+    }
+    body.append(tr)
+    if (open.has(key)) {
+      const detail = document.createElement('tr')
+      detail.className = 'loop-detail-row'
+      const td = cell(backgroundDetail(task, key))
+      td.colSpan = 8
+      detail.append(td)
+      body.append(detail)
+    }
+  }
+  document.querySelectorAll('#background-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
+}
+
+async function loadBackground() {
+  try {
+    state.background.data = await getJson('/api/background')
+    state.background.at = Date.now()
+    renderBackgroundPage()
+  } catch {}
+}
+
 async function loadUsage() {
   try {
     state.usage.data = await getJson(`/api/usage?days=${state.usage.days}`)
@@ -1661,6 +1922,8 @@ function applyRoute() {
     $('search-q').focus()
   }
   if (tab === 'usage') loadUsage()
+  if (tab === 'loops') loadLoops()
+  if (tab === 'background') { loadBackground(); markBackgroundSeen() }
   refresh()
 }
 
@@ -1674,9 +1937,14 @@ async function refresh() {
       for (const id of fresh) await postJson('/api/focus', { id, focused: true })
       focus = await getJson('/api/focus')
     }
-    const { events, next } = diffAlerts(state.alertSnap, focus.cards)
+    const { events: tickEvents, next } = diffAlerts(state.alertSnap, focus.cards)
     const hadBaseline = state.alertSnap !== null
     state.alertSnap = next
+    const { events: loopEvents, next: loopNext } = diffLoops(state.loopSnap, sessions)
+    state.loopSnap = loopNext
+    const { events: backgroundEvents, next: backgroundNext } = diffBackground(state.backgroundSnap, sessions)
+    state.backgroundSnap = backgroundNext
+    const events = [...withoutTickFinishes(tickEvents, loopEvents), ...loopEvents, ...backgroundEvents]
     if (hadBaseline && events.length) {
       recordHistory(events)
       if (state.alertsOn) notify(events)
@@ -1690,11 +1958,82 @@ async function refresh() {
       renderSummary()
       renderRows()
       renderFocus()
+      renderLoopsBadge()
+      renderBackgroundBadge()
+      if (state.tab === 'background') markBackgroundSeen()
     }
     if (prunePending()) renderFocus()
     pollChanges()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
+    if (state.tab === 'loops' && Date.now() - state.loops.at > 5_000) loadLoops()
+    if (state.tab === 'background' && Date.now() - state.background.at > 4_000) { state.background.output.clear(); loadBackground() }
   } catch {}
+}
+
+const serverStatus = { up: null, info: null, checkedAt: 0, latency: 0, downSince: 0 }
+
+function spanLabel(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m`
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
+function serverTip() {
+  const { up, info, checkedAt, latency, downSince } = serverStatus
+  const checked = checkedAt ? `${spanLabel(Date.now() - checkedAt)} ago` : 'not yet'
+  if (up === false) {
+    return {
+      heading: 'Server offline',
+      text: 'The board server is not responding. Data on this page is stale.',
+      rows: [
+        ['Offline for', downSince ? spanLabel(Date.now() - downSince) : 'unknown'],
+        ['Last check', checked],
+        ['Last known pid', info ? String(info.pid) : 'unknown'],
+        ['Start it', 'npm start, or ./scripts/install-launch-agent.sh'],
+      ],
+    }
+  }
+  if (!info) return { heading: 'Checking server', text: 'Waiting for the first response.', rows: [] }
+  return {
+    heading: 'Server running',
+    text: `Answering on http://localhost:${info.port}.`,
+    rows: [
+      ['Uptime', spanLabel(Date.now() - info.startedAt)],
+      ['Response', `${latency} ms`],
+      ['Last check', checked],
+      ['Process', `pid ${info.pid}, ${info.memoryMb} MB`],
+      ['Node', info.node],
+      ['Started by', info.managed ? 'launchd (auto-restarts)' : 'manual'],
+    ],
+  }
+}
+
+async function checkServer() {
+  const began = performance.now()
+  let info = null
+  try {
+    const res = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2500) })
+    if (res.ok) info = await res.json()
+  } catch {}
+  const up = info !== null
+  const live = $('live')
+  const was = serverStatus.up
+  serverStatus.up = up
+  serverStatus.checkedAt = Date.now()
+  if (up) {
+    serverStatus.info = info
+    serverStatus.latency = Math.round(performance.now() - began)
+    serverStatus.downSince = 0
+  } else if (!serverStatus.downSince) {
+    serverStatus.downSince = Date.now()
+  }
+  live.dataset.state = up ? 'on' : 'off'
+  live.querySelector('.live-text').textContent = up ? 'Live' : 'Offline'
+  if (up && was === false) refresh()
 }
 
 function schedule() {
@@ -1743,6 +2082,12 @@ document.querySelectorAll('#layout button').forEach((b) => {
     renderFocus()
   }
 })
+document.querySelectorAll('#background-filter button').forEach((b) => {
+  b.onclick = () => { state.background.filter = b.dataset.filter; renderBackgroundPage() }
+})
+document.querySelectorAll('#loops-filter button').forEach((b) => {
+  b.onclick = () => { state.loops.filter = b.dataset.filter; renderLoopsPage() }
+})
 document.querySelectorAll('#usage-metric button').forEach((b) => {
   b.onclick = () => { state.usage.metric = b.dataset.metric; remember('board.usageMetric', state.usage.metric); renderUsagePage() }
 })
@@ -1779,4 +2124,7 @@ $('brand-mark').replaceChildren(icon('asterisk', { size: 22, strokeWidth: 2.4 })
 loadSnippets()
 applyRoute()
 schedule()
+attachTip($('live'), serverTip)
+checkServer()
+setInterval(checkServer, 3000)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})

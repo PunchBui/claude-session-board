@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readdir, readFile, stat, writeFile, mkdir, rm } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +13,9 @@ import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
+import { loopOf, loopRecords } from './lib/loops.js'
+import { resolveClaudeBin } from './lib/claudebin.js'
+import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -28,14 +31,14 @@ const FOCUS_FILE = join(DATA_DIR, 'focus.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
-const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
+const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: homedir() })
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
 const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
 const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
-const PAGES = new Set(['/', '/focus', '/search', '/usage'])
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/search', '/usage'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
@@ -142,8 +145,11 @@ async function readRawSessions() {
 
 async function loadSessions() {
   const raws = await readRawSessions()
+  for (const raw of raws) {
+    if (!raw.isArchived && Date.now() - (raw.lastActivityAt ?? 0) < LOOP_LOOKBACK_MS) scanSession(raw).catch(() => {})
+  }
   return raws
-    .map(toSummary)
+    .map((raw) => ({ ...toSummary(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
     .map(({ cliSessionId, ...rest }) => rest)
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
 }
@@ -187,7 +193,26 @@ async function buildCard(raw) {
     details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
     usage: scanned ? usageOf(scanned.state) : null,
     live: scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running }) : null,
+    loop: scanned ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,
   }
+}
+
+const LOOP_LOOKBACK_MS = 8 * 24 * 60 * 60_000
+
+function backgroundCountFor(raw) {
+  const path = transcriptPaths.get(raw.cliSessionId)
+  const state = path ? scanStore.states.get(path) : null
+  const idleMs = Date.now() - (raw.lastActivityAt ?? 0)
+  return state ? backgroundCounts(state.background, { nowMs: Date.now(), idleMs }) : null
+}
+
+function loopFor(raw) {
+  const path = transcriptPaths.get(raw.cliSessionId)
+  const state = path ? scanStore.states.get(path) : null
+  if (!state) return null
+  const mtimeMs = raw.lastActivityAt ?? 0
+  const working = Date.now() - mtimeMs < ACTIVE_WINDOW_MS
+  return loopOf(state.loops, { nowMs: Date.now(), working, idleMs: Date.now() - mtimeMs })
 }
 
 async function readJson(file, fallback) {
@@ -273,11 +298,13 @@ function startRun(raw, prompt) {
   const timer = setTimeout(() => { run.state = 'stopped'; child.kill('SIGTERM') }, RUN_TIMEOUT_MS)
   child.on('error', (error) => {
     clearTimeout(timer)
-    Object.assign(run, { state: 'failed', endedAt: Date.now(), error: String(error.message) })
+    const missing = error.code === 'ENOENT'
+    Object.assign(run, { state: 'failed', endedAt: Date.now(), error: missing ? `Could not start "${CLAUDE_BIN}": not found. Set CLAUDE_BIN to the full path of the claude binary.` : String(error.message) })
     pauseQueueAfter(raw.sessionId, run)
   })
   child.on('close', (code, signal) => {
     clearTimeout(timer)
+    if (run.state === 'failed' && run.error) return pump()
     run.endedAt = Date.now()
     if (run.state === 'stopped' || signal) run.state = 'stopped'
     else if (code === 0) run.state = 'done'
@@ -359,6 +386,68 @@ async function loadFocusCards() {
     )
   )
   return { ids, cards }
+}
+
+async function loopHistory() {
+  const raws = await readRawSessions()
+  await Promise.all(raws.filter((raw) => !raw.isArchived && Date.now() - (raw.lastActivityAt ?? 0) < LOOP_LOOKBACK_MS).map((raw) => scanSession(raw).catch(() => null)))
+  const loops = []
+  for (const raw of raws) {
+    const path = transcriptPaths.get(raw.cliSessionId)
+    const state = path ? scanStore.states.get(path) : null
+    if (!state?.loops.history.length) continue
+    const idleMs = Date.now() - (raw.lastActivityAt ?? 0)
+    const summary = toSummary(raw)
+    const session = { sessionId: raw.sessionId, title: summary.title, project: summary.project, cwd: summary.cwd, archived: summary.archived }
+    for (const record of loopRecords(state.loops, { nowMs: Date.now(), working: idleMs < ACTIVE_WINDOW_MS, idleMs })) loops.push({ ...session, ...record })
+  }
+  loops.sort((a, b) => b.createdAt - a.createdAt)
+  return { loops, indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running } }
+}
+
+const OUTPUT_TAIL_BYTES = 12_000
+
+async function scannedSessions() {
+  const raws = await readRawSessions()
+  await Promise.all(raws.filter((raw) => !raw.isArchived && Date.now() - (raw.lastActivityAt ?? 0) < LOOP_LOOKBACK_MS).map((raw) => scanSession(raw).catch(() => null)))
+  return raws.map((raw) => {
+    const path = transcriptPaths.get(raw.cliSessionId)
+    return { raw, state: path ? scanStore.states.get(path) : null }
+  }).filter((entry) => entry.state)
+}
+
+async function backgroundHistory() {
+  const tasks = []
+  for (const { raw, state } of await scannedSessions()) {
+    if (!state.background.tasks.size) continue
+    const summary = toSummary(raw)
+    const session = { sessionId: raw.sessionId, title: summary.title, project: summary.project, cwd: summary.cwd, archived: summary.archived }
+    const idleMs = Date.now() - (raw.lastActivityAt ?? 0)
+    for (const task of backgroundTasks(state.background, { nowMs: Date.now(), idleMs })) tasks.push({ ...session, ...task })
+  }
+  tasks.sort((a, b) => b.startedAt - a.startedAt)
+  return { tasks, indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running } }
+}
+
+async function backgroundOutput(sessionId, taskId) {
+  const raw = await findRaw(sessionId)
+  const path = raw ? transcriptPaths.get(raw.cliSessionId) : null
+  const task = path ? scanStore.states.get(path)?.background.tasks.get(taskId) : null
+  if (!task?.outputFile || !safeOutputPath(task.outputFile)) return { available: false }
+  try {
+    const info = await stat(task.outputFile)
+    const start = Math.max(0, info.size - OUTPUT_TAIL_BYTES)
+    const handle = await open(task.outputFile, 'r')
+    try {
+      const buffer = Buffer.alloc(info.size - start)
+      await handle.read(buffer, 0, buffer.length, start)
+      return { available: true, size: info.size, truncated: start > 0, text: buffer.toString('utf8'), modifiedAt: info.mtimeMs }
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return { available: false }
+  }
 }
 
 async function warmIndex() {
@@ -597,11 +686,34 @@ const postRoutes = {
 }
 
 const getRoutes = {
+  async '/api/health'(url, res) {
+    return json(res, 200, {
+      ok: true,
+      pid: process.pid,
+      port: PORT,
+      node: process.version,
+      startedAt: Date.now() - Math.round(process.uptime() * 1000),
+      memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+      managed: Boolean(process.env.XPC_SERVICE_NAME && process.env.XPC_SERVICE_NAME !== '0'),
+    })
+  },
   async '/api/sessions'(url, res) {
     return json(res, 200, await loadSessions())
   },
   async '/api/focus'(url, res) {
     return json(res, 200, await loadFocusCards())
+  },
+  async '/api/background'(url, res) {
+    return json(res, 200, await backgroundHistory())
+  },
+  async '/api/background/output'(url, res) {
+    const session = url.searchParams.get('session')
+    const task = url.searchParams.get('task') ?? ''
+    if (!SESSION_ID.test(session ?? '') || !/^[A-Za-z0-9_-]{1,40}$/.test(task)) return json(res, 400, { error: 'bad request' })
+    return json(res, 200, await backgroundOutput(session, task))
+  },
+  async '/api/loops'(url, res) {
+    return json(res, 200, await loopHistory())
   },
   async '/api/snippets'(url, res) {
     return json(res, 200, { items: snippets() })

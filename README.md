@@ -50,6 +50,19 @@ npm start
 
 Then open http://localhost:4747. Run `npm test` for the unit tests.
 
+### Start the server at login (macOS)
+
+An installed PWA cannot start the server itself. Install a LaunchAgent so the server starts at login and restarts if it dies, and the PWA always finds it running:
+
+```bash
+./scripts/install-launch-agent.sh
+```
+
+- The agent is `com.user.claude-session-board`. It runs `server.js` with the `node` on your PATH at install time, so rerun the script after switching Node versions.
+- Logs go to `~/Library/Logs/claude-session-board.log`.
+- Restart after changing server code: `launchctl kickstart -k gui/$(id -u)/com.user.claude-session-board`.
+- Remove it with `./scripts/install-launch-agent.sh uninstall`.
+
 ### Try it without Claude desktop
 
 ```bash
