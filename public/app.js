@@ -1351,8 +1351,8 @@ function renderFocus() {
   $('backdrop').hidden = !state.expanded
   $('focus-empty').hidden = state.cards.length > 0
   const badge = $('focus-count')
-  badge.hidden = state.focusIds.length === 0
-  badge.textContent = String(state.focusIds.length)
+  badge.hidden = state.cards.length === 0
+  badge.textContent = String(state.cards.length)
   document.querySelectorAll('#layout button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cols === state.cols)))
 }
 
