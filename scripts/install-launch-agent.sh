@@ -7,6 +7,9 @@ NODE="$(command -v node)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/claude-session-board.log"
 TARGET="gui/$(id -u)"
+# launchd starts agents with a bare PATH; child processes (claude, and the MCP servers it
+# launches via npx/node) need the node dir and the usual tool dirs to be found.
+AGENT_PATH="$(dirname "$NODE"):$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if [ "${1:-}" = "uninstall" ]; then
   launchctl bootout "$TARGET/$LABEL" 2>/dev/null || true
@@ -29,6 +32,10 @@ cat > "$PLIST" <<EOF
     <string>$ROOT/server.js</string>
   </array>
   <key>WorkingDirectory</key><string>$ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$AGENT_PATH</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG</string>
@@ -39,4 +46,4 @@ EOF
 
 launchctl bootout "$TARGET/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$TARGET" "$PLIST"
-echo "Installed $LABEL (node: $NODE, log: $LOG)"
+echo "Installed $LABEL (node: $NODE, PATH: $AGENT_PATH, log: $LOG)"
