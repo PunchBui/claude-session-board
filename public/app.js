@@ -1035,6 +1035,11 @@ function renderComposer(c) {
   } else if (running) {
     note.textContent = `Running headless (${c.run.mode}) · started ${relative(c.run.startedAt)}`
     note.classList.add('running')
+  } else if (c.run?.state === 'done' && c.run.handoff?.ready) {
+    note.textContent = 'Handoff written. A new chat should be open in the desktop app: press Enter there to start it. '
+    const again = el('a', undefined, 'Open it again')
+    again.href = handoffLinkFor(c)
+    note.append(again)
   } else if (c.run?.state === 'failed') {
     note.textContent = `Last prompt failed: ${c.run.error}`
     note.classList.add('error')
@@ -1063,6 +1068,28 @@ function renderComposer(c) {
   return dock
 }
 
+function handoffLinkFor(c) {
+  const params = new URLSearchParams({ folder: c.cwd ?? '', q: `Read the handoff document at ${c.run.handoff.file} and continue the work it describes.` })
+  if (!c.cwd) params.delete('folder')
+  return `claude://code/new?${params}`
+}
+
+function handoffButton(c) {
+  const writing = c.run?.state === 'running' && c.run.handoff
+  const button = el('button', 'btn primary handoff', writing ? 'Writing handoff…' : 'Hand off')
+  button.title = 'Run /handoff in this session, then open a new chat with the document'
+  button.disabled = Boolean(writing || c.run?.state === 'running' || c.active)
+  button.onclick = async () => {
+    button.disabled = true
+    setNote(c.id, 'Starting handoff…')
+    const result = await postJson('/api/handoff', { id: c.id })
+    setNote(c.id, result.ok ? null : (result.data.error ?? 'Could not start the handoff'))
+    state.signature = ''
+    await refresh()
+  }
+  return button
+}
+
 function renderUsage(c, head) {
   if (!c.usage) return
   const level = contextLevel(c.usage.context)
@@ -1082,6 +1109,7 @@ function renderUsage(c, head) {
   if (level) {
     const limit = level === 'danger' ? CONTEXT_DANGER : CONTEXT_CAUTION
     const verb = level === 'danger' ? 'compact or start a new session' : 'consider compacting'
+    if (level === 'danger') row.prepend(handoffButton(c))
     row.prepend(el('span', `context-alert ${level}`, `Over ${compact(limit)} · ${verb}`))
   }
   head.append(row)

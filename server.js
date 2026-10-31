@@ -1,8 +1,8 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createScanStore } from './lib/scan.js'
@@ -15,6 +15,7 @@ import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
+import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -288,8 +289,12 @@ function pauseQueueAfter(id, run) {
   }
 }
 
-function startRun(raw, prompt) {
-  const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE }
+function openHandoff(raw, file) {
+  execFile('open', [handoffLink({ folder: raw.cwd ?? raw.originCwd ?? null, file })], () => {})
+}
+
+function startRun(raw, prompt, { handoff = null } = {}) {
+  const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE, handoff: handoff && { file: handoff, ready: false } }
   const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE, '--add-dir', UPLOAD_DIR]
   const child = spawn(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), stdio: ['pipe', 'ignore', 'pipe'] })
   run.stop = () => child.kill('SIGTERM')
@@ -302,13 +307,21 @@ function startRun(raw, prompt) {
     Object.assign(run, { state: 'failed', endedAt: Date.now(), error: missing ? `Could not start "${CLAUDE_BIN}": not found. Set CLAUDE_BIN to the full path of the claude binary.` : String(error.message) })
     pauseQueueAfter(raw.sessionId, run)
   })
-  child.on('close', (code, signal) => {
+  child.on('close', async (code, signal) => {
     clearTimeout(timer)
     if (run.state === 'failed' && run.error) return pump()
     run.endedAt = Date.now()
     if (run.state === 'stopped' || signal) run.state = 'stopped'
     else if (code === 0) run.state = 'done'
     else Object.assign(run, { state: 'failed', error: clip(stderr, 400) || `exit code ${code}` })
+    if (run.handoff && run.state === 'done') {
+      if (await stat(run.handoff.file).catch(() => null)) {
+        run.handoff.ready = true
+        openHandoff(raw, run.handoff.file)
+      } else {
+        Object.assign(run, { state: 'failed', error: 'The handoff ran but wrote no document.' })
+      }
+    }
     pauseQueueAfter(raw.sessionId, run)
     pump()
   })
@@ -579,6 +592,19 @@ async function commandsFor(cwd) {
 }
 const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSessions()).find((s) => s.sessionId === id) : null)
 
+async function startPrompt(body, res, prompt, options) {
+  if (isBlocked(prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
+  if (!validPrompt(prompt)) return json(res, 400, { error: 'bad request' })
+  const raw = await findRaw(body.id)
+  if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+  if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
+  if (runs.get(body.id)?.state === 'running') return json(res, 409, { error: 'a prompt is already running for this session' })
+  const card = await buildCard(raw)
+  if (card.active) return json(res, 409, { error: 'session is busy in the desktop app; try again when it is idle' })
+  startRun(raw, prompt.trim(), options)
+  return json(res, 202, { run: publicRun(body.id) })
+}
+
 const postRoutes = {
   async '/api/pick-folder'(body, res) {
     try {
@@ -595,16 +621,11 @@ const postRoutes = {
     return json(res, 200, { ids: next })
   },
   async '/api/prompt'(body, res) {
-    if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
-    if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
-    const raw = await findRaw(body.id)
-    if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
-    if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
-    if (runs.get(body.id)?.state === 'running') return json(res, 409, { error: 'a prompt is already running for this session' })
-    const card = await buildCard(raw)
-    if (card.active) return json(res, 409, { error: 'session is busy in the desktop app; try again when it is idle' })
-    startRun(raw, body.prompt.trim())
-    return json(res, 202, { run: publicRun(body.id) })
+    return startPrompt(body, res, body.prompt)
+  },
+  async '/api/handoff'(body, res) {
+    const file = handoffFile(String(body.id ?? ''), tmpdir())
+    return startPrompt(body, res, handoffPrompt(file), { handoff: file })
   },
   async '/api/prompt/stop'(body, res) {
     const run = runs.get(body.id)
