@@ -221,6 +221,7 @@ function setNote(id, message) {
 }
 
 function toast(event) {
+  document.querySelectorAll('.toast').forEach((old) => { if (old.dataset.session === event.id) old.remove() })
   const box = el('div', `toast ${event.kind}`)
   box.dataset.session = event.id
   const heading = el('b')
@@ -348,7 +349,7 @@ function notify(events) {
   beep()
   if ('Notification' in window && Notification.permission === 'granted') {
     for (const event of events) {
-      const n = new Notification(event.title, { body: event.message, tag: `${event.id}:${event.kind}` })
+      const n = new Notification(event.title, { body: event.message, tag: event.id, renotify: true })
       n.onclick = () => { window.focus(); goToCard(event.id) }
     }
   }
