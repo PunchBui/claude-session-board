@@ -22,6 +22,7 @@
     <a role="tab" id="tab-focus" href="/focus" aria-selected="false">Focus<span class="badge" id="focus-count" hidden></span></a>
     <a role="tab" id="tab-loops" href="/loops" aria-selected="false">Loops<span class="badge" id="loops-count" hidden></span></a>
     <a role="tab" id="tab-background" href="/background" aria-selected="false">Background<span class="badge" id="background-count" hidden></span></a>
+    <a role="tab" id="tab-mrs" href="/mrs" aria-selected="false">Merge requests<span class="badge" id="mrs-count" hidden></span></a>
     <a role="tab" id="tab-search" href="/search" aria-selected="false">Search</a>
     <a role="tab" id="tab-usage" href="/usage" aria-selected="false">Usage</a>
   </nav>
@@ -47,8 +48,8 @@
     <div class="sheet">
       <div class="scroll-x">
         <table>
-          <colgroup><col style="width:48px"><col><col style="width:230px"><col style="width:120px"><col style="width:170px"><col style="width:70px"><col style="width:120px"><col style="width:116px"></colgroup>
-          <thead><tr><th></th><th>Session</th><th>Project</th><th>Status</th><th>Model</th><th>Turns</th><th>Last activity</th><th></th></tr></thead>
+          <colgroup><col style="width:48px"><col><col style="width:230px"><col style="width:120px"><col style="width:110px"><col style="width:170px"><col style="width:70px"><col style="width:120px"><col style="width:116px"></colgroup>
+          <thead><tr><th></th><th>Session</th><th>Project</th><th>Status</th><th>Temp</th><th>Model</th><th>Turns</th><th>Last prompt</th><th></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -60,6 +61,10 @@
       <h2>Focus</h2>
       <div class="right">
         <button id="broadcast-open" class="icon-btn" title="Queue one prompt on several sessions">Broadcast</button>
+        <div class="seg" id="focus-sort" role="group" aria-label="Order">
+          <button data-sort="manual" aria-pressed="true">Manual</button>
+          <button data-sort="prompt" aria-pressed="false">Last prompt</button>
+        </div>
         <div class="seg" id="layout" role="group" aria-label="Columns">
           <button data-cols="1" aria-pressed="false">1</button>
           <button data-cols="2" aria-pressed="false">2</button>
@@ -89,6 +94,29 @@
       </div>
     </div>
     <div class="empty" id="loops-empty" hidden>No loops yet.<br>Sessions that schedule recurring checks with /loop or cron jobs show up here.</div>
+  </section>
+  <section id="view-mrs" hidden>
+    <div class="page-head">
+      <h2>Merge requests</h2>
+      <div class="seg" id="mrs-filter" role="group" aria-label="Filter">
+        <button data-filter="all" aria-pressed="true">All</button>
+        <button data-filter="authored" aria-pressed="false">Mine</button>
+        <button data-filter="reviewing" aria-pressed="false">To review</button>
+        <button data-filter="action" aria-pressed="false">Needs action</button>
+      </div>
+      <button class="btn" id="mrs-refresh" type="button">Refresh</button>
+    </div>
+    <div class="status-line" id="mrs-status"></div>
+    <div class="mr-error" id="mrs-error" role="alert" hidden></div>
+    <div class="sheet">
+      <div class="scroll-x">
+        <table>
+          <thead><tr><th>Merge request</th><th>Role</th><th>State</th><th>CI</th><th>Reviewers</th><th>Comments</th><th>Updated</th><th>Session</th></tr></thead>
+          <tbody id="mrs-rows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="empty" id="mrs-empty" hidden>No open merge requests.<br>Open MRs you authored or were asked to review on gitlab.example.com show up here.</div>
   </section>
   <section id="view-background" hidden>
     <div class="page-head">

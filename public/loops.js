@@ -37,7 +37,7 @@ export function spanLabel(ms) {
 }
 
 const when = (ms) => new Date(ms).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
-const ago = (ms, nowMs) => `${when(ms)} (${spanLabel(nowMs - ms)} ago)`
+export const ago = (ms, nowMs) => `${when(ms)} (${spanLabel(nowMs - ms)} ago)`
 const ahead = (ms, nowMs) => (ms > nowMs ? `${when(ms)} (in ${spanLabel(ms - nowMs)})` : `${when(ms)} (${spanLabel(nowMs - ms)} overdue)`)
 
 export const END_DETAILS = {

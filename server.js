@@ -15,6 +15,7 @@ import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
+import { createMrCache, withSessions } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -38,7 +39,7 @@ const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
 const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
-const PAGES = new Set(['/', '/focus', '/loops', '/background', '/search', '/usage'])
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
@@ -149,7 +150,7 @@ async function loadSessions() {
     if (!raw.isArchived && Date.now() - (raw.lastActivityAt ?? 0) < LOOP_LOOKBACK_MS) scanSession(raw).catch(() => {})
   }
   return raws
-    .map((raw) => ({ ...toSummary(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
+    .map((raw) => ({ ...toSummary(raw), lastPromptAt: promptAtFor(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
     .map(({ cliSessionId, ...rest }) => rest)
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
 }
@@ -188,6 +189,7 @@ async function buildCard(raw) {
   return {
     ...base,
     touchedAt,
+    lastPromptAt: promptAtOf(scanned?.state),
     active,
     transcriptFound: Boolean(scanned),
     details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
@@ -204,6 +206,16 @@ function backgroundCountFor(raw) {
   const state = path ? scanStore.states.get(path) : null
   const idleMs = Date.now() - (raw.lastActivityAt ?? 0)
   return state ? backgroundCounts(state.background, { nowMs: Date.now(), idleMs }) : null
+}
+
+function promptAtOf(state) {
+  const parsed = state?.lastPromptAt ? Date.parse(state.lastPromptAt) : NaN
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function promptAtFor(raw) {
+  const path = transcriptPaths.get(raw.cliSessionId)
+  return promptAtOf(path ? scanStore.states.get(path) : null)
 }
 
 function loopFor(raw) {
@@ -386,6 +398,24 @@ async function loadFocusCards() {
     )
   )
   return { ids, cards }
+}
+
+const mergeRequests = createMrCache()
+
+async function mrSessionLinks() {
+  const linked = new Map()
+  for (const raw of await readRawSessions()) {
+    const path = transcriptPaths.get(raw.cliSessionId)
+    const state = path ? scanStore.states.get(path) : null
+    if (!state) continue
+    const { title, project, archived } = toSummary(raw)
+    for (const url of state.links.keys()) {
+      const sessions = linked.get(url) ?? []
+      sessions.push({ sessionId: raw.sessionId, title, project, archived })
+      linked.set(url, sessions)
+    }
+  }
+  return linked
 }
 
 async function loopHistory() {
@@ -711,6 +741,10 @@ const getRoutes = {
     const task = url.searchParams.get('task') ?? ''
     if (!SESSION_ID.test(session ?? '') || !/^[A-Za-z0-9_-]{1,40}$/.test(task)) return json(res, 400, { error: 'bad request' })
     return json(res, 200, await backgroundOutput(session, task))
+  },
+  async '/api/mrs'(url, res) {
+    const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
+    return json(res, 200, withSessions(data, await mrSessionLinks()))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())

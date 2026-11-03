@@ -2,13 +2,14 @@ import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './ale
 import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
+import { warmthOf, warmthTip } from './warmth.js'
 import { diffLoops, withoutTickFinishes, untilLabel, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
-const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/search': 'search', '/usage': 'usage' }
-const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', search: 'Search', usage: 'Usage' }
+const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage' }
+const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', mrs: 'Merge requests', search: 'Search', usage: 'Usage' }
 const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', context: 'triangle-alert', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
@@ -18,6 +19,9 @@ const state = {
   focusIds: [],
   cards: [],
   status: null,
+  temp: null,
+  focusSort: 'manual',
+  kept: {},
   signature: '',
   timer: null,
   cols: 'auto',
@@ -46,10 +50,13 @@ const state = {
   usage: { days: 30, metric: 'output', data: null, at: 0 },
   loops: { data: null, filter: 'all', at: 0, open: new Set() },
   background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
+  mrs: { data: null, filter: 'all', at: 0, loading: false },
 }
 
 try {
   state.cols = localStorage.getItem('board.cols') || 'auto'
+  state.focusSort = localStorage.getItem('board.focusSort') === 'prompt' ? 'prompt' : 'manual'
+  state.kept = JSON.parse(localStorage.getItem('board.kept') || '{}')
   state.alertsOn = localStorage.getItem('board.alerts') === '1'
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
 state.backgroundSeenAt = Number(localStorage.getItem('board.backgroundSeen')) || 0
@@ -393,11 +400,29 @@ function starButton(id) {
   return b
 }
 
+const temperatureOf = (s) => warmthOf(s, Date.now(), state.kept[s.id] ?? 0)
+
+function keepWarm(id) {
+  state.kept[id] = Date.now()
+  remember('board.kept', JSON.stringify(state.kept))
+  renderRows()
+  renderFocus()
+}
+
+function tempBadge(t, session) {
+  const box = el('span', `temp ${t.tier}`)
+  const meter = el('span', 'meter')
+  for (let i = 1; i <= 4; i++) meter.append(el('i', i <= t.bars ? 'f' : undefined))
+  box.append(meter, text(t.label))
+  return attachTip(box, () => warmthTip(session, t, state.kept[session.id] ?? 0))
+}
+
 function visible() {
   const q = $('q').value.trim().toLowerCase()
   return state.sessions.filter((s) =>
     ($('archived').checked || !s.archived) &&
     (!state.status || s.status === state.status) &&
+    (!state.temp || temperatureOf(s).group === state.temp) &&
     (!q || `${s.title} ${s.cwd} ${s.project}`.toLowerCase().includes(q)))
 }
 
@@ -430,6 +455,13 @@ function renderLoopsBadge() {
   badge.textContent = String(count)
 }
 
+function renderMrsBadge() {
+  const count = state.mrs.data?.actionable ?? 0
+  const badge = $('mrs-count')
+  badge.hidden = count === 0
+  badge.textContent = String(count)
+}
+
 function renderSummary() {
   const pool = state.sessions.filter((s) => $('archived').checked || !s.archived)
   const counts = pool.reduce((acc, s) => ({ ...acc, [s.status]: (acc[s.status] ?? 0) + 1 }), {})
@@ -443,6 +475,14 @@ function renderSummary() {
   }
   make(`All ${pool.length}`, null)
   Object.entries(counts).forEach(([status, n]) => make(`${status.replace(/_/g, ' ')} ${n}`, status))
+  const temps = pool.reduce((acc, s) => ({ ...acc, [temperatureOf(s).group]: (acc[temperatureOf(s).group] ?? 0) + 1 }), {})
+  box.append(el('span', 'pill-gap'))
+  for (const group of ['warm', 'cool']) {
+    const b = el('button', 'pill', `${group[0].toUpperCase()}${group.slice(1)} ${temps[group] ?? 0}`)
+    b.setAttribute('aria-pressed', String(state.temp === group))
+    b.onclick = () => { state.temp = state.temp === group ? null : group; renderSummary(); renderRows(); writeFilters() }
+    box.append(b)
+  }
 }
 
 function statusCell(s) {
@@ -455,12 +495,24 @@ function statusCell(s) {
 
 function renderRows() {
   hideTip()
-  const rows = visible()
+  const rows = visible().map((s) => ({ s, t: temperatureOf(s) })).sort((a, b) => b.t.at - a.t.at)
   const body = $('rows')
   body.replaceChildren()
   $('empty').hidden = rows.length > 0
-  for (const s of rows) {
+  let group = null
+  for (const { s, t } of rows) {
+    if (t.group !== group) {
+      group = t.group
+      const head = document.createElement('tr')
+      head.className = 'temp-group'
+      const label = group === 'warm' ? 'Warm' : `Cool · ${rows.filter((r) => r.t.group === 'cool').length} sessions, consider archiving the cold ones`
+      const td = el('td', undefined, label)
+      td.colSpan = 9
+      head.append(td)
+      body.append(head)
+    }
     const tr = document.createElement('tr')
+    if (t.group === 'cool') tr.className = 'cool'
     const title = el('div')
     const heading = el('div', 'row-title', s.title)
     if (state.drafts.has(s.id)) {
@@ -477,9 +529,10 @@ function renderRows() {
       cell(title),
       cell(project),
       cell(statusCell(s)),
+      cell(tempBadge(t, s)),
       cell(el('span', 'num', s.model ?? '—')),
       cell(el('span', 'num', String(s.completedTurns))),
-      cell(el('span', 'num', relative(s.lastActivityAt))),
+      cell(el('span', 'num', relative(t.at))),
       cell(openLink(s.id))
     )
     body.append(tr)
@@ -1255,7 +1308,8 @@ function pollChanges() {
 
 function renderCard(c) {
   const ui = uiOf(c.id)
-  const card = el('article', `card${c.active ? ' active' : ''}${state.expanded === c.id ? ' expanded' : ''}${state.flashId === c.id && Date.now() < state.flashUntil ? ' flash' : ''}`)
+  const heat = temperatureOf(c)
+  const card = el('article', `card temp-${heat.tier}${heat.group === 'cool' ? ' cool' : ''}${c.active ? ' active' : ''}${state.expanded === c.id ? ' expanded' : ''}${state.flashId === c.id && Date.now() < state.flashUntil ? ' flash' : ''}`)
   card.dataset.id = c.id
   card.style.setProperty('--project', projectColor(c.project))
   const level = contextLevel(c.usage?.context ?? 0)
@@ -1278,7 +1332,7 @@ function renderCard(c) {
   expand.title = isExpanded ? 'Shrink (Esc)' : 'Enlarge this card'
   expand.onclick = () => setExpanded(isExpanded ? null : c.id)
   const actions = el('div', 'head-actions')
-  actions.append(...[loopBadge(c.loop), live, openLink(c.id), expand].filter(Boolean))
+  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, openLink(c.id), expand].filter(Boolean))
   row.append(starButton(c.id), titleBox, actions)
   head.append(row)
   for (const part of [renderAttention(c), renderNowDoing(c)]) if (part) head.append(part)
@@ -1294,9 +1348,28 @@ function renderCard(c) {
     switcher.append(b)
   }
   head.append(switcher)
+  if (heat.group === 'cool') head.append(coolNudge(c))
 
   card.append(head, ui.pane === 'changes' ? renderChanges(c) : renderChat(c), renderComposer(c))
   return card
+}
+
+function orderedCards() {
+  if (state.focusSort !== 'prompt') return state.cards
+  return [...state.cards].sort((a, b) => temperatureOf(b).at - temperatureOf(a).at)
+}
+
+function coolNudge(c) {
+  const box = el('div', 'cool-nudge')
+  box.append(el('span', undefined, 'Still need this in Focus?'))
+  const keep = el('button', undefined, 'Keep')
+  keep.onclick = () => keepWarm(c.id)
+  const drop = el('button', undefined, 'Unfocus')
+  drop.onclick = () => setFocus(c.id, false)
+  const actions = el('span', 'nudge-actions')
+  actions.append(keep, drop)
+  box.append(actions)
+  return box
 }
 
 function renderFocus() {
@@ -1319,7 +1392,7 @@ function renderFocus() {
   const caret = keep && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null
   const pageTop = window.scrollY
   const pageLeft = window.scrollX
-  const nodes = state.cards.map(renderCard)
+  const nodes = orderedCards().map(renderCard)
   grid.replaceChildren(...nodes)
   nodes.forEach((card) => {
     const prev = saved.get(card.dataset.id)
@@ -1355,6 +1428,7 @@ function renderFocus() {
   badge.hidden = state.cards.length === 0
   badge.textContent = String(state.cards.length)
   document.querySelectorAll('#layout button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cols === state.cols)))
+  document.querySelectorAll('#focus-sort button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sort === state.focusSort)))
 }
 
 function goToCard(id) {
@@ -1754,6 +1828,84 @@ function renderLoopsPage() {
   document.querySelectorAll('#loops-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
 }
 
+const MR_FILTERS = {
+  all: () => true,
+  authored: (mr) => mr.role === 'authored',
+  reviewing: (mr) => mr.role === 'reviewing',
+  action: (mr) => mr.actionable,
+}
+
+const CI_LABELS = { success: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', created: 'Queued', canceled: 'Canceled', skipped: 'Skipped', manual: 'Manual' }
+
+function mrReviewers(mr) {
+  const box = el('span', 'mr-reviewers')
+  if (!mr.reviewers.length) return el('span', 'dim', 'None')
+  for (const name of mr.reviewers) box.append(el('span', mr.approvedBy.includes(name) ? 'mr-reviewer approved' : 'mr-reviewer', mr.approvedBy.includes(name) ? `${name} ✓` : name))
+  return box
+}
+
+function mrSession(mr) {
+  const [first] = mr.sessions
+  if (!first) return el('span', 'dim', '—')
+  const box = el('div', 'mr-session')
+  box.append(el('div', 'row-title', first.title), openLink(first.sessionId))
+  if (mr.sessions.length > 1) box.append(el('span', 'dim', `+${mr.sessions.length - 1} more`))
+  return box
+}
+
+function renderMrsPage() {
+  const data = state.mrs.data
+  if (!data) return
+  const { filter } = state.mrs
+  const all = [
+    ...data.authored.map((mr) => ({ ...mr, role: 'authored' })),
+    ...data.reviewing.filter((mr) => !data.authored.some((own) => own.url === mr.url)).map((mr) => ({ ...mr, role: 'reviewing' })),
+  ].sort((a, b) => a.verdict.rank - b.verdict.rank || a.updatedAt - b.updatedAt)
+  const rows = all.filter(MR_FILTERS[filter])
+  const waiting = data.reviewing.filter((mr) => mr.verdict.code === 'needs-review').length
+  $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · updated ${relative(data.fetchedAt)}`
+  $('mrs-error').hidden = !data.error
+  $('mrs-error').textContent = data.error ? `Could not refresh from ${data.host}: ${data.error}` : ''
+  $('mrs-empty').hidden = rows.length > 0 || Boolean(data.error)
+  const body = $('mrs-rows')
+  body.replaceChildren()
+  for (const mr of rows) {
+    const tr = document.createElement('tr')
+    const title = el('div', 'mr-title')
+    const link = el('a', 'row-title mr-link', mr.title)
+    link.href = mr.url
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    title.append(link, el('div', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
+    const unresolved = mr.mergeStatus === 'discussions_not_resolved'
+    tr.append(
+      cell(title),
+      cell(el('span', 'dim', mr.role === 'authored' ? 'Mine' : `Review · ${mr.author}`)),
+      cell(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.label)),
+      cell(el('span', `mr-ci ${mr.pipeline ?? 'none'}`, CI_LABELS[mr.pipeline] ?? '—')),
+      cell(mrReviewers(mr)),
+      cell(el('span', unresolved ? 'mr-ci failed' : 'dim', unresolved ? 'Unresolved' : String(mr.notes))),
+      cell(el('span', 'num', relative(mr.updatedAt))),
+      cell(mrSession(mr))
+    )
+    body.append(tr)
+  }
+  document.querySelectorAll('#mrs-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
+}
+
+async function loadMrs(force = false) {
+  if (state.mrs.loading) return
+  state.mrs.loading = true
+  try {
+    state.mrs.data = await getJson(`/api/mrs${force ? '?force=1' : ''}`)
+    state.mrs.at = Date.now()
+    renderMrsBadge()
+    renderMrsPage()
+  } catch {} finally {
+    state.mrs.loading = false
+  }
+}
+
 async function loadLoops() {
   try {
     state.loops.data = await getJson('/api/loops')
@@ -1881,6 +2033,7 @@ function writeFilters() {
   const params = new URLSearchParams()
   if ($('q').value.trim()) params.set('q', $('q').value.trim())
   if (state.status) params.set('status', state.status)
+  if (state.temp) params.set('temp', state.temp)
   if ($('archived').checked) params.set('archived', '1')
   const query = params.toString()
   history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}`)
@@ -1890,6 +2043,7 @@ function readFilters() {
   const params = new URLSearchParams(location.search)
   $('q').value = params.get('q') ?? ''
   state.status = params.get('status')
+  state.temp = ['warm', 'cool'].includes(params.get('temp')) ? params.get('temp') : null
   $('archived').checked = params.get('archived') === '1'
 }
 
@@ -1924,6 +2078,7 @@ function applyRoute() {
   }
   if (tab === 'usage') loadUsage()
   if (tab === 'loops') loadLoops()
+  if (tab === 'mrs') loadMrs()
   if (tab === 'background') { loadBackground(); markBackgroundSeen() }
   refresh()
 }
@@ -1967,6 +2122,7 @@ async function refresh() {
     pollChanges()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
     if (state.tab === 'loops' && Date.now() - state.loops.at > 5_000) loadLoops()
+    if (Date.now() - state.mrs.at > 60_000) loadMrs()
     if (state.tab === 'background' && Date.now() - state.background.at > 4_000) { state.background.output.clear(); loadBackground() }
   } catch {}
 }
@@ -2076,6 +2232,9 @@ $('new-chat-folder').onchange = chooseFolder
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()
 $('broadcast-send').onclick = sendBroadcast
+document.querySelectorAll('#focus-sort button').forEach((b) => {
+  b.onclick = () => { state.focusSort = b.dataset.sort; remember('board.focusSort', state.focusSort); renderFocus() }
+})
 document.querySelectorAll('#layout button').forEach((b) => {
   b.onclick = () => {
     state.cols = b.dataset.cols
@@ -2086,6 +2245,10 @@ document.querySelectorAll('#layout button').forEach((b) => {
 document.querySelectorAll('#background-filter button').forEach((b) => {
   b.onclick = () => { state.background.filter = b.dataset.filter; renderBackgroundPage() }
 })
+document.querySelectorAll('#mrs-filter button').forEach((b) => {
+  b.onclick = () => { state.mrs.filter = b.dataset.filter; renderMrsPage() }
+})
+$('mrs-refresh').onclick = () => loadMrs(true)
 document.querySelectorAll('#loops-filter button').forEach((b) => {
   b.onclick = () => { state.loops.filter = b.dataset.filter; renderLoopsPage() }
 })
