@@ -395,7 +395,7 @@
   .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: flex; flex-direction: column; gap: 10px; max-width: min(380px, calc(100vw - 40px)); }
   .toast { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 14px; cursor: pointer; font-size: 13px; }
   .toast.finished, .toast.loopdone, .toast.bgdone { border-left-color: var(--ok); }
-  .toast.context, .toast.approval, .toast.paused, .toast.stalled { border-left-color: var(--caution); }
+  .toast.approval, .toast.paused, .toast.stalled { border-left-color: var(--caution); }
   .toast.failed, .toast.blocked, .toast.bgfailed { border-left-color: var(--danger); }
   .toast b { display: block; font-weight: 650; overflow-wrap: anywhere; }
   .toast span { color: var(--muted); overflow-wrap: anywhere; }
@@ -461,7 +461,7 @@
   .toast .msg-text { display: block; margin-top: 2px; }
   .toast.finished b .icon, .toast.loopdone b .icon, .toast.bgdone b .icon { color: var(--ok); }
   .toast.question b .icon { color: var(--accent); }
-  .toast.context b .icon, .toast.approval b .icon, .toast.paused b .icon, .toast.stalled b .icon { color: var(--caution); }
+  .toast.approval b .icon, .toast.paused b .icon, .toast.stalled b .icon { color: var(--caution); }
   .toast.failed b .icon, .toast.blocked b .icon, .toast.bgfailed b .icon { color: var(--danger); }
   .toast b span { color: var(--text); }
 
