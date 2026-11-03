@@ -3,6 +3,7 @@ import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { warmthOf, warmthTip } from './warmth.js'
+import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
@@ -50,7 +51,7 @@ const state = {
   usage: { days: 30, metric: 'output', data: null, at: 0 },
   loops: { data: null, filter: 'all', at: 0, open: new Set() },
   background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
-  mrs: { data: null, filter: 'all', at: 0, loading: false },
+  mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
 }
 
 try {
@@ -1828,14 +1829,33 @@ function renderLoopsPage() {
   document.querySelectorAll('#loops-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
 }
 
-const MR_FILTERS = {
-  all: () => true,
-  authored: (mr) => mr.role === 'authored',
-  reviewing: (mr) => mr.role === 'reviewing',
-  action: (mr) => mr.actionable,
+const CI_LABELS = { success: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', created: 'Queued', canceled: 'Canceled', skipped: 'Skipped', manual: 'Manual' }
+
+function mrTempBadge(mr) {
+  const t = mrTemperature(mr)
+  const box = el('span', `temp ${t.tier}`)
+  const meter = el('span', 'meter')
+  for (let i = 1; i <= 4; i++) meter.append(el('i', i <= t.bars ? 'f' : undefined))
+  box.append(meter, text(t.label))
+  return attachTip(box, () => mrWarmthTip(mr, t))
 }
 
-const CI_LABELS = { success: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', created: 'Queued', canceled: 'Canceled', skipped: 'Skipped', manual: 'Manual' }
+async function setMrFocus(mr, focused) {
+  const { ok } = await postJson('/api/mrs/focus', { url: mr.url, focused })
+  if (!ok) return
+  const mark = (list) => list.map((item) => (item.url === mr.url ? { ...item, focused } : item))
+  state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing) }
+  renderMrsPage()
+}
+
+function mrStarButton(mr) {
+  const b = el('button', 'star')
+  b.append(icon('star', { size: 18, fill: Boolean(mr.focused) }))
+  b.setAttribute('aria-pressed', String(Boolean(mr.focused)))
+  b.title = mr.focused ? 'Remove from Focus' : 'Add to Focus'
+  b.onclick = () => setMrFocus(mr, !mr.focused)
+  return b
+}
 
 function mrReviewers(mr) {
   const box = el('span', 'mr-reviewers')
@@ -1856,21 +1876,22 @@ function mrSession(mr) {
 function renderMrsPage() {
   const data = state.mrs.data
   if (!data) return
-  const { filter } = state.mrs
-  const all = [
-    ...data.authored.map((mr) => ({ ...mr, role: 'authored' })),
-    ...data.reviewing.filter((mr) => !data.authored.some((own) => own.url === mr.url)).map((mr) => ({ ...mr, role: 'reviewing' })),
-  ].sort((a, b) => a.verdict.rank - b.verdict.rank || a.updatedAt - b.updatedAt)
-  const rows = all.filter(MR_FILTERS[filter])
+  const { filter, temp } = state.mrs
+  const all = mergeMrs(data)
+  const rows = visibleMrs(all, { filter, temp })
+  const counts = tempCounts(all)
+  const focused = all.filter((mr) => mr.focused).length
   const waiting = data.reviewing.filter((mr) => mr.verdict.code === 'needs-review').length
-  $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · updated ${relative(data.fetchedAt)}`
+  $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · ${focused} focused · updated ${relative(data.fetchedAt)}`
   $('mrs-error').hidden = !data.error
   $('mrs-error').textContent = data.error ? `Could not refresh from ${data.host}: ${data.error}` : ''
-  $('mrs-empty').hidden = rows.length > 0 || Boolean(data.error)
+  $('mrs-empty').hidden = all.length > 0 || Boolean(data.error)
+  $('mrs-nomatch').hidden = rows.length > 0 || all.length === 0
   const body = $('mrs-rows')
   body.replaceChildren()
   for (const mr of rows) {
     const tr = document.createElement('tr')
+    if (mrTemperature(mr).group === 'cool') tr.className = 'cool'
     const title = el('div', 'mr-title')
     const link = el('a', 'row-title mr-link', mr.title)
     link.href = mr.url
@@ -1879,30 +1900,58 @@ function renderMrsPage() {
     title.append(link, el('div', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
     const unresolved = mr.mergeStatus === 'discussions_not_resolved'
     tr.append(
+      cell(mrStarButton(mr)),
       cell(title),
       cell(el('span', 'dim', mr.role === 'authored' ? 'Mine' : `Review · ${mr.author}`)),
       cell(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.label)),
       cell(el('span', `mr-ci ${mr.pipeline ?? 'none'}`, CI_LABELS[mr.pipeline] ?? '—')),
       cell(mrReviewers(mr)),
       cell(el('span', unresolved ? 'mr-ci failed' : 'dim', unresolved ? 'Unresolved' : String(mr.notes))),
+      cell(mrTempBadge(mr)),
       cell(el('span', 'num', relative(mr.updatedAt))),
       cell(mrSession(mr))
     )
     body.append(tr)
   }
   document.querySelectorAll('#mrs-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
+  document.querySelectorAll('#mrs-temp button').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.temp === temp))
+    b.textContent = `${b.dataset.temp === 'warm' ? 'Warm' : 'Cool'} ${counts[b.dataset.temp]}`
+  })
+  document.querySelector('#mrs-filter [data-filter="focus"]').textContent = `Focus ${focused}`
+}
+
+function renderMrsLoading() {
+  const { loading, data, manual } = state.mrs
+  const first = loading && !data
+  $('view-mrs').setAttribute('aria-busy', String(loading))
+  $('view-mrs').classList.toggle('refreshing', loading && Boolean(data) && manual)
+  $('mrs-loading').hidden = !first
+  $('mrs-sheet').hidden = !data
+  const button = $('mrs-refresh')
+  button.disabled = loading
+  button.replaceChildren(...(loading ? [el('span', 'spinner'), text('Refreshing')] : [text('Refresh')]))
+  if (first) $('mrs-status').textContent = ''
 }
 
 async function loadMrs(force = false) {
   if (state.mrs.loading) return
   state.mrs.loading = true
+  state.mrs.manual = force
+  renderMrsLoading()
   try {
     state.mrs.data = await getJson(`/api/mrs${force ? '?force=1' : ''}`)
-    state.mrs.at = Date.now()
     renderMrsBadge()
     renderMrsPage()
-  } catch {} finally {
+  } catch {
+    if (!state.mrs.data) {
+      $('mrs-error').textContent = 'Could not reach the board server. It will retry shortly.'
+      $('mrs-error').hidden = false
+    }
+  } finally {
     state.mrs.loading = false
+    state.mrs.at = Date.now()
+    renderMrsLoading()
   }
 }
 
@@ -2247,6 +2296,9 @@ document.querySelectorAll('#background-filter button').forEach((b) => {
 })
 document.querySelectorAll('#mrs-filter button').forEach((b) => {
   b.onclick = () => { state.mrs.filter = b.dataset.filter; renderMrsPage() }
+})
+document.querySelectorAll('#mrs-temp button').forEach((b) => {
+  b.onclick = () => { state.mrs.temp = state.mrs.temp === b.dataset.temp ? null : b.dataset.temp; renderMrsPage() }
 })
 $('mrs-refresh').onclick = () => loadMrs(true)
 document.querySelectorAll('#loops-filter button').forEach((b) => {

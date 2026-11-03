@@ -15,7 +15,7 @@ import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
-import { createMrCache, withSessions } from './lib/mrs.js'
+import { createMrCache, withSessions, withFocus, toggleFocus, isMrUrl } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -29,6 +29,7 @@ const UPLOAD_DIR = join(DATA_DIR, 'uploads')
 const MAX_UPLOAD_BYTES = 25_000_000
 const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
+const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
@@ -243,6 +244,11 @@ async function writeJson(file, value) {
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
   return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+}
+
+async function readMrFocus() {
+  const parsed = await readJson(MR_FOCUS_FILE, {})
+  return Array.isArray(parsed.urls) ? parsed.urls.filter(isMrUrl) : []
 }
 
 function queueFor(id) {
@@ -617,6 +623,12 @@ const postRoutes = {
       return json(res, 500, { error: String(error.message ?? error) })
     }
   },
+  async '/api/mrs/focus'(body, res) {
+    if (!isMrUrl(body.url) || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
+    const urls = toggleFocus(await readMrFocus(), body.url, body.focused)
+    await writeJson(MR_FOCUS_FILE, { urls })
+    return json(res, 200, { urls })
+  },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
     const current = await readFocus()
@@ -744,7 +756,7 @@ const getRoutes = {
   },
   async '/api/mrs'(url, res) {
     const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
-    return json(res, 200, withSessions(data, await mrSessionLinks()))
+    return json(res, 200, withFocus(withSessions(data, await mrSessionLinks()), await readMrFocus()))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())

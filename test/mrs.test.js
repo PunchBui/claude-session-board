@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, resolveGlabBin, normalizeMr, verdictOf, loadMergeRequests, withSessions, createMrCache } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, loadMergeRequests, withSessions, createMrCache } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -79,19 +79,19 @@ test('review verdicts distinguish approved, draft and awaiting review', () => {
   assert.equal(verdict({}, 'reviewing'), 'needs-review')
 })
 
-test('sorts by urgency, then longest idle first, and counts actionable ones', async () => {
+test('sorts newest update first and counts actionable ones', async () => {
   const data = await loadMergeRequests({
     run: async () => payload({
       authored: [
         node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/1`, updatedAt: ago(HOUR) }),
-        node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/2`, headPipeline: { status: 'FAILED' }, updatedAt: ago(HOUR) }),
+        node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/2`, headPipeline: { status: 'FAILED' }, updatedAt: ago(2 * HOUR) }),
         node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/3`, headPipeline: { status: 'FAILED' }, updatedAt: ago(DAY) }),
       ],
       reviewing: [node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/4` })],
     }),
     now: NOW,
   })
-  assert.deepEqual(data.authored.map((mr) => mr.url.split('/').pop()), ['3', '2', '1'])
+  assert.deepEqual(data.authored.map((mr) => mr.url.split('/').pop()), ['1', '2', '3'])
   assert.equal(data.actionable, 3)
 })
 
@@ -147,4 +147,31 @@ test('finds glab in Homebrew even when launchd gives a bare PATH', () => {
   const exists = (path) => path === '/opt/homebrew/bin/glab'
   assert.equal(resolveGlabBin({ pathEnv: '/usr/bin:/bin', home: '/Users/x', exists }), '/opt/homebrew/bin/glab')
   assert.equal(resolveGlabBin({ pathEnv: '/usr/bin', home: '/Users/x', exists: () => false }), 'glab')
+})
+
+test('accepts only configured merge request URLs for focus', () => {
+  assert.equal(isMrUrl(`https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/12`), true)
+  assert.equal(isMrUrl('https://gitlab.com/team/repo/-/merge_requests/12'), false)
+  assert.equal(isMrUrl(`https://${GITLAB_HOST}/team/repo/-/issues/12`), false)
+  assert.equal(isMrUrl(`https://${GITLAB_HOST}/team/repo/-/merge_requests/12?x=1`), false)
+  assert.equal(isMrUrl(`https://gitlabXexampleYio/team/repo/-/merge_requests/12`), false)
+  assert.equal(isMrUrl(null), false)
+})
+
+test('toggleFocus adds once, removes, and caps the stored list', () => {
+  assert.deepEqual(toggleFocus(['a'], 'b', true), ['a', 'b'])
+  assert.deepEqual(toggleFocus(['a', 'b'], 'a', true), ['b', 'a'])
+  assert.deepEqual(toggleFocus(['a', 'b'], 'a', false), ['b'])
+  const many = Array.from({ length: MAX_FOCUSED }, (_, i) => `u${i}`)
+  const next = toggleFocus(many, 'new', true)
+  assert.equal(next.length, MAX_FOCUSED)
+  assert.equal(next.at(-1), 'new')
+  assert.equal(next[0], 'u1')
+})
+
+test('withFocus marks merge requests whose URL is focused', async () => {
+  const data = await loadMergeRequests({ run: async () => payload({ authored: [node()], reviewing: [node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/2` })] }), now: NOW })
+  const marked = withFocus(data, [data.reviewing[0].url])
+  assert.equal(marked.authored[0].focused, false)
+  assert.equal(marked.reviewing[0].focused, true)
 })

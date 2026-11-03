@@ -103,19 +103,26 @@
         <button data-filter="authored" aria-pressed="false">Mine</button>
         <button data-filter="reviewing" aria-pressed="false">To review</button>
         <button data-filter="action" aria-pressed="false">Needs action</button>
+        <button data-filter="focus" aria-pressed="false">Focus</button>
+      </div>
+      <div class="seg" id="mrs-temp" role="group" aria-label="Temperature">
+        <button data-temp="warm" aria-pressed="false">Warm</button>
+        <button data-temp="cool" aria-pressed="false">Cool</button>
       </div>
       <button class="btn" id="mrs-refresh" type="button">Refresh</button>
     </div>
     <div class="status-line" id="mrs-status"></div>
     <div class="mr-error" id="mrs-error" role="alert" hidden></div>
-    <div class="sheet">
+    <div class="mr-loading" id="mrs-loading" role="status"><span class="spinner"></span><span>Loading merge requests from gitlab.example.com. The first load can take several seconds.</span></div>
+    <div class="sheet" id="mrs-sheet">
       <div class="scroll-x">
         <table>
-          <thead><tr><th>Merge request</th><th>Role</th><th>State</th><th>CI</th><th>Reviewers</th><th>Comments</th><th>Updated</th><th>Session</th></tr></thead>
+          <thead><tr><th aria-label="Focus"></th><th>Merge request</th><th>Role</th><th>State</th><th>CI</th><th>Reviewers</th><th>Comments</th><th>Temp</th><th>Updated</th><th>Session</th></tr></thead>
           <tbody id="mrs-rows"></tbody>
         </table>
       </div>
     </div>
+    <div class="empty" id="mrs-nomatch" hidden>No merge requests match these filters.</div>
     <div class="empty" id="mrs-empty" hidden>No open merge requests.<br>Open MRs you authored or were asked to review on gitlab.example.com show up here.</div>
   </section>
   <section id="view-background" hidden>
