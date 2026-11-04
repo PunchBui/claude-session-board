@@ -14,10 +14,10 @@ test('working to idle fires finished, but not while a run is going', () => {
   assert.equal(diffAlerts(first, [card({ active: false, run: { state: 'running' } })]).events.length, 0)
 })
 
-test('attention, blocked, context and failure each fire once', () => {
+test('attention, blocked and failure each fire once', () => {
   const first = diffAlerts(null, [card()]).next
   const second = diffAlerts(first, [card({ live: { attention: { kind: 'question', text: 'Which env?' } }, status: 'blocked', usage: { context: 150000 }, run: { state: 'failed' }, queue: { paused: true } })])
-  assert.deepEqual(second.events.map((e) => e.kind).sort(), ['blocked', 'context', 'failed', 'paused', 'question'])
+  assert.deepEqual(second.events.map((e) => e.kind).sort(), ['blocked', 'failed', 'paused', 'question'])
   const third = diffAlerts(second.next, [card({ live: { attention: { kind: 'question', text: 'Which env?' } }, status: 'blocked', usage: { context: 150000 }, run: { state: 'failed' }, queue: { paused: true } })])
   assert.equal(third.events.length, 0)
 })
@@ -26,4 +26,11 @@ test('context level thresholds', () => {
   assert.equal(contextLevel(99999), null)
   assert.equal(contextLevel(100000), 'caution')
   assert.equal(contextLevel(200000), 'danger')
+})
+
+test('crossing a context threshold does not raise an alert', () => {
+  const first = diffAlerts(null, [card()]).next
+  const caution = diffAlerts(first, [card({ usage: { context: 150000 } })])
+  assert.equal(caution.events.length, 0)
+  assert.equal(diffAlerts(caution.next, [card({ usage: { context: 250000 } })]).events.length, 0)
 })

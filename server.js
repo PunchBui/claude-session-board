@@ -16,6 +16,7 @@ import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
+import { createMrCache, withSessions, withFocus, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -29,6 +30,7 @@ const UPLOAD_DIR = join(DATA_DIR, 'uploads')
 const MAX_UPLOAD_BYTES = 25_000_000
 const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
+const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
@@ -39,7 +41,7 @@ const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
 const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
-const PAGES = new Set(['/', '/focus', '/loops', '/background', '/search', '/usage'])
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
@@ -150,7 +152,7 @@ async function loadSessions() {
     if (!raw.isArchived && Date.now() - (raw.lastActivityAt ?? 0) < LOOP_LOOKBACK_MS) scanSession(raw).catch(() => {})
   }
   return raws
-    .map((raw) => ({ ...toSummary(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
+    .map((raw) => ({ ...toSummary(raw), lastPromptAt: promptAtFor(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
     .map(({ cliSessionId, ...rest }) => rest)
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
 }
@@ -189,6 +191,7 @@ async function buildCard(raw) {
   return {
     ...base,
     touchedAt,
+    lastPromptAt: promptAtOf(scanned?.state),
     active,
     transcriptFound: Boolean(scanned),
     details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
@@ -205,6 +208,16 @@ function backgroundCountFor(raw) {
   const state = path ? scanStore.states.get(path) : null
   const idleMs = Date.now() - (raw.lastActivityAt ?? 0)
   return state ? backgroundCounts(state.background, { nowMs: Date.now(), idleMs }) : null
+}
+
+function promptAtOf(state) {
+  const parsed = state?.lastPromptAt ? Date.parse(state.lastPromptAt) : NaN
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function promptAtFor(raw) {
+  const path = transcriptPaths.get(raw.cliSessionId)
+  return promptAtOf(path ? scanStore.states.get(path) : null)
 }
 
 function loopFor(raw) {
@@ -232,6 +245,18 @@ async function writeJson(file, value) {
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
   return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+}
+
+async function readMrFocusState() {
+  const parsed = await readJson(MR_FOCUS_FILE, {})
+  return {
+    urls: Array.isArray(parsed.urls) ? parsed.urls.filter(isMrUrl) : [],
+    seen: Array.isArray(parsed.seen) ? parsed.seen.filter(isMrUrl) : null,
+  }
+}
+
+async function readMrFocus() {
+  return (await readMrFocusState()).urls
 }
 
 function queueFor(id) {
@@ -399,6 +424,24 @@ async function loadFocusCards() {
     )
   )
   return { ids, cards }
+}
+
+const mergeRequests = createMrCache()
+
+async function mrSessionLinks() {
+  const linked = new Map()
+  for (const raw of await readRawSessions()) {
+    const path = transcriptPaths.get(raw.cliSessionId)
+    const state = path ? scanStore.states.get(path) : null
+    if (!state) continue
+    const { title, project, archived } = toSummary(raw)
+    for (const url of state.links.keys()) {
+      const sessions = linked.get(url) ?? []
+      sessions.push({ sessionId: raw.sessionId, title, project, archived, lastActivityAt: raw.lastActivityAt ?? 0 })
+      linked.set(url, sessions)
+    }
+  }
+  return linked
 }
 
 async function loopHistory() {
@@ -613,6 +656,23 @@ const postRoutes = {
       return json(res, 500, { error: String(error.message ?? error) })
     }
   },
+  async '/api/mrs/focus'(body, res) {
+    if (!isMrUrl(body.url) || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
+    const stored = await readMrFocusState()
+    const urls = toggleFocus(stored.urls, body.url, body.focused)
+    await writeJson(MR_FOCUS_FILE, { urls, seen: stored.seen ?? undefined })
+    return json(res, 200, { urls })
+  },
+  async '/api/mrs/label'(body, res) {
+    if (!isMrUrl(body.url) || !ADDABLE_LABELS.includes(body.label)) return json(res, 400, { error: 'bad request' })
+    try {
+      await addLabel(body.url, body.label)
+    } catch (error) {
+      return json(res, 502, { error: String(error.message ?? error) })
+    }
+    const mr = mergeRequests.patchAuthored(body.url, (current) => withLabel(current, body.label, Date.now()))
+    return json(res, 200, { ok: true, mr })
+  },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
     const current = await readFocus()
@@ -732,6 +792,12 @@ const getRoutes = {
     const task = url.searchParams.get('task') ?? ''
     if (!SESSION_ID.test(session ?? '') || !/^[A-Za-z0-9_-]{1,40}$/.test(task)) return json(res, 400, { error: 'bad request' })
     return json(res, 200, await backgroundOutput(session, task))
+  },
+  async '/api/mrs'(url, res) {
+    const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
+    const next = autoFocusNew(data, await readMrFocusState())
+    if (next.changed) await writeJson(MR_FOCUS_FILE, { urls: next.urls, seen: next.seen })
+    return json(res, 200, withFocus(withSessions(data, await mrSessionLinks()), next.urls))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())

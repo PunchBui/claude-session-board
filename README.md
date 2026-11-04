@@ -108,7 +108,7 @@ Typing `/` in a card's prompt box opens an autocomplete list of the commands tha
 
 ## Alerts
 
-The 🔔 button turns on toasts, a short beep, browser notifications and a tab-title counter when a focused session finishes, asks a question, may need approval, passes 100k or 200k context, is marked blocked, or a prompt fails or pauses the queue.
+The 🔔 button turns on toasts, a short beep, browser notifications and a tab-title counter when a focused session finishes, asks a question, may need approval, is marked blocked, or a prompt fails or pauses the queue.
 
 ## Configuration
 
