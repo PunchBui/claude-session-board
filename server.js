@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { spawn, execFile } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename } from 'node:path'
@@ -15,6 +15,7 @@ import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
+import { spawnDetached, killGroup, logTail } from './lib/run.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { createMrCache, withSessions, withFocus, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
@@ -27,6 +28,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR ?? join(homedir(), '.claude/projec
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
 const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL('./data/', import.meta.url))
 const UPLOAD_DIR = join(DATA_DIR, 'uploads')
+const RUN_LOG_DIR = join(DATA_DIR, 'runs')
 const MAX_UPLOAD_BYTES = 25_000_000
 const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
@@ -322,11 +324,10 @@ function openHandoff(raw, file) {
 function startRun(raw, prompt, { handoff = null } = {}) {
   const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE, handoff: handoff && { file: handoff, ready: false } }
   const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE, '--add-dir', UPLOAD_DIR]
-  const child = spawn(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), stdio: ['pipe', 'ignore', 'pipe'] })
-  run.stop = () => child.kill('SIGTERM')
-  let stderr = ''
-  child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-2000) })
-  const timer = setTimeout(() => { run.state = 'stopped'; child.kill('SIGTERM') }, RUN_TIMEOUT_MS)
+  const logFile = join(RUN_LOG_DIR, `${raw.sessionId}.log`)
+  const child = spawnDetached(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), logFile, input: prompt })
+  run.stop = () => killGroup(child)
+  const timer = setTimeout(() => { run.state = 'stopped'; killGroup(child) }, RUN_TIMEOUT_MS)
   child.on('error', (error) => {
     clearTimeout(timer)
     const missing = error.code === 'ENOENT'
@@ -339,7 +340,7 @@ function startRun(raw, prompt, { handoff = null } = {}) {
     run.endedAt = Date.now()
     if (run.state === 'stopped' || signal) run.state = 'stopped'
     else if (code === 0) run.state = 'done'
-    else Object.assign(run, { state: 'failed', error: clip(stderr, 400) || `exit code ${code}` })
+    else Object.assign(run, { state: 'failed', error: clip(logTail(logFile, 2000), 400) || `exit code ${code}` })
     if (run.handoff && run.state === 'done') {
       if (await stat(run.handoff.file).catch(() => null)) {
         run.handoff.ready = true
@@ -351,8 +352,6 @@ function startRun(raw, prompt, { handoff = null } = {}) {
     pauseQueueAfter(raw.sessionId, run)
     pump()
   })
-  child.stdin.on('error', () => {})
-  child.stdin.end(prompt)
   runs.set(raw.sessionId, run)
 }
 

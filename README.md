@@ -60,7 +60,7 @@ An installed PWA cannot start the server itself. Install a LaunchAgent so the se
 
 - The agent is `com.user.claude-session-board`. It runs `server.js` with the `node` on your PATH at install time, so rerun the script after switching Node versions.
 - Logs go to `~/Library/Logs/claude-session-board.log`.
-- Restart after changing server code: `launchctl kickstart -k gui/$(id -u)/com.user.claude-session-board`.
+- Restart after changing server code: `launchctl kickstart -k gui/$(id -u)/com.user.claude-session-board`. Prompts the board is running keep going through a restart (each runs in its own process group, and the agent sets `AbandonProcessGroup`), so a session can restart the board without killing itself. The new server does not track them, though: it shows them as Working from their transcripts, and their run status, queue pause and handoff opening are not reported.
 - Remove it with `./scripts/install-launch-agent.sh uninstall`.
 
 ### Try it without Claude desktop

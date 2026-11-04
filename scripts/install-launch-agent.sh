@@ -38,6 +38,8 @@ cat > "$PLIST" <<EOF
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- Prompt runs live in their own process groups; never let a board restart kill them. -->
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict>
@@ -45,5 +47,11 @@ cat > "$PLIST" <<EOF
 EOF
 
 launchctl bootout "$TARGET/$LABEL" 2>/dev/null || true
+# bootout returns before launchd has finished removing the job, and bootstrapping too soon
+# fails with "5: Input/output error" and leaves the board down. Wait for it to go first.
+for _ in $(seq 1 50); do
+  launchctl print "$TARGET/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.2
+done
 launchctl bootstrap "$TARGET" "$PLIST"
 echo "Installed $LABEL (node: $NODE, PATH: $AGENT_PATH, log: $LOG)"
