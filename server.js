@@ -186,8 +186,9 @@ async function buildCard(raw) {
   const { cliSessionId, ...base } = toSummary(raw)
   const scanned = await scanSession(raw)
   const touchedAt = Math.max(base.lastActivityAt ?? 0, scanned?.info.mtimeMs ?? 0)
-  const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS
   const running = runs.get(raw.sessionId)?.state === 'running'
+  const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running }) : null
+  const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS || Boolean(live?.working)
   return {
     ...base,
     touchedAt,
@@ -196,7 +197,7 @@ async function buildCard(raw) {
     transcriptFound: Boolean(scanned),
     details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
     usage: scanned ? usageOf(scanned.state) : null,
-    live: scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running }) : null,
+    live,
     loop: scanned ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,
   }
 }
