@@ -85,7 +85,7 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 - Live strip: the tool Claude is running now with a ticking timer, thinking or writing state, and running subagents.
 - Attention banner when a transcript ends on an unanswered question (AskUserQuestion, ExitPlanMode) or a tool has been pending for 45s or more, which usually means it is waiting for approval.
 - Token usage with a yellow warning at 100k context and red at 200k.
-- Changes tab: git branch, ahead and behind, uncommitted files and diff size for the session folder, the files Claude edited, ticket keys (set `JIRA_BASE_URL` to link them) and merge request links mentioned in the chat.
+- Changes tab: git branch, ahead and behind, uncommitted files and diff size for the session folder, the files Claude edited, ticket keys (set `JIRA_BASE_URL` to link them; set `GITLAB_HOST` to your GitLab hostname for the Merge requests tab, which uses `glab`) and merge request links mentioned in the chat.
 - Attach files and images with the paperclip, by pasting, or by dropping them on the prompt box (25 MB each). They are saved under `data/uploads/` (deleted after 7 days) and their paths are added to the prompt, so Claude reads them from disk.
 - Prompt box with a queue, ⚡ shortcuts (stored in `data/snippets.json`) and ⏰ scheduling (once, daily or weekdays).
 - 📣 Broadcast queues one prompt on several focused sessions.
