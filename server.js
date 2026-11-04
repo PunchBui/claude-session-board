@@ -15,7 +15,7 @@ import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
-import { createMrCache, withSessions, withFocus, toggleFocus, isMrUrl } from './lib/mrs.js'
+import { createMrCache, withSessions, withFocus, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -246,9 +246,16 @@ async function readFocus() {
   return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
 }
 
-async function readMrFocus() {
+async function readMrFocusState() {
   const parsed = await readJson(MR_FOCUS_FILE, {})
-  return Array.isArray(parsed.urls) ? parsed.urls.filter(isMrUrl) : []
+  return {
+    urls: Array.isArray(parsed.urls) ? parsed.urls.filter(isMrUrl) : [],
+    seen: Array.isArray(parsed.seen) ? parsed.seen.filter(isMrUrl) : null,
+  }
+}
+
+async function readMrFocus() {
+  return (await readMrFocusState()).urls
 }
 
 function queueFor(id) {
@@ -625,9 +632,20 @@ const postRoutes = {
   },
   async '/api/mrs/focus'(body, res) {
     if (!isMrUrl(body.url) || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
-    const urls = toggleFocus(await readMrFocus(), body.url, body.focused)
-    await writeJson(MR_FOCUS_FILE, { urls })
+    const stored = await readMrFocusState()
+    const urls = toggleFocus(stored.urls, body.url, body.focused)
+    await writeJson(MR_FOCUS_FILE, { urls, seen: stored.seen ?? undefined })
     return json(res, 200, { urls })
+  },
+  async '/api/mrs/label'(body, res) {
+    if (!isMrUrl(body.url) || !ADDABLE_LABELS.includes(body.label)) return json(res, 400, { error: 'bad request' })
+    try {
+      await addLabel(body.url, body.label)
+    } catch (error) {
+      return json(res, 502, { error: String(error.message ?? error) })
+    }
+    const mr = mergeRequests.patchAuthored(body.url, (current) => withLabel(current, body.label, Date.now()))
+    return json(res, 200, { ok: true, mr })
   },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
@@ -756,7 +774,9 @@ const getRoutes = {
   },
   async '/api/mrs'(url, res) {
     const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
-    return json(res, 200, withFocus(withSessions(data, await mrSessionLinks()), await readMrFocus()))
+    const next = autoFocusNew(data, await readMrFocusState())
+    if (next.changed) await writeJson(MR_FOCUS_FILE, { urls: next.urls, seen: next.seen })
+    return json(res, 200, withFocus(withSessions(data, await mrSessionLinks()), next.urls))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())

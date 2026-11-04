@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, loadMergeRequests, withSessions, createMrCache } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, loadMergeRequests, withSessions, createMrCache, autoFocusNew } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -57,16 +57,51 @@ test('normalizes pipeline status, reviewers and project reference', () => {
   assert.equal(normalizeMr(node({ headPipeline: null }), 'x').pipeline, null)
 })
 
+test('ready verdict takes its wording from the repo ready label', () => {
+  const label = (over) => verdictOf(normalizeMr(node({ approved: true, ...over }), 'dkunweeroj'), 'authored', NOW).label
+  assert.equal(label({}), 'Approved')
+  assert.equal(label({ labels: { nodes: [{ title: 'bug' }, { title: 'Ready to deploy' }] } }), 'Ready to deploy')
+  assert.equal(label({ labels: { nodes: [{ title: 'ready to merge' }] } }), 'ready to merge')
+})
+
+test('a ready or auto-merging MR with a live pipeline is merge CI running', () => {
+  const running = { headPipeline: { status: 'RUNNING' } }
+  assert.equal(verdict({ ...running, labels: { nodes: [{ title: 'Ready to merge' }] } }), 'merge-ci-running')
+  assert.equal(verdict({ ...running, autoMergeEnabled: true }), 'merge-ci-running')
+  assert.equal(verdict({ ...running, approved: true }), 'ci-running')
+  assert.equal(verdict({ autoMergeEnabled: true }), 'waiting')
+})
+
 test('authored verdicts follow the most urgent blocker first', () => {
   assert.equal(verdict({ headPipeline: { status: 'FAILED' }, conflicts: true }), 'ci-failed')
   assert.equal(verdict({ conflicts: true, detailedMergeStatus: 'DISCUSSIONS_NOT_RESOLVED' }), 'conflicts')
   assert.equal(verdict({ detailedMergeStatus: 'DISCUSSIONS_NOT_RESOLVED' }), 'threads')
-  assert.equal(verdict({ approved: true }), 'ready')
+  assert.equal(verdict({ approved: true }), 'approved')
+  assert.equal(verdict({ labels: { nodes: [{ title: 'Ready to merge' }] } }), 'ready')
   assert.equal(verdict({ draft: true }), 'draft')
   assert.equal(verdict({ headPipeline: { status: 'RUNNING' } }), 'ci-running')
   assert.equal(verdict({ reviewers: { nodes: [] } }), 'no-reviewer')
   assert.equal(verdict({ updatedAt: ago(4 * DAY) }), 'stale')
   assert.equal(verdict({}), 'waiting')
+})
+
+test('a ready-for-review label on an MR without reviewers keeps its wording and stops asking for action', () => {
+  const noReviewers = { reviewers: { nodes: [] } }
+  const labelled = (title) => ({ ...noReviewers, labels: { nodes: [{ title }] } })
+  const result = (over) => verdictOf(normalizeMr(node(over), 'dkunweeroj'), 'authored', NOW)
+  assert.equal(result(labelled('Ready for review')).label, 'Ready for review')
+  assert.equal(result(labelled('ready to review')).label, 'ready to review')
+  assert.equal(result(labelled('Ready for review')).code, 'review-requested')
+  assert.equal(needsAction(result(labelled('Ready for review'))), false)
+  assert.equal(result(noReviewers).code, 'no-reviewer')
+  assert.equal(result({ labels: { nodes: [{ title: 'Ready for review' }] } }).code, 'waiting')
+})
+
+test('adding the review label to an MR without reviewers moves it out of no-reviewer', () => {
+  const mr = normalizeMr(node({ reviewers: { nodes: [] } }), 'dkunweeroj')
+  const next = withLabel({ ...mr, verdict: verdictOf(mr, 'authored', NOW) }, 'Ready for review', NOW)
+  assert.equal(next.verdict.code, 'review-requested')
+  assert.equal(next.actionable, false)
 })
 
 test('an approved merge request with CI still running is not ready yet', () => {
@@ -174,4 +209,57 @@ test('withFocus marks merge requests whose URL is focused', async () => {
   const marked = withFocus(data, [data.reviewing[0].url])
   assert.equal(marked.authored[0].focused, false)
   assert.equal(marked.reviewing[0].focused, true)
+})
+
+test('autoFocusNew seeds seen on first run without focusing existing merge requests', async () => {
+  const data = await loadMergeRequests({ run: async () => payload({ authored: [node()] }), now: NOW })
+  const out = autoFocusNew(data, { urls: [], seen: null })
+  assert.deepEqual(out.urls, [])
+  assert.deepEqual(out.seen, [data.authored[0].url])
+  assert.equal(out.changed, true)
+})
+
+test('autoFocusNew focuses merge requests it has not seen before, once', async () => {
+  const data = await loadMergeRequests({ run: async () => payload({ authored: [node(), node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/2` })] }), now: NOW })
+  const [old, fresh] = data.authored.map((mr) => mr.url).sort()
+  const out = autoFocusNew(data, { urls: [], seen: [old] })
+  assert.deepEqual(out.urls, [fresh])
+  assert.deepEqual(autoFocusNew(data, { urls: [], seen: out.seen }).changed, false)
+  const unfocused = autoFocusNew(data, { urls: [], seen: out.seen })
+  assert.deepEqual(unfocused.urls, [])
+})
+
+test('autoFocusNew ignores failed loads', () => {
+  const out = autoFocusNew({ error: 'boom', me: null, authored: [], reviewing: [] }, { urls: [], seen: ['x'] })
+  assert.equal(out.changed, false)
+})
+
+test('adds an allowed label through glab on the configured host', async () => {
+  let args
+  await addLabel(`https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/42`, 'Ready for review', async (a) => { args = a })
+  assert.deepEqual(args, ['mr', 'update', '42', '--label', 'Ready for review', '--repo', `${GITLAB_HOST}/team/sub/repo`])
+  await assert.rejects(() => addLabel(`https://${GITLAB_HOST}/a/b/-/merge_requests/1`, 'bug', async () => {}))
+  await assert.rejects(() => addLabel('https://gitlab.com/a/b/-/merge_requests/1', 'Ready to merge', async () => {}))
+})
+
+test('withLabel re-derives the verdict without a refetch', () => {
+  const mr = normalizeMr(node({ approved: true }), 'dkunweeroj')
+  const before = { ...mr, verdict: verdictOf(mr, 'authored', NOW) }
+  const after = withLabel(before, 'Ready to merge', NOW)
+  assert.equal(before.verdict.code, 'approved')
+  assert.equal(after.verdict.code, 'ready')
+  assert.deepEqual(after.labels, ['Ready to merge'])
+  assert.equal(withLabel(after, 'Ready to merge', NOW).labels.length, 1)
+})
+
+test('cache patchAuthored updates one MR and the actionable count in place', async () => {
+  const mr = { ...normalizeMr(node({ approved: true }), 'dkunweeroj'), verdict: { code: 'approved' }, actionable: true }
+  let loads = 0
+  const get = createMrCache({ load: async () => { loads++; return { authored: [mr], reviewing: [], actionable: 1 } } })
+  await get()
+  const patched = get.patchAuthored(mr.url, (current) => ({ ...current, actionable: false }))
+  assert.equal(patched.actionable, false)
+  assert.equal((await get()).actionable, 0)
+  assert.equal(loads, 1)
+  assert.equal(get.patchAuthored('https://nope', (x) => x), null)
 })

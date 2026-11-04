@@ -227,10 +227,18 @@
   .mr-badge.warn { color: var(--caution); background: color-mix(in srgb, var(--caution) 16%, transparent); }
   .mr-badge.good { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
   .mr-badge.dim { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+  .mr-project { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+  .mr-verdict { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mr-add-ready { padding: 1px 10px; font-size: 12px; }
+  .mr-add-ready:disabled { opacity: .45; cursor: default; }
   .mr-ci { font-size: 12px; font-weight: 600; color: var(--muted); }
   .mr-ci.success { color: var(--ok); }
   .mr-ci.failed { color: var(--danger); }
   .mr-ci.running, .mr-ci.pending, .mr-ci.created { color: var(--info); }
+  .mr-ci .spinner { display: inline-block; vertical-align: -1px; border-top-color: var(--info); }
+  .mr-fix { padding: 1px 10px; font-size: 12px; margin-left: 4px; }
+  .mr-fix-sent { font-size: 12px; font-weight: 500; margin-left: 4px; }
+  .mr-fix:disabled { opacity: .55; cursor: default; }
   .mr-reviewers { display: inline-flex; flex-wrap: wrap; gap: 4px; }
   .mr-reviewer { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; color: var(--muted); }
   .mr-reviewer.approved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }

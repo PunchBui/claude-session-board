@@ -457,7 +457,8 @@ function renderLoopsBadge() {
 }
 
 function renderMrsBadge() {
-  const count = state.mrs.data?.actionable ?? 0
+  const data = state.mrs.data
+  const count = data ? [...data.authored, ...data.reviewing].filter((mr) => mr.focused).length : 0
   const badge = $('mrs-count')
   badge.hidden = count === 0
   badge.textContent = String(count)
@@ -1831,6 +1832,47 @@ function renderLoopsPage() {
 
 const CI_LABELS = { success: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', created: 'Queued', canceled: 'Canceled', skipped: 'Skipped', manual: 'Manual' }
 
+function mrCi(mr) {
+  const span = el('span', `mr-ci ${mr.pipeline ?? 'none'}`)
+  if (mr.pipeline === 'running') span.append(el('span', 'spinner'), text(' '))
+  span.append(text(CI_LABELS[mr.pipeline] ?? '—'))
+  if (mr.pipeline === 'failed' && mr.sessions[0]) span.append(text(' '), fixSent(mr) ? el('span', 'dim mr-fix-sent', 'Fix sent') : mrFixButton(mr))
+  return span
+}
+
+const FIX_SENT_KEY = 'board.mrFixSent'
+const fixKey = (mr) => mr.pipelineId ?? mr.updatedAt
+
+function readFixSent() {
+  try { return JSON.parse(localStorage.getItem(FIX_SENT_KEY) || '{}') } catch { return {} }
+}
+
+const fixSent = (mr) => readFixSent()[mr.url] === fixKey(mr)
+
+function markFixSent(mr) {
+  try { localStorage.setItem(FIX_SENT_KEY, JSON.stringify({ ...readFixSent(), [mr.url]: fixKey(mr) })) } catch {}
+}
+
+async function sendMrFix(mr, button) {
+  const [session] = mr.sessions
+  const prompt = `The CI pipeline failed on ${mr.url}. Look at the failed jobs, find the cause, fix it, and push.`
+  button.disabled = true
+  button.textContent = 'Sending…'
+  let result = await postJson('/api/prompt', { id: session.sessionId, prompt })
+  if (!result.ok && /busy|already running/.test(result.data.error ?? '')) result = await postJson('/api/queue', { id: session.sessionId, prompt })
+  button.textContent = result.ok ? 'Sent' : 'Retry'
+  button.title = result.ok ? `Sent to ${session.title}` : (result.data.error ?? 'Could not send')
+  button.disabled = result.ok
+  if (result.ok) markFixSent(mr)
+}
+
+function mrFixButton(mr) {
+  const b = el('button', 'btn mr-fix', 'Fix')
+  b.title = `Ask “${mr.sessions[0].title}” to fix the pipeline`
+  b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, b) }
+  return b
+}
+
 function mrTempBadge(mr) {
   const t = mrTemperature(mr)
   const box = el('span', `temp ${t.tier}`)
@@ -1845,6 +1887,7 @@ async function setMrFocus(mr, focused) {
   if (!ok) return
   const mark = (list) => list.map((item) => (item.url === mr.url ? { ...item, focused } : item))
   state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing) }
+  renderMrsBadge()
   renderMrsPage()
 }
 
@@ -1855,6 +1898,45 @@ function mrStarButton(mr) {
   b.title = mr.focused ? 'Remove from Focus' : 'Add to Focus'
   b.onclick = () => setMrFocus(mr, !mr.focused)
   return b
+}
+
+const MR_LABEL_ACTIONS = { approved: 'Ready to merge', 'no-reviewer': 'Ready for review' }
+const MR_LABEL_PRESENT = { 'Ready to merge': /^ready to (merge|deploy)$/i, 'Ready for review': /^ready (to|for) review$/i }
+
+async function addMrLabel(mr, label, button) {
+  button.disabled = true
+  button.textContent = 'Adding…'
+  const { ok, data } = await postJson('/api/mrs/label', { url: mr.url, label })
+  if (!ok) {
+    button.disabled = false
+    button.textContent = `Add ${label}`
+    button.title = data.error ?? 'Could not add the label'
+    return
+  }
+  if (data.mr) {
+    const { labels, readyLabel, verdict, actionable } = data.mr
+    const patch = (list) => list.map((item) => (item.url === mr.url ? { ...item, labels, readyLabel, verdict, actionable } : item))
+    const authored = patch(state.mrs.data.authored)
+    const reviewing = patch(state.mrs.data.reviewing)
+    const needAction = [...authored, ...reviewing].filter((item) => item.actionable).length
+    state.mrs.data = { ...state.mrs.data, authored, reviewing, actionable: needAction }
+    renderMrsBadge()
+    updateMrRow(mr.url)
+  } else {
+    loadMrs(true)
+  }
+}
+
+function mrVerdict(mr) {
+  const box = el('span', 'mr-verdict')
+  box.append(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.label))
+  const action = mr.role === 'authored' ? MR_LABEL_ACTIONS[mr.verdict.code] : null
+  if (action && !mr.labels?.some((label) => MR_LABEL_PRESENT[action].test(label))) {
+    const button = el('button', 'btn mr-add-ready', `Add ${action}`)
+    button.onclick = () => addMrLabel(mr, action, button)
+    box.append(button)
+  }
+  return box
 }
 
 function mrReviewers(mr) {
@@ -1873,12 +1955,37 @@ function mrSession(mr) {
   return box
 }
 
-function renderMrsPage() {
+function buildMrRow(mr) {
+  const tr = document.createElement('tr')
+  tr.dataset.url = mr.url
+  if (mrTemperature(mr).group === 'cool') tr.className = 'cool'
+  const title = el('div', 'mr-title')
+  const link = el('a', 'row-title mr-link', mr.title)
+  link.href = mr.url
+  link.target = '_blank'
+  link.rel = 'noopener noreferrer'
+  const repo = el('div', 'mr-project')
+  repo.append(projectChip({ project: mr.project.split('/').pop() }), el('span', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
+  title.append(link, repo)
+  const unresolved = mr.mergeStatus === 'discussions_not_resolved'
+  tr.append(
+    cell(mrStarButton(mr)),
+    cell(title),
+    cell(el('span', 'dim', mr.role === 'authored' ? 'Mine' : `Review · ${mr.author}`)),
+    cell(mrVerdict(mr)),
+    cell(mrCi(mr)),
+    cell(mrReviewers(mr)),
+    cell(el('span', unresolved ? 'mr-ci failed' : 'dim', unresolved ? 'Unresolved' : String(mr.notes))),
+    cell(mrTempBadge(mr)),
+    cell(el('span', 'num', relative(mr.updatedAt))),
+    cell(mrSession(mr))
+  )
+  return tr
+}
+
+function renderMrsSummary(all, rows) {
   const data = state.mrs.data
-  if (!data) return
   const { filter, temp } = state.mrs
-  const all = mergeMrs(data)
-  const rows = visibleMrs(all, { filter, temp })
   const counts = tempCounts(all)
   const focused = all.filter((mr) => mr.focused).length
   const waiting = data.reviewing.filter((mr) => mr.verdict.code === 'needs-review').length
@@ -1887,38 +1994,34 @@ function renderMrsPage() {
   $('mrs-error').textContent = data.error ? `Could not refresh from ${data.host}: ${data.error}` : ''
   $('mrs-empty').hidden = all.length > 0 || Boolean(data.error)
   $('mrs-nomatch').hidden = rows.length > 0 || all.length === 0
-  const body = $('mrs-rows')
-  body.replaceChildren()
-  for (const mr of rows) {
-    const tr = document.createElement('tr')
-    if (mrTemperature(mr).group === 'cool') tr.className = 'cool'
-    const title = el('div', 'mr-title')
-    const link = el('a', 'row-title mr-link', mr.title)
-    link.href = mr.url
-    link.target = '_blank'
-    link.rel = 'noopener noreferrer'
-    title.append(link, el('div', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
-    const unresolved = mr.mergeStatus === 'discussions_not_resolved'
-    tr.append(
-      cell(mrStarButton(mr)),
-      cell(title),
-      cell(el('span', 'dim', mr.role === 'authored' ? 'Mine' : `Review · ${mr.author}`)),
-      cell(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.label)),
-      cell(el('span', `mr-ci ${mr.pipeline ?? 'none'}`, CI_LABELS[mr.pipeline] ?? '—')),
-      cell(mrReviewers(mr)),
-      cell(el('span', unresolved ? 'mr-ci failed' : 'dim', unresolved ? 'Unresolved' : String(mr.notes))),
-      cell(mrTempBadge(mr)),
-      cell(el('span', 'num', relative(mr.updatedAt))),
-      cell(mrSession(mr))
-    )
-    body.append(tr)
-  }
   document.querySelectorAll('#mrs-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
   document.querySelectorAll('#mrs-temp button').forEach((b) => {
     b.setAttribute('aria-pressed', String(b.dataset.temp === temp))
     b.textContent = `${b.dataset.temp === 'warm' ? 'Warm' : 'Cool'} ${counts[b.dataset.temp]}`
   })
   document.querySelector('#mrs-filter [data-filter="focus"]').textContent = `Focus ${focused}`
+}
+
+function renderMrsPage() {
+  const data = state.mrs.data
+  if (!data) return
+  const all = mergeMrs(data)
+  const rows = visibleMrs(all, state.mrs)
+  renderMrsSummary(all, rows)
+  $('mrs-rows').replaceChildren(...rows.map(buildMrRow))
+}
+
+function updateMrRow(url) {
+  const data = state.mrs.data
+  const current = [...$('mrs-rows').children].find((tr) => tr.dataset.url === url)
+  if (!data || !current) return renderMrsPage()
+  const all = mergeMrs(data)
+  const rows = visibleMrs(all, state.mrs)
+  const mr = rows.find((item) => item.url === url)
+  const shown = [...$('mrs-rows').children].map((tr) => tr.dataset.url)
+  if (!mr || rows.length !== shown.length || rows.some((item, index) => item.url !== shown[index])) return renderMrsPage()
+  current.replaceWith(buildMrRow(mr))
+  renderMrsSummary(all, rows)
 }
 
 function renderMrsLoading() {
