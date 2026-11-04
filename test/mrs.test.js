@@ -130,6 +130,18 @@ test('sorts newest update first and counts actionable ones', async () => {
   assert.equal(data.actionable, 3)
 })
 
+test('lists the sessions of a merge request with the most recently active first', async () => {
+  const data = await loadMergeRequests({ run: async () => payload({ authored: [node()] }), now: NOW })
+  const url = data.authored[0].url
+  const linked = new Map([[url, [
+    { sessionId: 'old', lastActivityAt: 1000 },
+    { sessionId: 'unknown' },
+    { sessionId: 'new', lastActivityAt: 3000 },
+    { sessionId: 'mid', lastActivityAt: 2000 },
+  ]]])
+  assert.deepEqual(withSessions(data, linked).authored[0].sessions.map((s) => s.sessionId), ['new', 'mid', 'old', 'unknown'])
+})
+
 test('attaches the sessions that mentioned each merge request', async () => {
   const data = await loadMergeRequests({ run: async () => payload({ authored: [node()] }), now: NOW })
   const url = data.authored[0].url

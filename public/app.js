@@ -1836,26 +1836,39 @@ function mrCi(mr) {
   const span = el('span', `mr-ci ${mr.pipeline ?? 'none'}`)
   if (mr.pipeline === 'running') span.append(el('span', 'spinner'), text(' '))
   span.append(text(CI_LABELS[mr.pipeline] ?? '—'))
-  if (mr.pipeline === 'failed' && mr.sessions[0]) span.append(text(' '), fixSent(mr) ? el('span', 'dim mr-fix-sent', 'Fix sent') : mrFixButton(mr))
+  if (mr.pipeline === 'failed' && mr.sessions[0]) span.append(text(' '), mrFixControl(mr, 'ci'))
   return span
 }
 
 const FIX_SENT_KEY = 'board.mrFixSent'
-const fixKey = (mr) => mr.pipelineId ?? mr.updatedAt
+
+const MR_FIXES = {
+  ci: {
+    key: (mr) => mr.pipelineId ?? mr.updatedAt,
+    prompt: (mr) => `The CI pipeline failed on ${mr.url}. Look at the failed jobs, find the cause, fix it, and push.`,
+    title: (mr) => `Ask “${mr.sessions[0].title}” to fix the pipeline`,
+  },
+  conflicts: {
+    key: (mr) => mr.updatedAt,
+    prompt: (mr) => `${mr.url} has merge conflicts with ${mr.target}. Merge ${mr.target} into ${mr.source}, resolve the conflicts, run the tests, and push.`,
+    title: (mr) => `Ask “${mr.sessions[0].title}” to resolve the conflicts`,
+  },
+}
 
 function readFixSent() {
   try { return JSON.parse(localStorage.getItem(FIX_SENT_KEY) || '{}') } catch { return {} }
 }
 
-const fixSent = (mr) => readFixSent()[mr.url] === fixKey(mr)
+const fixSlot = (mr, kind) => (kind === 'ci' ? mr.url : `${mr.url}#${kind}`)
+const fixSent = (mr, kind) => readFixSent()[fixSlot(mr, kind)] === MR_FIXES[kind].key(mr)
 
-function markFixSent(mr) {
-  try { localStorage.setItem(FIX_SENT_KEY, JSON.stringify({ ...readFixSent(), [mr.url]: fixKey(mr) })) } catch {}
+function markFixSent(mr, kind) {
+  try { localStorage.setItem(FIX_SENT_KEY, JSON.stringify({ ...readFixSent(), [fixSlot(mr, kind)]: MR_FIXES[kind].key(mr) })) } catch {}
 }
 
-async function sendMrFix(mr, button) {
+async function sendMrFix(mr, kind, button) {
   const [session] = mr.sessions
-  const prompt = `The CI pipeline failed on ${mr.url}. Look at the failed jobs, find the cause, fix it, and push.`
+  const prompt = MR_FIXES[kind].prompt(mr)
   button.disabled = true
   button.textContent = 'Sending…'
   let result = await postJson('/api/prompt', { id: session.sessionId, prompt })
@@ -1863,14 +1876,18 @@ async function sendMrFix(mr, button) {
   button.textContent = result.ok ? 'Sent' : 'Retry'
   button.title = result.ok ? `Sent to ${session.title}` : (result.data.error ?? 'Could not send')
   button.disabled = result.ok
-  if (result.ok) markFixSent(mr)
+  if (result.ok) markFixSent(mr, kind)
 }
 
-function mrFixButton(mr) {
+function mrFixButton(mr, kind) {
   const b = el('button', 'btn mr-fix', 'Fix')
-  b.title = `Ask “${mr.sessions[0].title}” to fix the pipeline`
-  b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, b) }
+  b.title = MR_FIXES[kind].title(mr)
+  b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, kind, b) }
   return b
+}
+
+function mrFixControl(mr, kind) {
+  return fixSent(mr, kind) ? el('span', 'dim mr-fix-sent', 'Fix sent') : mrFixButton(mr, kind)
 }
 
 function mrTempBadge(mr) {
@@ -1936,6 +1953,7 @@ function mrVerdict(mr) {
     button.onclick = () => addMrLabel(mr, action, button)
     box.append(button)
   }
+  if (mr.role === 'authored' && mr.verdict.code === 'conflicts' && mr.sessions[0]) box.append(mrFixControl(mr, 'conflicts'))
   return box
 }
 
@@ -1946,13 +1964,23 @@ function mrReviewers(mr) {
   return box
 }
 
+const mrSessionsOpen = new Set()
+
 function mrSession(mr) {
-  const [first] = mr.sessions
-  if (!first) return el('span', 'dim', '—')
-  const box = el('div', 'mr-session')
-  box.append(el('div', 'row-title', first.title), openLink(first.sessionId))
-  if (mr.sessions.length > 1) box.append(el('span', 'dim', `+${mr.sessions.length - 1} more`))
-  return box
+  if (!mr.sessions.length) return el('span', 'dim', '—')
+  const list = el('div', 'mr-session')
+  for (const session of mr.sessions) {
+    const item = el('div', 'mr-session-item')
+    item.append(el('div', 'row-title', session.title), openLink(session.sessionId))
+    list.append(item)
+  }
+  if (mr.sessions.length === 1) return list
+  const details = document.createElement('details')
+  details.className = 'mr-sessions'
+  details.open = mrSessionsOpen.has(mr.url)
+  details.ontoggle = () => (details.open ? mrSessionsOpen.add(mr.url) : mrSessionsOpen.delete(mr.url))
+  details.append(el('summary', 'dim', `${mr.sessions.length} sessions`), list)
+  return details
 }
 
 function buildMrRow(mr) {

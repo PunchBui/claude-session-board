@@ -424,7 +424,7 @@ async function mrSessionLinks() {
     const { title, project, archived } = toSummary(raw)
     for (const url of state.links.keys()) {
       const sessions = linked.get(url) ?? []
-      sessions.push({ sessionId: raw.sessionId, title, project, archived })
+      sessions.push({ sessionId: raw.sessionId, title, project, archived, lastActivityAt: raw.lastActivityAt ?? 0 })
       linked.set(url, sessions)
     }
   }
