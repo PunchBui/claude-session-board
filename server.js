@@ -23,6 +23,9 @@ import { resolveSpawnEnv } from './lib/env.js'
 import { guardAgainstDesktop } from './lib/interference.js'
 import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
+import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
+import { installCrashGuard, eachIsolated, logged, describeError } from './lib/crash.js'
+import { isSavedRunAlive, adoptedRun, adoptedOutcome, remainingMs, watchUntilGone } from './lib/adopt.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -41,6 +44,8 @@ const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
+const RUNS_FILE = join(DATA_DIR, 'runs.json')
+const ADOPT_POLL_MS = 2000
 const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: homedir() })
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
@@ -241,18 +246,10 @@ function loopFor(raw) {
   return loopOf(state.loops, { nowMs: Date.now(), working, idleMs: Date.now() - mtimeMs })
 }
 
-async function readJson(file, fallback) {
-  try {
-    return JSON.parse(await readFile(file, 'utf8'))
-  } catch {
-    return fallback
-  }
-}
+const readJson = (file, fallback) =>
+  readJsonQuarantine(file, fallback, { onCorrupt: ({ file: path, kept }) => console.error(`${path} did not parse; kept it as ${kept}`) })
 
-async function writeJson(file, value) {
-  await mkdir(DATA_DIR, { recursive: true })
-  await writeFile(file, JSON.stringify(value, null, 2))
-}
+const writeJson = writeJsonAtomic
 
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
@@ -376,9 +373,96 @@ function startRun(raw, prompt, { handoff = null } = {}) {
     pump()
   })
   runs.set(raw.sessionId, run)
+  trackRun(raw.sessionId, child, { startedAt: run.startedAt, mode: run.mode, handoffFile: handoff, cliSessionId: raw.cliSessionId })
+}
+
+const savedRuns = new Map()
+
+function persistRuns() {
+  return writeJson(RUNS_FILE, Object.fromEntries(savedRuns)).catch((error) => console.error(`runs.json: ${describeError(error)}`))
+}
+
+function forgetRun(id, pid) {
+  if (savedRuns.get(id)?.pid !== pid) return
+  savedRuns.delete(id)
+  persistRuns()
+}
+
+function trackRun(id, child, entry) {
+  if (child.pid) {
+    savedRuns.set(id, { pid: child.pid, ...entry })
+    persistRuns()
+  }
+  const forget = () => forgetRun(id, child.pid)
+  child.once('close', forget)
+  child.once('error', forget)
+}
+
+function finishHandoff(raw, run) {
+  return stat(run.handoff.file).catch(() => null).then((found) => {
+    if (found) {
+      run.handoff.ready = true
+      openHandoff(raw, run.handoff.file)
+    } else {
+      Object.assign(run, { state: 'failed', error: 'The handoff ran but wrote no document.' })
+    }
+  })
+}
+
+async function settleAdopted(raw, run, entry) {
+  const scanned = await scanSession(raw).catch(() => null)
+  const outcome = adoptedOutcome({ stopRequested: run.stopRequested, timedOut: run.timedOut, endedCleanly: scanned ? endedCleanly(scanned.state) : false })
+  Object.assign(run, outcome, { endedAt: Date.now() })
+  if (run.handoff && run.state === 'done') await finishHandoff(raw, run)
+  forgetRun(raw.sessionId, entry.pid)
+  pauseQueueAfter(raw.sessionId, run)
+  pump()
+}
+
+function adoptRun(id, raw, entry) {
+  const run = adoptedRun(entry, { graceMs: KILL_GRACE_MS })
+  const timer = setTimeout(() => { run.timedOut = true; run.stop() }, remainingMs(entry.startedAt, Date.now(), RUN_TIMEOUT_MS))
+  watchUntilGone(entry.pid, {
+    pollMs: ADOPT_POLL_MS,
+    onGone: logged(`adopted run ${id}`, async () => {
+      clearTimeout(timer)
+      await settleAdopted(raw, run, entry)
+    }),
+  })
+  savedRuns.set(id, entry)
+  runs.set(id, run)
+}
+
+async function adoptSavedRuns() {
+  const stored = await readJson(RUNS_FILE, {})
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return
+  const raws = await readRawSessions()
+  for (const [id, entry] of Object.entries(stored)) {
+    if (!SESSION_ID.test(id) || !(await isSavedRunAlive(entry))) continue
+    const raw = raws.find((session) => session.sessionId === id) ?? { sessionId: id, cliSessionId: entry.cliSessionId }
+    adoptRun(id, raw, entry)
+  }
+  await persistRuns()
 }
 
 let pumping = false
+
+async function pumpSession([id, queue], raws) {
+  const release = claims.claim(id)
+  if (!release) return
+  try {
+    const raw = raws.find((session) => session.sessionId === id)
+    if (!raw?.cliSessionId || !(await hasTranscript(raw))) return
+    const card = await buildCard(raw)
+    if (refusalFor({ card, run: runs.get(id), nowMs: Date.now(), lookaheadMs: RUN_TIMEOUT_MS })) return
+    const next = queue.items.shift()
+    if (!next) return
+    await persistQueues()
+    startRun(raw, next.prompt)
+  } finally {
+    release()
+  }
+}
 
 async function pump() {
   if (pumping) return
@@ -387,22 +471,9 @@ async function pump() {
     const pending = [...queues].filter(([, queue]) => queue.items.length && !queue.paused)
     if (!pending.length) return
     const raws = await readRawSessions()
-    for (const [id, queue] of pending) {
-      const release = claims.claim(id)
-      if (!release) continue
-      try {
-        const raw = raws.find((session) => session.sessionId === id)
-        if (!raw?.cliSessionId || !(await hasTranscript(raw))) continue
-        const card = await buildCard(raw)
-        if (refusalFor({ card, run: runs.get(id), nowMs: Date.now(), lookaheadMs: RUN_TIMEOUT_MS })) continue
-        const next = queue.items.shift()
-        if (!next) continue
-        await persistQueues()
-        startRun(raw, next.prompt)
-      } finally {
-        release()
-      }
-    }
+    await eachIsolated(pending, (entry) => pumpSession(entry, raws), (error, [id]) => console.error(`pump ${id}: ${describeError(error)}`))
+  } catch (error) {
+    console.error(`pump: ${describeError(error)}`)
   } finally {
     pumping = false
   }
@@ -875,7 +946,9 @@ const getRoutes = {
   },
 }
 
+installCrashGuard()
 await loadStores()
+await adoptSavedRuns().catch((error) => console.error(`adopting runs: ${describeError(error)}`))
 pruneUploads()
 setInterval(tick, 2000)
 warmIndex()
