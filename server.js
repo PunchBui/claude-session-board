@@ -20,6 +20,7 @@ import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer } from './lib/ping.js'
 import { refusalFor, refusalBody, createClaims, endedCleanly, classifyExit } from './lib/guard.js'
 import { resolveSpawnEnv } from './lib/env.js'
+import { guardAgainstDesktop } from './lib/interference.js'
 import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
@@ -339,6 +340,7 @@ function startRun(raw, prompt, { handoff = null } = {}) {
   const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE, '--add-dir', UPLOAD_DIR]
   const logFile = join(RUN_LOG_DIR, `${raw.sessionId}.log`)
   const child = spawnDetached(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), logFile, input: prompt, env: spawnEnv })
+  const unguard = guardAgainstDesktop(run, transcriptPaths.get(raw.cliSessionId))
   let exited = false
   run.stop = () => {
     run.stopRequested = true
@@ -348,6 +350,7 @@ function startRun(raw, prompt, { handoff = null } = {}) {
   const timer = setTimeout(() => { run.timedOut = true; run.stop() }, RUN_TIMEOUT_MS)
   child.on('error', (error) => {
     clearTimeout(timer)
+    unguard()
     const missing = error.code === 'ENOENT'
     Object.assign(run, { state: 'failed', endedAt: Date.now(), error: missing ? `Could not start "${CLAUDE_BIN}": not found. Set CLAUDE_BIN to the full path of the claude binary.` : String(error.message) })
     pauseQueueAfter(raw.sessionId, run)
@@ -355,10 +358,11 @@ function startRun(raw, prompt, { handoff = null } = {}) {
   child.on('close', async (code, signal) => {
     exited = true
     clearTimeout(timer)
+    unguard()
     if (run.state === 'failed' && run.error) return pump()
     const endedAt = Date.now()
     const scanned = await scanSession(raw).catch(() => null)
-    const outcome = classifyExit({ code, signal, stopRequested: run.stopRequested, timedOut: run.timedOut, cleanTail: scanned ? endedCleanly(scanned.state) : null, errorText: clip(logTail(logFile, 2000), 400) })
+    const outcome = classifyExit({ code, signal, stopRequested: run.stopRequested, timedOut: run.timedOut, interfered: run.interfered, cleanTail: scanned ? endedCleanly(scanned.state) : null, errorText: clip(logTail(logFile, 2000), 400) })
     Object.assign(run, outcome, { endedAt })
     if (run.handoff && run.state === 'done') {
       if (await stat(run.handoff.file).catch(() => null)) {

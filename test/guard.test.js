@@ -101,6 +101,14 @@ test('exit classification', () => {
   assert.equal(classifyExit({ ...base, code: 2 }).error, 'exit code 2')
 })
 
+test('a run stopped because the desktop app wrote to the session is stalled, not stopped', () => {
+  const base = { code: null, signal: 'SIGTERM', stopRequested: true, timedOut: false, interfered: true, cleanTail: false, errorText: '' }
+  assert.deepEqual(classifyExit(base), { state: 'stalled', error: 'Stopped because the desktop app wrote to this session during the run.' })
+  assert.equal(classifyExit({ ...base, cleanTail: true }).state, 'stalled')
+  assert.equal(classifyExit({ ...base, interfered: false }).state, 'stopped')
+  assert.match(classifyExit({ ...base, timedOut: true }).error, /Timed out/)
+})
+
 test('a turn ends cleanly only on an end_turn stop', () => {
   assert.equal(endedCleanly({ lastStop: 'end_turn' }), true)
   assert.equal(endedCleanly({ lastStop: 'tool_use' }), false)
