@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip } from '../public/mrs.js'
+import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, fixOutcome } from '../public/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -93,4 +93,31 @@ test('merging includes the merged list after the open ones', () => {
   const list = mergeMrs({ authored: [mr(1)], reviewing: [], merged: [merged] })
   assert.deepEqual(ids(list), ['1', '3'])
   assert.equal(mergeMrs({ authored: [mr(1)], reviewing: [] }).length, 1)
+})
+
+test('a direct send that succeeds shows Sent, locks the button and is remembered', () => {
+  assert.deepEqual(fixOutcome({ ok: true, data: {} }, false, 'Fix CI'), { label: 'Sent', title: 'Sent to Fix CI', disabled: true, record: true })
+})
+
+test('a queued send shows Queued, stays locked and is not remembered', () => {
+  const outcome = fixOutcome({ ok: true, data: {} }, true, 'Fix CI')
+  assert.equal(outcome.label, 'Queued')
+  assert.match(outcome.title, /session queue/)
+  assert.equal(outcome.disabled, true)
+  assert.equal(outcome.record, false)
+})
+
+test('a failed send offers Retry with the server error and is not remembered', () => {
+  const direct = fixOutcome({ ok: false, data: { error: 'Session is busy' } }, false, 'Fix CI')
+  assert.deepEqual(direct, { label: 'Retry', title: 'Session is busy', disabled: false, record: false })
+  assert.equal(fixOutcome({ ok: false, data: { error: 'Queue is full' } }, true, 'Fix CI').label, 'Retry')
+  assert.equal(fixOutcome({ ok: false, data: {} }, false, 'Fix CI').title, 'Could not send')
+  assert.equal(fixOutcome({ ok: false }, false, 'Fix CI').title, 'Could not send')
+})
+
+test('fixes are offered only on open merge requests that have a session', () => {
+  const session = { sessionId: 's1', title: 'Fix CI' }
+  assert.equal(fixOffered(mr(1, { sessions: [session] })), true)
+  assert.equal(fixOffered(mr(2, { sessions: [] })), false)
+  assert.equal(fixOffered(mr(3, { sessions: [session], mergedAt: NOW - HOUR })), false)
 })

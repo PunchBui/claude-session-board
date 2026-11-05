@@ -3,7 +3,7 @@ import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { warmthOf, warmthTip } from './warmth.js'
-import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip } from './mrs.js'
+import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, fixOutcome } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
@@ -1882,7 +1882,7 @@ function mrCi(mr) {
   const span = el('span', `mr-ci ${mr.pipeline ?? 'none'}`)
   if (mr.pipeline === 'running') span.append(el('span', 'spinner'), text(' '))
   span.append(text(CI_LABELS[mr.pipeline] ?? '—'))
-  if (mr.pipeline === 'failed' && mr.sessions[0]) span.append(text(' '), mrFixControl(mr, 'ci'))
+  if (mr.pipeline === 'failed' && fixOffered(mr)) span.append(text(' '), mrFixControl(mr, 'ci'))
   return span
 }
 
@@ -1917,22 +1917,42 @@ function markFixSent(mr, kind) {
   try { localStorage.setItem(FIX_SENT_KEY, JSON.stringify({ ...readFixSent(), [fixSlot(mr, kind)]: MR_FIXES[kind].key(mr) })) } catch {}
 }
 
+const fixQueued = new Set()
+const fixQueuedSlot = (mr, kind) => `${fixSlot(mr, kind)}|${MR_FIXES[kind].key(mr)}`
+
+function showFixOutcome(button, outcome) {
+  button.textContent = outcome.label
+  button.title = outcome.title
+  button.disabled = outcome.disabled
+}
+
 async function sendMrFix(mr, kind, button) {
+  if (button.disabled) return
   const [session] = mr.sessions
   const prompt = MR_FIXES[kind].prompt(mr)
   button.disabled = true
   button.textContent = 'Sending…'
-  let result = await postJson('/api/prompt', { id: session.sessionId, prompt })
-  if (shouldQueue(result)) result = await postJson('/api/queue', { id: session.sessionId, prompt })
-  button.textContent = result.ok ? 'Sent' : 'Retry'
-  button.title = result.ok ? `Sent to ${session.title}` : (result.data.error ?? 'Could not send')
-  button.disabled = result.ok
-  if (result.ok) markFixSent(mr, kind)
+  let queued = false
+  let result
+  try {
+    result = await postJson('/api/prompt', { id: session.sessionId, prompt })
+    if (shouldQueue(result)) {
+      queued = true
+      result = await postJson('/api/queue', { id: session.sessionId, prompt })
+    }
+  } catch {
+    result = { ok: false, data: { error: 'Could not send' } }
+  }
+  const outcome = fixOutcome(result, queued, session.title)
+  showFixOutcome(button, outcome)
+  if (outcome.record) markFixSent(mr, kind)
+  if (queued && result.ok) fixQueued.add(fixQueuedSlot(mr, kind))
 }
 
 function mrFixButton(mr, kind) {
   const b = el('button', 'btn mr-fix', 'Fix')
   b.title = MR_FIXES[kind].title(mr)
+  if (fixQueued.has(fixQueuedSlot(mr, kind))) showFixOutcome(b, fixOutcome({ ok: true }, true, mr.sessions[0].title))
   b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, kind, b) }
   return b
 }
@@ -1940,7 +1960,7 @@ function mrFixButton(mr, kind) {
 function mrThreads(mr) {
   const box = el('span', 'mr-threads')
   box.append(el('span', mr.unresolved ? 'mr-ci failed' : 'dim', String(mr.unresolved ?? 0)))
-  if (mr.role === 'authored' && mr.unresolved && mr.sessions[0]) box.append(mrFixControl(mr, 'threads'))
+  if (mr.role === 'authored' && mr.unresolved && fixOffered(mr)) box.append(mrFixControl(mr, 'threads'))
   return box
 }
 
@@ -2013,7 +2033,7 @@ function mrVerdict(mr) {
   }
   if (mr.role === 'authored' && mr.conflicts && mr.verdict.code !== 'merged') {
     if (mr.verdict.code !== 'conflicts') box.append(el('span', 'mr-badge bad', 'Has conflicts'))
-    if (mr.sessions[0]) box.append(mrFixControl(mr, 'conflicts'))
+    if (fixOffered(mr)) box.append(mrFixControl(mr, 'conflicts'))
   }
   return box
 }

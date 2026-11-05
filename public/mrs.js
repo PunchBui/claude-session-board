@@ -43,6 +43,14 @@ export function tempCounts(all, now = Date.now()) {
   return counts
 }
 
+export const fixOffered = (mr) => !mr.mergedAt && Boolean(mr.sessions?.[0])
+
+export function fixOutcome(result, queued, sessionTitle) {
+  if (!result.ok) return { label: 'Retry', title: result.data?.error ?? 'Could not send', disabled: false, record: false }
+  if (queued) return { label: 'Queued', title: `Waiting in the session queue of ${sessionTitle}`, disabled: true, record: false }
+  return { label: 'Sent', title: `Sent to ${sessionTitle}`, disabled: true, record: true }
+}
+
 export function mrWarmthTip(mr, warmth, now = Date.now()) {
   return {
     heading: warmth.label,
