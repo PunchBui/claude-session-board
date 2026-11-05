@@ -11,21 +11,18 @@ import { gitInfo } from './lib/git.js'
 import { REPEATS, nextAfter } from './lib/schedule.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
-import { listCommands, BLOCKED_PROMPT } from './lib/commands.js'
+import { listCommands } from './lib/commands.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
-import { spawnDetached, killGroup, logTail } from './lib/run.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer } from './lib/ping.js'
-import { refusalFor, refusalBody, createClaims, endedCleanly, classifyExit } from './lib/guard.js'
 import { resolveSpawnEnv } from './lib/env.js'
-import { guardAgainstDesktop } from './lib/interference.js'
 import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
-import { installCrashGuard, eachIsolated, logged, describeError } from './lib/crash.js'
-import { isSavedRunAlive, adoptedRun, adoptedOutcome, remainingMs, watchUntilGone } from './lib/adopt.js'
+import { installCrashGuard, describeError } from './lib/crash.js'
+import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -50,7 +47,6 @@ const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: 
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
 const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
-const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
 const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage'])
@@ -58,14 +54,12 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
 const CHAT_ITEMS = 60
-const MAX_PROMPT_CHARS = 8000
 const MAX_QUEUE = 20
 const MAX_SCHEDULES = 50
 const MAX_SNIPPETS = 40
 const RUN_TIMEOUT_MS = 15 * 60_000
 const KILL_GRACE_MS = 5000
 const spawnEnv = await resolveSpawnEnv()
-const claims = createClaims()
 const DEFAULT_SNIPPETS = [
   { sid: 'default-continue', label: 'Continue', text: 'Continue.' },
   { sid: 'default-left', label: 'What is left?', text: 'List briefly what is still left to do.' },
@@ -76,7 +70,6 @@ const DEFAULT_SNIPPETS = [
 
 const scanStore = createScanStore()
 const transcriptPaths = new Map()
-const runs = new Map()
 const queues = new Map()
 let schedules = []
 let customSnippets = null
@@ -201,7 +194,7 @@ async function buildCard(raw) {
   const { cliSessionId, ...base } = toSummary(raw)
   const scanned = await scanSession(raw)
   const touchedAt = Math.max(base.lastActivityAt ?? 0, scanned?.info.mtimeMs ?? 0)
-  const run = runs.get(raw.sessionId)
+  const run = manager.runFor(raw.sessionId)
   const running = run?.state === 'running'
   const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running, runEndedAt: run?.endedAt ?? null }) : null
   const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS || Boolean(live?.working)
@@ -304,172 +297,12 @@ function publicQueue(id) {
   return { items: queue?.items ?? [], paused: Boolean(queue?.paused) }
 }
 
-function publicRun(id) {
-  const run = runs.get(id)
-  if (!run) return null
-  const { stop, ...rest } = run
-  return rest
-}
-
 function schedulesFor(id) {
   return schedules.filter((item) => item.id === id).sort((a, b) => a.at - b.at)
 }
 
-function clip(value, max) {
-  const flat = String(value ?? '').replace(/\s+/g, ' ').trim()
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
-}
-
-function pauseQueueAfter(id, run) {
-  const queue = queues.get(id)
-  if (queue?.items.length && run.state !== 'done') {
-    queue.paused = true
-    persistQueues()
-  }
-}
-
 function openHandoff(raw, file) {
   execFile('open', [handoffLink({ folder: raw.cwd ?? raw.originCwd ?? null, file })], () => {})
-}
-
-function startRun(raw, prompt, { handoff = null } = {}) {
-  const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE, stopRequested: false, timedOut: false, prompt: handoff ? null : prompt, handoff: handoff && { file: handoff, ready: false } }
-  const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE, '--add-dir', UPLOAD_DIR]
-  const logFile = join(RUN_LOG_DIR, `${raw.sessionId}.log`)
-  const child = spawnDetached(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), logFile, input: prompt, env: spawnEnv })
-  const unguard = guardAgainstDesktop(run, transcriptPaths.get(raw.cliSessionId))
-  let exited = false
-  run.stop = () => {
-    run.stopRequested = true
-    killGroup(child)
-    setTimeout(() => { if (!exited) killGroup(child, 'SIGKILL') }, KILL_GRACE_MS).unref()
-  }
-  const timer = setTimeout(() => { run.timedOut = true; run.stop() }, RUN_TIMEOUT_MS)
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    unguard()
-    const missing = error.code === 'ENOENT'
-    Object.assign(run, { state: 'failed', endedAt: Date.now(), error: missing ? `Could not start "${CLAUDE_BIN}": not found. Set CLAUDE_BIN to the full path of the claude binary.` : String(error.message) })
-    pauseQueueAfter(raw.sessionId, run)
-  })
-  child.on('close', async (code, signal) => {
-    exited = true
-    clearTimeout(timer)
-    unguard()
-    if (run.state === 'failed' && run.error) return pump()
-    const endedAt = Date.now()
-    const scanned = await scanSession(raw).catch(() => null)
-    const outcome = classifyExit({ code, signal, stopRequested: run.stopRequested, timedOut: run.timedOut, interfered: run.interfered, cleanTail: scanned ? endedCleanly(scanned.state) : null, errorText: clip(logTail(logFile, 2000), 400) })
-    Object.assign(run, outcome, { endedAt })
-    if (run.handoff && run.state === 'done') await finishHandoff(raw, run)
-    pauseQueueAfter(raw.sessionId, run)
-    pump()
-  })
-  runs.set(raw.sessionId, run)
-  trackRun(raw.sessionId, child, { startedAt: run.startedAt, mode: run.mode, handoffFile: handoff, cliSessionId: raw.cliSessionId })
-}
-
-const savedRuns = new Map()
-
-function persistRuns() {
-  return writeJson(RUNS_FILE, Object.fromEntries(savedRuns)).catch((error) => console.error(`runs.json: ${describeError(error)}`))
-}
-
-function forgetRun(id, pid) {
-  if (savedRuns.get(id)?.pid !== pid) return
-  savedRuns.delete(id)
-  persistRuns()
-}
-
-function trackRun(id, child, entry) {
-  if (child.pid) {
-    savedRuns.set(id, { pid: child.pid, ...entry })
-    persistRuns()
-  }
-  const forget = () => forgetRun(id, child.pid)
-  child.once('close', forget)
-  child.once('error', forget)
-}
-
-function finishHandoff(raw, run) {
-  return stat(run.handoff.file).catch(() => null).then((found) => {
-    if (found) {
-      run.handoff.ready = true
-      openHandoff(raw, run.handoff.file)
-    } else {
-      Object.assign(run, { state: 'failed', error: 'The handoff ran but wrote no document.' })
-    }
-  })
-}
-
-async function settleAdopted(raw, run, entry) {
-  const scanned = await scanSession(raw).catch(() => null)
-  const outcome = adoptedOutcome({ stopRequested: run.stopRequested, timedOut: run.timedOut, endedCleanly: scanned ? endedCleanly(scanned.state) : false })
-  Object.assign(run, outcome, { endedAt: Date.now() })
-  if (run.handoff && run.state === 'done') await finishHandoff(raw, run)
-  forgetRun(raw.sessionId, entry.pid)
-  pauseQueueAfter(raw.sessionId, run)
-  pump()
-}
-
-function adoptRun(id, raw, entry) {
-  const run = adoptedRun(entry, { graceMs: KILL_GRACE_MS })
-  const timer = setTimeout(() => { run.timedOut = true; run.stop() }, remainingMs(entry.startedAt, Date.now(), RUN_TIMEOUT_MS))
-  watchUntilGone(entry.pid, {
-    pollMs: ADOPT_POLL_MS,
-    onGone: logged(`adopted run ${id}`, async () => {
-      clearTimeout(timer)
-      await settleAdopted(raw, run, entry)
-    }),
-  })
-  savedRuns.set(id, entry)
-  runs.set(id, run)
-}
-
-async function adoptSavedRuns() {
-  const stored = await readJson(RUNS_FILE, {})
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return
-  const raws = await readRawSessions()
-  for (const [id, entry] of Object.entries(stored)) {
-    if (!SESSION_ID.test(id) || !(await isSavedRunAlive(entry))) continue
-    const raw = raws.find((session) => session.sessionId === id) ?? { sessionId: id, cliSessionId: entry.cliSessionId }
-    adoptRun(id, raw, entry)
-  }
-  await persistRuns()
-}
-
-let pumping = false
-
-async function pumpSession([id, queue], raws) {
-  const release = claims.claim(id)
-  if (!release) return
-  try {
-    const raw = raws.find((session) => session.sessionId === id)
-    if (!raw?.cliSessionId || !(await hasTranscript(raw))) return
-    const card = await buildCard(raw)
-    if (refusalFor({ card, run: runs.get(id), nowMs: Date.now(), lookaheadMs: RUN_TIMEOUT_MS })) return
-    const next = queue.items.shift()
-    if (!next) return
-    await persistQueues()
-    startRun(raw, next.prompt)
-  } finally {
-    release()
-  }
-}
-
-async function pump() {
-  if (pumping) return
-  pumping = true
-  try {
-    const pending = [...queues].filter(([, queue]) => queue.items.length && !queue.paused)
-    if (!pending.length) return
-    const raws = await readRawSessions()
-    await eachIsolated(pending, (entry) => pumpSession(entry, raws), (error, [id]) => console.error(`pump ${id}: ${describeError(error)}`))
-  } catch (error) {
-    console.error(`pump: ${describeError(error)}`)
-  } finally {
-    pumping = false
-  }
 }
 
 async function enqueue(id, prompt) {
@@ -508,7 +341,7 @@ async function loadFocusCards() {
     ids.filter((id) => byId.has(id)).map((id) =>
       buildCard(byId.get(id)).then((card) => ({
         ...card,
-        run: publicRun(id),
+        run: manager.publicRun(id),
         queue: publicQueue(id),
         schedules: schedulesFor(id),
       }))
@@ -711,10 +544,6 @@ async function pruneUploads() {
   }
 }
 
-const validPrompt = (prompt) => typeof prompt === 'string' && prompt.trim() && prompt.length <= MAX_PROMPT_CHARS
-const BLOCKED_MESSAGE = 'That command starts a new session, so the board would lose track of this one. Run it in the desktop app instead.'
-const NO_TRANSCRIPT_MESSAGE = 'This session has no transcript yet, so there is nothing to resume. Send its first message in the desktop app, then try again.'
-const isBlocked = (prompt) => typeof prompt === 'string' && BLOCKED_PROMPT.test(prompt)
 const commandCache = new Map()
 
 async function commandsFor(cwd) {
@@ -726,24 +555,32 @@ async function commandsFor(cwd) {
 }
 const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSessions()).find((s) => s.sessionId === id) : null)
 
-async function startPrompt(body, res, prompt, options) {
-  if (isBlocked(prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
-  if (!validPrompt(prompt)) return json(res, 400, { error: 'bad request' })
-  const release = claims.claim(String(body.id ?? ''))
-  if (!release) return json(res, 409, refusalBody({ code: 'running', message: 'a prompt is already running for this session', queueable: true }))
-  try {
-    const raw = await findRaw(body.id)
-    if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
-    if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
-    const card = await buildCard(raw)
-    const refusal = refusalFor({ card, run: runs.get(body.id), nowMs: Date.now(), lookaheadMs: RUN_TIMEOUT_MS })
-    if (refusal) return json(res, 409, refusalBody(refusal))
-    startRun(raw, prompt.trim(), options)
-    return json(res, 202, { run: publicRun(body.id) })
-  } finally {
-    release()
-  }
-}
+const manager = createRunManager({
+  claudeBin: CLAUDE_BIN,
+  env: spawnEnv,
+  uploadDir: UPLOAD_DIR,
+  logDir: RUN_LOG_DIR,
+  permissionMode: PROMPT_PERMISSION_MODE,
+  timeoutMs: RUN_TIMEOUT_MS,
+  graceMs: KILL_GRACE_MS,
+  adoptPollMs: ADOPT_POLL_MS,
+  homeDir: homedir(),
+  scanSession,
+  hasTranscript,
+  buildCard,
+  readRawSessions,
+  findRaw,
+  queues,
+  persistQueues,
+  readJson,
+  writeJson,
+  runsFile: RUNS_FILE,
+  transcriptPaths,
+  openHandoff,
+})
+const pump = manager.pump
+
+const reply = (res, { status, body }) => json(res, status, body)
 
 const postRoutes = {
   async '/api/pick-folder'(body, res) {
@@ -793,17 +630,14 @@ const postRoutes = {
     return json(res, 200, { ids: next })
   },
   async '/api/prompt'(body, res) {
-    return startPrompt(body, res, body.prompt)
+    return reply(res, await manager.requestPrompt(body, body.prompt))
   },
   async '/api/handoff'(body, res) {
     const file = handoffFile(String(body.id ?? ''), tmpdir())
-    return startPrompt(body, res, handoffPrompt(file), { handoff: file })
+    return reply(res, await manager.requestPrompt(body, handoffPrompt(file), { handoff: file }))
   },
   async '/api/prompt/stop'(body, res) {
-    const run = runs.get(body.id)
-    if (!run || run.state !== 'running') return json(res, 404, { error: 'nothing running' })
-    run.stop()
-    return json(res, 200, { run: publicRun(body.id) })
+    return reply(res, manager.stopPrompt(body.id))
   },
   async '/api/queue'(body, res) {
     if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
@@ -941,7 +775,7 @@ const getRoutes = {
 
 installCrashGuard()
 await loadStores()
-await adoptSavedRuns().catch((error) => console.error(`adopting runs: ${describeError(error)}`))
+await manager.adoptSavedRuns().catch((error) => console.error(`adopting runs: ${describeError(error)}`))
 pruneUploads()
 setInterval(tick, 2000)
 warmIndex()
