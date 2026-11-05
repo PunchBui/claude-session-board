@@ -361,14 +361,7 @@ function startRun(raw, prompt, { handoff = null } = {}) {
     const scanned = await scanSession(raw).catch(() => null)
     const outcome = classifyExit({ code, signal, stopRequested: run.stopRequested, timedOut: run.timedOut, interfered: run.interfered, cleanTail: scanned ? endedCleanly(scanned.state) : null, errorText: clip(logTail(logFile, 2000), 400) })
     Object.assign(run, outcome, { endedAt })
-    if (run.handoff && run.state === 'done') {
-      if (await stat(run.handoff.file).catch(() => null)) {
-        run.handoff.ready = true
-        openHandoff(raw, run.handoff.file)
-      } else {
-        Object.assign(run, { state: 'failed', error: 'The handoff ran but wrote no document.' })
-      }
-    }
+    if (run.handoff && run.state === 'done') await finishHandoff(raw, run)
     pauseQueueAfter(raw.sessionId, run)
     pump()
   })
