@@ -26,12 +26,13 @@ export function diffAlerts(previous, cards) {
     const before = previous?.get(card.id)
     if (!before) continue
     const add = (kind, message) => events.push({ id: card.id, title: card.title, kind, message })
-    if (before.active && !now.active && !now.running && !now.looping) add('finished', 'Finished working')
+    if (before.active && !now.active && !now.running && !now.looping && now.runState !== 'stalled') add('finished', 'Finished working')
     if (!before.attention && now.attention === 'question') add('question', `Asking you: ${card.live.attention.text || 'a question'}`.slice(0, 160))
     if (!before.attention && now.attention === 'approval') add('approval', `Possibly waiting for approval: ${card.live.attention.tool}`)
     if (before.status !== 'blocked' && now.status === 'blocked') add('blocked', 'Marked blocked')
     if (before.status !== 'needs-input' && now.status === 'needs-input' && !now.attention) add('question', 'Needs your input')
     if (before.runState !== 'failed' && now.runState === 'failed') add('failed', 'A prompt from the board failed')
+    if (before.runState !== 'stalled' && now.runState === 'stalled') add('stalled', 'A prompt from the board stalled before finishing')
     if (!before.paused && now.paused) add('paused', 'Queue paused')
   }
   return { events, next }

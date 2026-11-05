@@ -218,11 +218,13 @@
   #view-mrs th:first-child { width: 44px; }
   #view-mrs th:nth-child(2) { width: 30%; min-width: 300px; }
   #view-mrs th:nth-child(3) { min-width: 120px; }
+  #view-mrs th:nth-child(4) { width: 220px; }
+  #view-mrs th:nth-child(6) { width: 200px; }
   .mr-title { overflow-wrap: anywhere; }
   .mr-link { color: var(--text); text-decoration: none; }
   .mr-link:hover { color: var(--accent); }
   .mr-ref { font-size: 12px; }
-  .mr-badge { display: inline-flex; border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
+  .mr-badge { display: inline-flex; border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 600; white-space: normal; text-align: left; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
   .mr-badge.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
   .mr-badge.warn { color: var(--caution); background: color-mix(in srgb, var(--caution) 16%, transparent); }
   .mr-badge.good { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
@@ -237,10 +239,13 @@
   .mr-ci.running, .mr-ci.pending, .mr-ci.created { color: var(--info); }
   .mr-ci .spinner { display: inline-block; vertical-align: -1px; border-top-color: var(--info); }
   .mr-fix { padding: 1px 10px; font-size: 12px; margin-left: 4px; }
+  .mr-threads { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .mr-fix-sent { font-size: 12px; font-weight: 500; margin-left: 4px; }
   .mr-fix:disabled { opacity: .55; cursor: default; }
-  .mr-reviewers { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-  .mr-reviewer { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; color: var(--muted); }
+  .mr-reviewers { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+  .mr-reviewer { font-size: 12px; line-height: 20px; white-space: nowrap; border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; color: var(--muted); }
+  .mr-reviewer-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; }
+  .mr-ping { font-size: 11px; line-height: 20px; padding: 0 8px; border-radius: 999px; }
   .mr-reviewer.approved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
   .mr-session { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
   .mr-sessions > summary { cursor: pointer; font-size: 12px; user-select: none; }

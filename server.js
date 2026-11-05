@@ -17,7 +17,10 @@ import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
 import { spawnDetached, killGroup, logTail } from './lib/run.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
-import { createMrCache, withSessions, withFocus, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
+import { pingReviewer } from './lib/ping.js'
+import { refusalFor, refusalBody, createClaims, endedCleanly, classifyExit } from './lib/guard.js'
+import { resolveSpawnEnv } from './lib/env.js'
+import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -33,6 +36,7 @@ const MAX_UPLOAD_BYTES = 25_000_000
 const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
 const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
+const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
@@ -53,6 +57,9 @@ const MAX_QUEUE = 20
 const MAX_SCHEDULES = 50
 const MAX_SNIPPETS = 40
 const RUN_TIMEOUT_MS = 15 * 60_000
+const KILL_GRACE_MS = 5000
+const spawnEnv = await resolveSpawnEnv()
+const claims = createClaims()
 const DEFAULT_SNIPPETS = [
   { sid: 'default-continue', label: 'Continue', text: 'Continue.' },
   { sid: 'default-left', label: 'What is left?', text: 'List briefly what is still left to do.' },
@@ -188,8 +195,9 @@ async function buildCard(raw) {
   const { cliSessionId, ...base } = toSummary(raw)
   const scanned = await scanSession(raw)
   const touchedAt = Math.max(base.lastActivityAt ?? 0, scanned?.info.mtimeMs ?? 0)
-  const running = runs.get(raw.sessionId)?.state === 'running'
-  const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running }) : null
+  const run = runs.get(raw.sessionId)
+  const running = run?.state === 'running'
+  const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running, runEndedAt: run?.endedAt ?? null }) : null
   const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS || Boolean(live?.working)
   return {
     ...base,
@@ -248,6 +256,11 @@ async function writeJson(file, value) {
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
   return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+}
+
+async function readMrPings() {
+  const parsed = await readJson(MR_PINGS_FILE, {})
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
 }
 
 async function readMrFocusState() {
@@ -322,12 +335,17 @@ function openHandoff(raw, file) {
 }
 
 function startRun(raw, prompt, { handoff = null } = {}) {
-  const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE, handoff: handoff && { file: handoff, ready: false } }
+  const run = { state: 'running', startedAt: Date.now(), endedAt: null, error: null, mode: PROMPT_PERMISSION_MODE, stopRequested: false, timedOut: false, prompt: handoff ? null : prompt, handoff: handoff && { file: handoff, ready: false } }
   const args = ['-p', '--resume', raw.cliSessionId, '--output-format', 'json', '--permission-mode', PROMPT_PERMISSION_MODE, '--add-dir', UPLOAD_DIR]
   const logFile = join(RUN_LOG_DIR, `${raw.sessionId}.log`)
-  const child = spawnDetached(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), logFile, input: prompt })
-  run.stop = () => killGroup(child)
-  const timer = setTimeout(() => { run.state = 'stopped'; killGroup(child) }, RUN_TIMEOUT_MS)
+  const child = spawnDetached(CLAUDE_BIN, args, { cwd: raw.cwd ?? raw.originCwd ?? homedir(), logFile, input: prompt, env: spawnEnv })
+  let exited = false
+  run.stop = () => {
+    run.stopRequested = true
+    killGroup(child)
+    setTimeout(() => { if (!exited) killGroup(child, 'SIGKILL') }, KILL_GRACE_MS).unref()
+  }
+  const timer = setTimeout(() => { run.timedOut = true; run.stop() }, RUN_TIMEOUT_MS)
   child.on('error', (error) => {
     clearTimeout(timer)
     const missing = error.code === 'ENOENT'
@@ -335,12 +353,13 @@ function startRun(raw, prompt, { handoff = null } = {}) {
     pauseQueueAfter(raw.sessionId, run)
   })
   child.on('close', async (code, signal) => {
+    exited = true
     clearTimeout(timer)
     if (run.state === 'failed' && run.error) return pump()
-    run.endedAt = Date.now()
-    if (run.state === 'stopped' || signal) run.state = 'stopped'
-    else if (code === 0) run.state = 'done'
-    else Object.assign(run, { state: 'failed', error: clip(logTail(logFile, 2000), 400) || `exit code ${code}` })
+    const endedAt = Date.now()
+    const scanned = await scanSession(raw).catch(() => null)
+    const outcome = classifyExit({ code, signal, stopRequested: run.stopRequested, timedOut: run.timedOut, cleanTail: scanned ? endedCleanly(scanned.state) : null, errorText: clip(logTail(logFile, 2000), 400) })
+    Object.assign(run, outcome, { endedAt })
     if (run.handoff && run.state === 'done') {
       if (await stat(run.handoff.file).catch(() => null)) {
         run.handoff.ready = true
@@ -365,16 +384,20 @@ async function pump() {
     if (!pending.length) return
     const raws = await readRawSessions()
     for (const [id, queue] of pending) {
-      const raw = raws.find((session) => session.sessionId === id)
-      if (!raw?.cliSessionId || !(await hasTranscript(raw))) continue
-      const run = runs.get(id)
-      if (run?.state === 'running') continue
-      const card = await buildCard(raw)
-      const idleSinceOwnRun = run?.endedAt && card.touchedAt <= run.endedAt + 3000
-      if (card.active && !idleSinceOwnRun) continue
-      const next = queue.items.shift()
-      await persistQueues()
-      startRun(raw, next.prompt)
+      const release = claims.claim(id)
+      if (!release) continue
+      try {
+        const raw = raws.find((session) => session.sessionId === id)
+        if (!raw?.cliSessionId || !(await hasTranscript(raw))) continue
+        const card = await buildCard(raw)
+        if (refusalFor({ card, run: runs.get(id), nowMs: Date.now(), lookaheadMs: RUN_TIMEOUT_MS })) continue
+        const next = queue.items.shift()
+        if (!next) continue
+        await persistQueues()
+        startRun(raw, next.prompt)
+      } finally {
+        release()
+      }
     }
   } finally {
     pumping = false
@@ -638,14 +661,20 @@ const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSession
 async function startPrompt(body, res, prompt, options) {
   if (isBlocked(prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
   if (!validPrompt(prompt)) return json(res, 400, { error: 'bad request' })
-  const raw = await findRaw(body.id)
-  if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
-  if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
-  if (runs.get(body.id)?.state === 'running') return json(res, 409, { error: 'a prompt is already running for this session' })
-  const card = await buildCard(raw)
-  if (card.active) return json(res, 409, { error: 'session is busy in the desktop app; try again when it is idle' })
-  startRun(raw, prompt.trim(), options)
-  return json(res, 202, { run: publicRun(body.id) })
+  const release = claims.claim(String(body.id ?? ''))
+  if (!release) return json(res, 409, refusalBody({ code: 'running', message: 'a prompt is already running for this session', queueable: true }))
+  try {
+    const raw = await findRaw(body.id)
+    if (!raw?.cliSessionId) return json(res, 404, { error: 'session not found' })
+    if (!(await hasTranscript(raw))) return json(res, 409, { error: NO_TRANSCRIPT_MESSAGE })
+    const card = await buildCard(raw)
+    const refusal = refusalFor({ card, run: runs.get(body.id), nowMs: Date.now(), lookaheadMs: RUN_TIMEOUT_MS })
+    if (refusal) return json(res, 409, refusalBody(refusal))
+    startRun(raw, prompt.trim(), options)
+    return json(res, 202, { run: publicRun(body.id) })
+  } finally {
+    release()
+  }
 }
 
 const postRoutes = {
@@ -665,13 +694,28 @@ const postRoutes = {
   },
   async '/api/mrs/label'(body, res) {
     if (!isMrUrl(body.url) || !ADDABLE_LABELS.includes(body.label)) return json(res, 400, { error: 'bad request' })
+    let added
     try {
-      await addLabel(body.url, body.label)
+      added = await addLabel(body.url, body.label)
     } catch (error) {
       return json(res, 502, { error: String(error.message ?? error) })
     }
-    const mr = mergeRequests.patchAuthored(body.url, (current) => withLabel(current, body.label, Date.now()))
+    const mr = mergeRequests.patchAuthored(body.url, (current) => added.reduce((mr, name) => withLabel(mr, name, Date.now()), current))
     return json(res, 200, { ok: true, mr })
+  },
+  async '/api/mrs/ping'(body, res) {
+    if (!isMrUrl(body.url) || typeof body.reviewer !== 'string') return json(res, 400, { error: 'bad request' })
+    const data = await mergeRequests()
+    const mr = [...data.authored, ...data.reviewing].find((item) => item.url === body.url)
+    if (!mr || !mr.reviewers.includes(body.reviewer)) return json(res, 404, { error: 'reviewer not found on this merge request' })
+    try {
+      const { name } = await pingReviewer({ mr, username: body.reviewer, bin: CLAUDE_BIN, env: spawnEnv })
+      const pingedAt = Date.now()
+      await writeJson(MR_PINGS_FILE, recordPing(await readMrPings(), body.url, body.reviewer, pingedAt))
+      return json(res, 200, { ok: true, name, pingedAt })
+    } catch (error) {
+      return json(res, 502, { error: String(error.message ?? error) })
+    }
   },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
@@ -690,7 +734,6 @@ const postRoutes = {
   async '/api/prompt/stop'(body, res) {
     const run = runs.get(body.id)
     if (!run || run.state !== 'running') return json(res, 404, { error: 'nothing running' })
-    run.state = 'stopped'
     run.stop()
     return json(res, 200, { run: publicRun(body.id) })
   },
@@ -797,7 +840,7 @@ const getRoutes = {
     const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
     const next = autoFocusNew(data, await readMrFocusState())
     if (next.changed) await writeJson(MR_FOCUS_FILE, { urls: next.urls, seen: next.seen })
-    return json(res, 200, withFocus(withSessions(data, await mrSessionLinks()), next.urls))
+    return json(res, 200, withPings(withFocus(withSessions(data, await mrSessionLinks()), next.urls), await readMrPings()))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())

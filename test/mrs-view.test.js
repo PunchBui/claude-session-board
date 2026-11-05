@@ -76,3 +76,21 @@ test('tooltip speaks about MR activity, not prompts', () => {
   assert.match(tip.text, /activity/)
   assert.equal(tip.rows[0][0], 'Last activity')
 })
+
+test('merged merge requests show in every filter their role matches', () => {
+  const open = mr(1, { role: 'authored' })
+  const merged = mr(2, { mergedAt: NOW - HOUR, role: 'authored', updatedAt: NOW - 2 * HOUR })
+  const reviewed = mr(3, { mergedAt: NOW - HOUR, role: 'reviewing', updatedAt: NOW - 3 * HOUR })
+  const list = [open, merged, reviewed]
+  assert.deepEqual(ids(visibleMrs(list, { filter: 'all', now: NOW })), ['1', '2', '3'])
+  assert.deepEqual(ids(visibleMrs(list, { filter: 'authored', now: NOW })), ['1', '2'])
+  assert.deepEqual(ids(visibleMrs(list, { filter: 'reviewing', now: NOW })), ['3'])
+  assert.deepEqual(ids(visibleMrs(list, { filter: 'merged', now: NOW })), ['2', '3'])
+})
+
+test('merging includes the merged list after the open ones', () => {
+  const merged = mr(3, { mergedAt: NOW - HOUR })
+  const list = mergeMrs({ authored: [mr(1)], reviewing: [], merged: [merged] })
+  assert.deepEqual(ids(list), ['1', '3'])
+  assert.equal(mergeMrs({ authored: [mr(1)], reviewing: [] }).length, 1)
+})

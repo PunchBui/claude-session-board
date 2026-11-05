@@ -22,6 +22,13 @@ test('attention, blocked and failure each fire once', () => {
   assert.equal(third.events.length, 0)
 })
 
+test('a stalled board run alerts once and does not also claim the session finished', () => {
+  const first = diffAlerts(null, [card({ active: true, run: { state: 'running' } })]).next
+  const second = diffAlerts(first, [card({ active: false, run: { state: 'stalled' }, queue: { paused: true } })])
+  assert.deepEqual(second.events.map((e) => e.kind).sort(), ['paused', 'stalled'])
+  assert.equal(diffAlerts(second.next, [card({ active: false, run: { state: 'stalled' }, queue: { paused: true } })]).events.length, 0)
+})
+
 test('context level thresholds', () => {
   assert.equal(contextLevel(99999), null)
   assert.equal(contextLevel(100000), 'caution')

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, loadMergeRequests, withSessions, createMrCache, autoFocusNew } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, loadMergeRequests, withSessions, createMrCache, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -246,6 +246,28 @@ test('autoFocusNew ignores failed loads', () => {
   assert.equal(out.changed, false)
 })
 
+test('the ready label also adds every ready to merge or deploy label the repo defines', async () => {
+  const calls = []
+  const run = async (a) => {
+    calls.push(a)
+    return a[0] === 'api' ? JSON.stringify([{ name: 'Ready to deploy' }, { name: 'bug' }, { name: 'Ready to merge' }, { name: 'ready for review' }]) : ''
+  }
+  const added = await addLabel(`https://${GITLAB_HOST}/team/repo/-/merge_requests/7`, 'Ready to merge', run)
+  assert.deepEqual(added, ['Ready to merge', 'Ready to deploy'])
+  assert.deepEqual(calls[0].slice(0, 4), ['api', '--hostname', GITLAB_HOST, 'projects/team%2Frepo/labels?search=ready&per_page=100'])
+  assert.deepEqual(calls[1], ['mr', 'update', '7', '--label', 'Ready to merge', '--label', 'Ready to deploy', '--repo', `${GITLAB_HOST}/team/repo`])
+})
+
+test('the ready label falls back to itself when the repo labels cannot be listed', async () => {
+  const calls = []
+  const run = async (a) => {
+    calls.push(a)
+    if (a[0] === 'api') throw new Error('boom')
+  }
+  assert.deepEqual(await addLabel(`https://${GITLAB_HOST}/a/b/-/merge_requests/1`, 'Ready to merge', run), ['Ready to merge'])
+  assert.deepEqual(calls[1].slice(0, 4), ['mr', 'update', '1', '--label'])
+})
+
 test('adds an allowed label through glab on the configured host', async () => {
   let args
   await addLabel(`https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/42`, 'Ready for review', async (a) => { args = a })
@@ -274,4 +296,81 @@ test('cache patchAuthored updates one MR and the actionable count in place', asy
   assert.equal((await get()).actionable, 0)
   assert.equal(loads, 1)
   assert.equal(get.patchAuthored('https://nope', (x) => x), null)
+})
+
+test('requests recently merged merge requests within the last week', async () => {
+  let query
+  await loadMergeRequests({ run: async (a) => { query = a.join(' '); return payload() }, now: NOW })
+  assert.match(query, /state: merged/)
+  assert.match(query, /sort: MERGED_AT_DESC/)
+  assert.ok(query.includes(`mergedAfter: "${new Date(NOW - 7 * 24 * 3_600_000).toISOString()}"`))
+})
+
+test('returns merged merge requests newest first without counting them as actionable', async () => {
+  const merged = (id, hoursAgo, over = {}) => node({ webUrl: `https://${GITLAB_HOST}/t/r/-/merge_requests/${id}`, mergedAt: ago(hoursAgo * HOUR), ...over })
+  const run = async () => JSON.stringify({ data: { currentUser: { username: 'me', authoredMergeRequests: { nodes: [] }, reviewRequestedMergeRequests: { nodes: [] }, mergedAuthored: { nodes: [merged(1, 5), merged(2, 2)] }, mergedReviewing: { nodes: [merged(2, 2), merged(3, 1)] } } } })
+  const data = await loadMergeRequests({ run, now: NOW })
+  assert.deepEqual(data.merged.map((mr) => [mr.url.split('/').pop(), mr.role]), [['3', 'reviewing'], ['2', 'authored'], ['1', 'authored']])
+  assert.equal(data.merged[0].verdict.code, 'merged')
+  assert.equal(data.actionable, 0)
+})
+
+test('pinging a reviewer sends the review request message and reports the Slack reply', async () => {
+  const { pingReviewer, pingMessage } = await import('../lib/ping.js')
+  const mr = normalizeMr(node({ title: 'Fix it', reviewers: { nodes: [{ username: 'sam', name: 'Sam Lee' }] } }), 'me')
+  let prompt
+  const sent = await pingReviewer({ mr, username: 'sam', bin: 'claude', run: async (bin, p) => { prompt = p; return 'SENT' } })
+  assert.equal(sent.message, pingMessage('Sam Lee', 'Fix it', mr.url))
+  assert.equal(sent.message, `Hi Sam Lee, Please help review Fix it, ${mr.url}`)
+  assert.ok(prompt.includes(JSON.stringify(sent.message)))
+  await assert.rejects(() => pingReviewer({ mr, username: 'sam', run: async () => 'NOT_FOUND' }), /no Slack user found for Sam Lee/)
+  await assert.rejects(() => pingReviewer({ mr, username: 'sam', run: async () => 'AMBIGUOUS' }), /more than one/)
+  await assert.rejects(() => pingReviewer({ mr, username: 'sam', run: async () => 'hmm' }), /did not confirm/)
+  await assert.rejects(() => pingReviewer({ mr, username: 'other', run: async () => 'SENT' }), /not a reviewer/)
+})
+
+test('recordPing stores the time per merge request and reviewer and keeps the newest', () => {
+  const first = recordPing({}, 'u1', 'alice', 100)
+  const second = recordPing(first, 'u1', 'alice', 200)
+  assert.deepEqual(second, { [pingKey('u1', 'alice')]: 200 })
+  const full = Object.fromEntries(Array.from({ length: MAX_PINGS }, (_, i) => [`k${i}`, i + 1]))
+  const trimmed = recordPing(full, 'u2', 'bob', 10_000)
+  assert.equal(Object.keys(trimmed).length, MAX_PINGS)
+  assert.ok(pingKey('u2', 'bob') in trimmed)
+  assert.ok(!('k0' in trimmed))
+})
+
+test('withPings attaches ping times only for current reviewers', async () => {
+  const data = await loadMergeRequests({ run: async () => payload({ authored: [node({ reviewers: { nodes: [{ username: 'alice' }] } })] }), now: NOW })
+  const mr = data.authored[0]
+  const marked = withPings(data, { [pingKey(mr.url, 'alice')]: 123, [pingKey(mr.url, 'gone')]: 456 })
+  assert.deepEqual(marked.authored[0].pinged, { alice: 123 })
+  assert.deepEqual(withPings(data, {}).authored[0].pinged, {})
+})
+
+test('counts unresolved threads as resolvable minus resolved and never goes negative', () => {
+  const unresolved = (over) => normalizeMr(node(over), 'dkunweeroj').unresolved
+  assert.equal(unresolved({ resolvableDiscussionsCount: 5, resolvedDiscussionsCount: 2 }), 3)
+  assert.equal(unresolved({ resolvableDiscussionsCount: 2, resolvedDiscussionsCount: 2 }), 0)
+  assert.equal(unresolved({ resolvableDiscussionsCount: 1, resolvedDiscussionsCount: 3 }), 0)
+  assert.equal(unresolved({}), 0)
+})
+
+test('asks GitLab for the discussion counts', async () => {
+  let args
+  await loadMergeRequests({ run: async (a) => { args = a; return payload() }, now: NOW })
+  assert.ok(args.join(' ').includes('resolvableDiscussionsCount resolvedDiscussionsCount'))
+})
+
+test('flags conflicts from the merge status even when the conflicts field is false', () => {
+  const conflicts = (over) => normalizeMr(node(over), 'dkunweeroj').conflicts
+  assert.equal(conflicts({ conflicts: true }), true)
+  assert.equal(conflicts({ conflicts: false, detailedMergeStatus: 'CONFLICT' }), true)
+  assert.equal(conflicts({ conflicts: false, detailedMergeStatus: 'MERGEABLE' }), false)
+})
+
+test('conflicts stay visible on the MR while a higher-priority verdict wins', () => {
+  const result = verdictOf(normalizeMr(node({ conflicts: true, headPipeline: { status: 'FAILED' } }), 'dkunweeroj'), 'authored', NOW)
+  assert.equal(result.code, 'ci-failed')
+  assert.equal(normalizeMr(node({ conflicts: true, headPipeline: { status: 'FAILED' } }), 'dkunweeroj').conflicts, true)
 })

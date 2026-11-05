@@ -4,7 +4,7 @@ import { splitFences } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip } from './mrs.js'
-import { diffLoops, withoutTickFinishes, untilLabel, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
+import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
@@ -217,9 +217,14 @@ function renderAttachments(c) {
 }
 
 async function postJson(path, body) {
-  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-  return { ok: res.ok, data: await res.json().catch(() => ({})) }
+  try {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    return { ok: res.ok, data: await res.json().catch(() => ({})) }
+  } catch {
+    return { ok: false, data: { error: 'Could not reach the board. It may be restarting.' } }
+  }
 }
+const shouldQueue = (result) => !result.ok && result.data.queueable === true
 const getJson = (path) => fetch(path, { cache: 'no-store' }).then((r) => r.json())
 const resync = async () => { state.signature = ''; await refresh() }
 
@@ -677,7 +682,7 @@ function prunePending() {
     const messages = card?.details?.chat ?? []
     const keep = list.filter((entry) => {
       const expired = Date.now() - entry.at > PENDING_TTL_MS
-      const failed = card?.run?.state === 'failed' && card.run.startedAt >= entry.at - 5000
+      const failed = ['failed', 'stalled'].includes(card?.run?.state) && card.run.startedAt >= entry.at - 5000
       return !expired && !failed && !isDelivered(entry, messages)
     })
     if (keep.length !== list.length) changed = true
@@ -752,7 +757,7 @@ async function submitPrompt(id, box) {
   const prompt = withAttachments(id, typed)
   clearNotifications(id)
   const card = state.cards.find((c) => c.id === id)
-  const busy = card?.run?.state === 'running' || card?.active || card?.queue?.items.length > 0
+  const busy = card?.run?.state === 'running' || card?.active || Boolean(card?.live?.attention) || card?.queue?.items.length > 0
   box.value = ''
   state.drafts.delete(id)
   state.attachments.delete(id)
@@ -765,7 +770,7 @@ async function submitPrompt(id, box) {
   }
   setNote(id, 'Sending…')
   let result = await postJson(busy ? '/api/queue' : '/api/prompt', { id, prompt })
-  if (!result.ok && !busy && /busy|already running/.test(result.data.error ?? '')) {
+  if (!busy && shouldQueue(result)) {
     dropPending(id, prompt)
     result = await postJson('/api/queue', { id, prompt })
   }
@@ -997,7 +1002,7 @@ function renderComposer(c) {
   const ui = uiOf(c.id)
   const dock = el('div', 'dock')
   const running = c.run?.state === 'running'
-  const busy = running || c.active || c.queue?.items.length > 0
+  const busy = running || c.active || Boolean(c.live?.attention) || c.queue?.items.length > 0
   const composer = el('div', 'composer')
   const box = document.createElement('textarea')
   box.rows = 1
@@ -1089,16 +1094,29 @@ function renderComposer(c) {
     note.textContent = local
     note.classList.add(local === 'Sending…' ? 'running' : 'error')
   } else if (running) {
-    note.textContent = `Running headless (${c.run.mode}) · started ${relative(c.run.startedAt)}`
+    note.textContent = c.run.stopRequested
+      ? 'Stopping the board run…'
+      : `Board run in progress (${c.run.mode}) · started ${relative(c.run.startedAt)}. Do not type in the desktop app until it finishes or you press Stop.`
     note.classList.add('running')
   } else if (c.run?.state === 'done' && c.run.handoff?.ready) {
     note.textContent = 'Handoff written. A new chat should be open in the desktop app: press Enter there to start it. '
     const again = el('a', undefined, 'Open it again')
     again.href = handoffLinkFor(c)
     note.append(again)
-  } else if (c.run?.state === 'failed') {
-    note.textContent = `Last prompt failed: ${c.run.error}`
+  } else if (c.run?.state === 'failed' || c.run?.state === 'stalled') {
+    note.textContent = `Last prompt ${c.run.state === 'stalled' ? 'stalled' : 'failed'}: ${c.run.error} `
     note.classList.add('error')
+    if (c.run.prompt) {
+      const retry = el('a', undefined, 'Retry')
+      retry.href = '#'
+      retry.onclick = async (event) => {
+        event.preventDefault()
+        const result = await postJson('/api/prompt', { id: c.id, prompt: c.run.prompt })
+        setNote(c.id, result.ok ? null : (result.data.error ?? 'Could not send'))
+        await resync()
+      }
+      note.append(retry)
+    }
   } else if (c.run?.state === 'stopped') {
     note.textContent = 'Last prompt was stopped.'
   } else if (c.active) {
@@ -1881,6 +1899,11 @@ const MR_FIXES = {
     prompt: (mr) => `${mr.url} has merge conflicts with ${mr.target}. Merge ${mr.target} into ${mr.source}, resolve the conflicts, run the tests, and push.`,
     title: (mr) => `Ask “${mr.sessions[0].title}” to resolve the conflicts`,
   },
+  threads: {
+    key: (mr) => `${mr.unresolved}:${mr.updatedAt}`,
+    prompt: (mr) => `${mr.url} has ${mr.unresolved} unresolved review thread${mr.unresolved === 1 ? '' : 's'}. Read each unresolved thread with glab, make the requested change or reply where no change is needed, run the tests, push, and resolve each thread you have addressed.`,
+    title: (mr) => `Ask “${mr.sessions[0].title}” to address the unresolved threads`,
+  },
 }
 
 function readFixSent() {
@@ -1900,7 +1923,7 @@ async function sendMrFix(mr, kind, button) {
   button.disabled = true
   button.textContent = 'Sending…'
   let result = await postJson('/api/prompt', { id: session.sessionId, prompt })
-  if (!result.ok && /busy|already running/.test(result.data.error ?? '')) result = await postJson('/api/queue', { id: session.sessionId, prompt })
+  if (shouldQueue(result)) result = await postJson('/api/queue', { id: session.sessionId, prompt })
   button.textContent = result.ok ? 'Sent' : 'Retry'
   button.title = result.ok ? `Sent to ${session.title}` : (result.data.error ?? 'Could not send')
   button.disabled = result.ok
@@ -1912,6 +1935,13 @@ function mrFixButton(mr, kind) {
   b.title = MR_FIXES[kind].title(mr)
   b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, kind, b) }
   return b
+}
+
+function mrThreads(mr) {
+  const box = el('span', 'mr-threads')
+  box.append(el('span', mr.unresolved ? 'mr-ci failed' : 'dim', String(mr.unresolved ?? 0)))
+  if (mr.role === 'authored' && mr.unresolved && mr.sessions[0]) box.append(mrFixControl(mr, 'threads'))
+  return box
 }
 
 function mrFixControl(mr, kind) {
@@ -1931,7 +1961,7 @@ async function setMrFocus(mr, focused) {
   const { ok } = await postJson('/api/mrs/focus', { url: mr.url, focused })
   if (!ok) return
   const mark = (list) => list.map((item) => (item.url === mr.url ? { ...item, focused } : item))
-  state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing) }
+  state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing), merged: mark(state.mrs.data.merged ?? []) }
   renderMrsBadge()
   renderMrsPage()
 }
@@ -1974,21 +2004,68 @@ async function addMrLabel(mr, label, button) {
 
 function mrVerdict(mr) {
   const box = el('span', 'mr-verdict')
-  box.append(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.label))
+  box.append(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.code === 'waiting' ? `${mr.verdict.label} (${shortSpan(Date.now() - mr.updatedAt)} ago)` : mr.verdict.label))
   const action = mr.role === 'authored' ? MR_LABEL_ACTIONS[mr.verdict.code] : null
   if (action && !mr.labels?.some((label) => MR_LABEL_PRESENT[action].test(label))) {
     const button = el('button', 'btn mr-add-ready', `Add ${action}`)
     button.onclick = () => addMrLabel(mr, action, button)
     box.append(button)
   }
-  if (mr.role === 'authored' && mr.verdict.code === 'conflicts' && mr.sessions[0]) box.append(mrFixControl(mr, 'conflicts'))
+  if (mr.role === 'authored' && mr.conflicts && mr.verdict.code !== 'merged') {
+    if (mr.verdict.code !== 'conflicts') box.append(el('span', 'mr-badge bad', 'Has conflicts'))
+    if (mr.sessions[0]) box.append(mrFixControl(mr, 'conflicts'))
+  }
   return box
+}
+
+const pingedLabel = (at) => `Pinged (${shortSpan(Date.now() - at)} ago)`
+
+async function pingMrReviewer(mr, reviewer, button) {
+  const before = button.textContent
+  button.disabled = true
+  button.textContent = 'Pinging…'
+  const { ok, data } = await postJson('/api/mrs/ping', { url: mr.url, reviewer })
+  if (ok) {
+    mr.pinged = { ...mr.pinged, [reviewer]: data.pingedAt }
+    const mark = (list) => list.map((item) => (item.url === mr.url ? { ...item, pinged: mr.pinged } : item))
+    state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing), merged: mark(state.mrs.data.merged ?? []) }
+    button.textContent = pingedLabel(data.pingedAt)
+    button.pingError = null
+    button.disabled = false
+    return
+  }
+  button.disabled = false
+  button.textContent = before
+  button.pingError = data.error ?? 'Could not send the Slack message'
+}
+
+function pingTip(mr, name, button) {
+  const who = mr.reviewerNames?.[name] ?? name
+  const at = mr.pinged?.[name]
+  if (button.pingError) return { heading: 'Ping failed', text: button.pingError, rows: [] }
+  if (!at) return { heading: 'Ping on Slack', text: `Sends ${who} a Slack message asking them to review this merge request.`, rows: [] }
+  return {
+    heading: `Pinged ${who}`,
+    text: 'A Slack review request was already sent. Clicking again sends another message straight away.',
+    rows: [['Sent', new Date(at).toLocaleString()], ['Ago', `${shortSpan(Date.now() - at)}`]],
+  }
 }
 
 function mrReviewers(mr) {
   const box = el('span', 'mr-reviewers')
   if (!mr.reviewers.length) return el('span', 'dim', 'None')
-  for (const name of mr.reviewers) box.append(el('span', mr.approvedBy.includes(name) ? 'mr-reviewer approved' : 'mr-reviewer', mr.approvedBy.includes(name) ? `${name} ✓` : name))
+  for (const name of mr.reviewers) {
+    const approved = mr.approvedBy.includes(name)
+    const item = el('span', 'mr-reviewer-item')
+    item.append(el('span', approved ? 'mr-reviewer approved' : 'mr-reviewer', approved ? `${name} ✓` : name))
+    if (mr.role === 'authored' && !approved) {
+      const pingedAt = mr.pinged?.[name]
+      const button = el('button', 'btn mr-ping', pingedAt ? pingedLabel(pingedAt) : 'Ping')
+      button.onclick = () => pingMrReviewer(mr, name, button)
+      item.append(attachTip(button, () => pingTip(mr, name, button)))
+    }
+    box.append(item)
+  }
   return box
 }
 
@@ -2023,7 +2100,6 @@ function buildMrRow(mr) {
   const repo = el('div', 'mr-project')
   repo.append(projectChip({ project: mr.project.split('/').pop() }), el('span', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
   title.append(link, repo)
-  const unresolved = mr.mergeStatus === 'discussions_not_resolved'
   tr.append(
     cell(mrStarButton(mr)),
     cell(title),
@@ -2031,7 +2107,7 @@ function buildMrRow(mr) {
     cell(mrVerdict(mr)),
     cell(mrCi(mr)),
     cell(mrReviewers(mr)),
-    cell(el('span', unresolved ? 'mr-ci failed' : 'dim', unresolved ? 'Unresolved' : String(mr.notes))),
+    cell(mrThreads(mr)),
     cell(mrTempBadge(mr)),
     cell(el('span', 'num', relative(mr.updatedAt))),
     cell(mrSession(mr))
@@ -2042,8 +2118,9 @@ function buildMrRow(mr) {
 function renderMrsSummary(all, rows) {
   const data = state.mrs.data
   const { filter, temp } = state.mrs
-  const counts = tempCounts(all)
-  const focused = all.filter((mr) => mr.focused).length
+  const open = all.filter((mr) => !mr.mergedAt)
+  const counts = tempCounts(open)
+  const focused = open.filter((mr) => mr.focused).length
   const waiting = data.reviewing.filter((mr) => mr.verdict.code === 'needs-review').length
   $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · ${focused} focused · updated ${relative(data.fetchedAt)}`
   $('mrs-error').hidden = !data.error
@@ -2056,6 +2133,7 @@ function renderMrsSummary(all, rows) {
     b.textContent = `${b.dataset.temp === 'warm' ? 'Warm' : 'Cool'} ${counts[b.dataset.temp]}`
   })
   document.querySelector('#mrs-filter [data-filter="focus"]').textContent = `Focus ${focused}`
+  document.querySelector('#mrs-filter [data-filter="merged"]').textContent = `Merged ${(data.merged ?? []).length}`
 }
 
 function renderMrsPage() {

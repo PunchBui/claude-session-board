@@ -54,6 +54,13 @@ test('the prompt goes to stdin and stderr goes to the log file', async (t) => {
   assert.equal(logTail(logFile, 5), 'board')
 })
 
+test('a run gets the environment it is given', async (t) => {
+  const logFile = join(scratch(t), 'run.log')
+  const child = spawnDetached('sh', ['-c', 'echo "$BOARD_TEST_PATH" >&2'], { cwd: tmpdir(), logFile, input: '', env: { ...process.env, BOARD_TEST_PATH: '/custom/bin' } })
+  await once(child, 'close')
+  assert.equal(readFileSync(logFile, 'utf8'), '/custom/bin\n')
+})
+
 test('each run starts with an empty log', async (t) => {
   const logFile = join(scratch(t), 'run.log')
   await once(spawnDetached('sh', ['-c', 'echo first >&2'], { cwd: tmpdir(), logFile, input: '' }), 'close')

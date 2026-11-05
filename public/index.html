@@ -104,6 +104,7 @@
         <button data-filter="reviewing" aria-pressed="false">To review</button>
         <button data-filter="action" aria-pressed="false">Needs action</button>
         <button data-filter="focus" aria-pressed="false">Focus</button>
+        <button data-filter="merged" aria-pressed="false">Merged</button>
       </div>
       <div class="seg" id="mrs-temp" role="group" aria-label="Temperature">
         <button data-temp="warm" aria-pressed="false">Warm</button>
@@ -117,7 +118,7 @@
     <div class="sheet" id="mrs-sheet">
       <div class="scroll-x">
         <table>
-          <thead><tr><th aria-label="Focus"></th><th>Merge request</th><th>Role</th><th>State</th><th>CI</th><th>Reviewers</th><th>Comments</th><th>Temp</th><th>Updated</th><th>Session</th></tr></thead>
+          <thead><tr><th aria-label="Focus"></th><th>Merge request</th><th>Role</th><th>State</th><th>CI</th><th>Reviewers</th><th>Unresolved threads</th><th>Temp</th><th>Updated</th><th>Session</th></tr></thead>
           <tbody id="mrs-rows"></tbody>
         </table>
       </div>

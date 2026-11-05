@@ -3,6 +3,7 @@ import { ago } from './loops.js'
 
 export const FILTERS = {
   all: () => true,
+  merged: (mr) => Boolean(mr.mergedAt),
   authored: (mr) => mr.role === 'authored',
   reviewing: (mr) => mr.role === 'reviewing',
   action: (mr) => mr.actionable,
@@ -23,6 +24,7 @@ export function mergeMrs(data) {
   return [
     ...data.authored.map((mr) => ({ ...mr, role: 'authored' })),
     ...data.reviewing.filter((mr) => !own.has(mr.url)).map((mr) => ({ ...mr, role: 'reviewing' })),
+    ...(data.merged ?? []),
   ]
 }
 
