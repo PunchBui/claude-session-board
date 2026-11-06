@@ -2496,6 +2496,7 @@ function renderSkillsPage() {
     name.append(el('div', 'row-title', skill.name))
     if (skill.description) name.append(el('div', 'skill-desc', skill.description))
     const values = dailyUses(skill, days, now)
+    ...(skill.updatedAt ? [['Updated', stamp(skill.updatedAt)]] : []),
     tr.append(
       cell(name),
       cell(skillScope(skill)),
@@ -2520,7 +2521,7 @@ function renderSkillsPage() {
       const detail = document.createElement('tr')
       detail.className = 'loop-detail-row'
       const td = cell(skillDetailBox(skill, now))
-      td.colSpan = 8
+      td.colSpan = 9
       detail.append(td)
       body.append(detail)
     }
@@ -2597,6 +2598,7 @@ async function refresh() {
       for (const id of fresh) await postJson('/api/focus', { id, focused: true })
       focus = await getJson('/api/focus')
     }
+      cell(el('span', 'num', skill.updatedAt ? relative(skill.updatedAt) : '—')),
     const { events: tickEvents, next } = diffAlerts(state.alertSnap, focus.cards)
     const hadBaseline = state.alertSnap !== null
     state.alertSnap = next

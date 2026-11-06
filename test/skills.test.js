@@ -52,6 +52,7 @@ test('listing finds global and project skills and keeps the project name', async
   const byName = Object.fromEntries(skills.map((s) => [s.name, s]))
   assert.equal(byName.alpha.scope, 'global')
   assert.equal(byName.alpha.hint, '<x>')
+  assert.ok(Math.abs(byName.alpha.updatedAt - Date.now()) < 60_000)
   assert.equal(byName.beta.scope, 'project')
   assert.equal(byName.beta.project, 'repo')
 })
