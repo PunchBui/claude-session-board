@@ -2,6 +2,7 @@ import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './ale
 import { icon } from './icons.js'
 import { splitFences } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
+import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, fixOutcome } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
@@ -1236,16 +1237,38 @@ function renderNowDoing(c) {
   return box
 }
 
+function renderWorking(c) {
+  const live = c.live
+  const label = phaseLabel(live)
+  if (!label && !live?.subagents?.length) return null
+  const row = el('div', 'working')
+  if (label) {
+    const line = el('div', 'working-line')
+    line.append(el('span', 'pulse'), el('span', 'shimmer', label))
+    if (live.phase === 'tool') line.append(sinceSpan(live.current.since))
+    row.append(line)
+    if (live.phase === 'tool' && live.current.text) row.append(el('div', 'what', live.current.text))
+  }
+  for (const sub of live.subagents) {
+    const line = el('div', 'working-line sub')
+    line.append(icon('corner-down-right', { size: 14 }), el('b', undefined, sub.name), el('span', 'what', sub.text), sinceSpan(sub.since))
+    row.append(line)
+  }
+  return row
+}
+
 function renderChat(c) {
   const wrap = el('div', 'chat-wrap')
   const chat = el('div', 'chat')
   const inner = el('div', 'chat-inner')
   const messages = c.details?.chat ?? []
   const waiting = (state.pending.get(c.id) ?? []).filter((entry) => !isDelivered(entry, messages))
-  if (!c.transcriptFound && !waiting.length) chat.append(el('div', 'chat-empty', 'Transcript file not found for this session.'))
-  else if (!messages.length && !waiting.length) chat.append(el('div', 'chat-empty', 'No messages yet.'))
+  const working = renderWorking(c)
+  if (!c.transcriptFound && !waiting.length && !working) chat.append(el('div', 'chat-empty', 'Transcript file not found for this session.'))
+  else if (!messages.length && !waiting.length && !working) chat.append(el('div', 'chat-empty', 'No messages yet.'))
   else {
     inner.append(...messages.map(renderMessage), ...waiting.map((entry) => renderMessage({ role: 'user', text: entry.text, pending: true })))
+    if (working) inner.append(working)
     chat.append(inner)
   }
   const jump = el('button', 'jump')
@@ -1390,7 +1413,7 @@ function renderCard(c) {
   actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, openLink(c.id), expand].filter(Boolean))
   row.append(starButton(c.id), titleBox, actions)
   head.append(row)
-  for (const part of [renderAttention(c), renderNowDoing(c)]) if (part) head.append(part)
+  for (const part of [renderAttention(c), ui.pane === 'chat' ? null : renderNowDoing(c)]) if (part) head.append(part)
   renderUsage(c, head)
   if (c.detail) head.append(el('div', 'summary-line', c.detail))
 
@@ -1427,46 +1450,116 @@ function coolNudge(c) {
   return box
 }
 
+const views = new Map()
+
+function snap(node) {
+  const clone = node.cloneNode(true)
+  clone.querySelectorAll('[data-since]').forEach((n) => { n.textContent = '' })
+  return clone.outerHTML
+}
+
+function snapshotOf(card) {
+  const inner = card.querySelector('.chat-inner')
+  return { parts: [...card.children].map(snap), msgs: inner ? [...inner.children].map(snap) : [] }
+}
+
+function patchChat(view, oldWrap, newWrap, next) {
+  const oldInner = oldWrap.querySelector('.chat-inner')
+  const newInner = newWrap.querySelector('.chat-inner')
+  if (!oldInner || !newInner) {
+    oldWrap.replaceWith(newWrap)
+    return
+  }
+  const { ops, remove } = listOps(view.msgs, next.msgs)
+  const oldKids = [...oldInner.children]
+  const newKids = [...newInner.children]
+  ops.forEach((op, i) => {
+    if (op === 'keep') return
+    const node = newKids[i]
+    if (op === 'append') {
+      node.classList.add('fresh')
+      oldInner.append(node)
+      return
+    }
+    const was = oldKids[i]
+    const box = was.querySelector('details')
+    const now = node.querySelector('details')
+    if (box?.open && now) now.open = true
+    if (was.classList.contains('working')) node.classList.add('fresh')
+    was.replaceWith(node)
+  })
+  for (let k = 0; k < remove; k += 1) oldInner.lastElementChild.remove()
+}
+
+function patchCard(view, built) {
+  const next = snapshotOf(built)
+  const card = view.node
+  card.className = built.className
+  const oldKids = [...card.children]
+  const newKids = [...built.children]
+  newKids.forEach((node, i) => {
+    const was = oldKids[i]
+    if (!was) return card.append(node)
+    if (was.className !== node.className) return was.replaceWith(node)
+    if (view.parts[i] === next.parts[i]) return
+    if (node.classList.contains('chat-wrap')) patchChat(view, was, node, next)
+    else was.replaceWith(node)
+  })
+  view.parts = next.parts
+  view.msgs = next.msgs
+}
+
+function bindChat(card) {
+  const chat = card.querySelector('.chat')
+  if (!chat || chat.dataset.bound) return
+  chat.dataset.bound = '1'
+  chat.addEventListener('scroll', () => {
+    card.dataset.stick = String(chat.scrollHeight - chat.clientHeight - chat.scrollTop < 40)
+    syncJump(card)
+  })
+}
+
 function renderFocus() {
   hideTip()
   const grid = $('cards')
   grid.className = `cards cols-${state.cols}`
-  const saved = new Map()
-  grid.querySelectorAll('.card').forEach((card) => {
-    const chat = card.querySelector('.chat')
-    const changes = card.querySelector('.changes')
-    saved.set(card.dataset.id, {
-      top: chat?.scrollTop ?? 0,
-      changesTop: changes?.scrollTop ?? 0,
-      stick: card.dataset.stick !== 'false',
-      open: [...card.querySelectorAll('.toolbox')].map((d) => d.open),
-    })
-  })
   const active = document.activeElement
   const keep = active?.dataset?.keep
   const caret = keep && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null
   const pageTop = window.scrollY
   const pageLeft = window.scrollX
-  const nodes = orderedCards().map(renderCard)
-  grid.replaceChildren(...nodes)
-  nodes.forEach((card) => {
-    const prev = saved.get(card.dataset.id)
-    card.dataset.stick = String(prev ? prev.stick : true)
-    const chat = card.querySelector('.chat')
-    if (chat) {
-      if (prev) card.querySelectorAll('.toolbox').forEach((d, i) => { d.open = Boolean(prev.open[i]) })
-      const place = () => { chat.scrollTop = card.dataset.stick === 'true' ? chat.scrollHeight : prev.top }
-      place()
-      syncJump(card)
-      requestAnimationFrame(() => { place(); syncJump(card) })
-      chat.addEventListener('scroll', () => {
-        card.dataset.stick = String(chat.scrollHeight - chat.clientHeight - chat.scrollTop < 40)
-        syncJump(card)
-      })
+  const wanted = orderedCards()
+  const ids = wanted.map((c) => c.id)
+  for (const [id, view] of views) {
+    if (ids.includes(id)) continue
+    view.node.remove()
+    views.delete(id)
+  }
+  const created = new Set()
+  for (const c of wanted) {
+    const built = renderCard(c)
+    const view = views.get(c.id)
+    if (view?.node.isConnected) patchCard(view, built)
+    else {
+      views.set(c.id, { node: built, ...snapshotOf(built) })
+      built.dataset.stick = 'true'
+      created.add(c.id)
     }
-    const changes = card.querySelector('.changes')
-    if (changes && prev) changes.scrollTop = prev.changesTop
+  }
+  ids.forEach((id, i) => {
+    const node = views.get(id).node
+    if (grid.children[i] !== node) grid.insertBefore(node, grid.children[i] ?? null)
   })
+  for (const id of ids) {
+    const card = views.get(id).node
+    bindChat(card)
+    const chat = card.querySelector('.chat')
+    if (!chat) continue
+    const place = () => { if (card.dataset.stick === 'true') chat.scrollTop = chat.scrollHeight }
+    place()
+    syncJump(card)
+    if (created.has(id)) requestAnimationFrame(() => { place(); syncJump(card) })
+  }
   if (keep) {
     const field = grid.querySelector(`[data-keep="${keep}"]`)
     if (field && !field.disabled) {
@@ -2403,6 +2496,7 @@ function skillDetailBox(skill, now) {
     ['Sessions', String(skill.sessions)],
     ['First used', stamp(skill.firstUsedAt)],
     ['Last used', stamp(skill.lastUsedAt)],
+    ...(skill.updatedAt ? [['Updated', stamp(skill.updatedAt)]] : []),
     ...(skill.path ? [['Path', home(skill.path)]] : []),
   ]) facts.append(el('span', undefined, `${label}: ${value}`))
   box.append(facts)
@@ -2496,7 +2590,6 @@ function renderSkillsPage() {
     name.append(el('div', 'row-title', skill.name))
     if (skill.description) name.append(el('div', 'skill-desc', skill.description))
     const values = dailyUses(skill, days, now)
-    ...(skill.updatedAt ? [['Updated', stamp(skill.updatedAt)]] : []),
     tr.append(
       cell(name),
       cell(skillScope(skill)),
@@ -2505,6 +2598,7 @@ function renderSkillsPage() {
       cell(el('span', 'num', String(skill.uses))),
       cell(el('span', 'num', String(skill.sessions))),
       cell(el('span', 'num', skill.lastUsedAt ? relative(skill.lastUsedAt) : '—')),
+      cell(el('span', 'num', skill.updatedAt ? relative(skill.updatedAt) : '—')),
       cell(sparkline(values, { width: 90, height: 18 }))
     )
     tr.onclick = (event) => {
@@ -2598,7 +2692,6 @@ async function refresh() {
       for (const id of fresh) await postJson('/api/focus', { id, focused: true })
       focus = await getJson('/api/focus')
     }
-      cell(el('span', 'num', skill.updatedAt ? relative(skill.updatedAt) : '—')),
     const { events: tickEvents, next } = diffAlerts(state.alertSnap, focus.cards)
     const hadBaseline = state.alertSnap !== null
     state.alertSnap = next

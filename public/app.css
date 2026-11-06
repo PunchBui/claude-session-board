@@ -351,6 +351,20 @@
   .nowdoing .since { color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .nowdoing .pulse { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--info); animation: pulse 1.2s ease-in-out infinite; flex: none; }
   .nowdoing .sub { padding-left: 16px; }
+  .working { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); min-width: 0; }
+  .working-line { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .working-line.sub { padding-left: 16px; align-items: flex-start; font-size: 13px; }
+  .working b { color: var(--text); font-weight: 600; white-space: nowrap; }
+  .working .what { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; max-height: 4.6em; overflow: auto; font-family: var(--mono); font-size: 12px; }
+  .working .since { color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+  .working .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--info); animation: pulse 1.2s ease-in-out infinite; flex: none; }
+  .working > .what { padding-left: 16px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .working .shimmer { background: linear-gradient(90deg, var(--muted) 30%, var(--text) 50%, var(--muted) 70%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+    .chat-inner > .fresh { animation: rise .25s ease-out; }
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
   .pane-switch { align-self: flex-start; }
   .pane-switch button .n { margin-left: 6px; font-size: 11px; color: var(--faint); }
