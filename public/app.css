@@ -568,3 +568,21 @@
   .msg time.sending { opacity: 1; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
   .spinner { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .head-controls { display: flex; gap: 10px; flex-wrap: wrap; }
+  .skills-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .skills-tools .field { flex: 1 1 280px; max-width: 420px; }
+  .skills-tools .pills { margin: 0; }
+  .stat-card b.small { font-size: 16px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #view-skills th:first-child { width: 36%; min-width: 300px; }
+  .skill-desc { color: var(--muted); font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scope-tag { display: inline-block; border: 1px solid var(--line); border-radius: 7px; padding: 1px 9px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .scope-tag.missing { color: var(--caution); border-color: var(--caution); }
+  .temp.unused { color: var(--faint); }
+  .spark { display: block; }
+  .spark rect { fill: var(--accent); }
+  .spark rect.zero { fill: var(--line); }
+  .skill-section-title { font-size: 12px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+  .skill-sessions { display: flex; flex-direction: column; gap: 6px; }
+  .skill-session { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .skill-session .row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .skill-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; max-height: 340px; overflow: auto; }

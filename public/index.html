@@ -25,6 +25,7 @@
     <a role="tab" id="tab-mrs" href="/mrs" aria-selected="false">Merge requests<span class="badge" id="mrs-count" hidden></span></a>
     <a role="tab" id="tab-search" href="/search" aria-selected="false">Search</a>
     <a role="tab" id="tab-usage" href="/usage" aria-selected="false">Usage</a>
+    <a role="tab" id="tab-skills" href="/skills" aria-selected="false">Skills</a>
   </nav>
   <div class="spacer"></div>
   <input id="q" class="field" type="search" placeholder="Filter sessions">
@@ -183,6 +184,38 @@
         </table>
       </div>
     </div>
+  </section>
+  <section id="view-skills" hidden>
+    <div class="page-head">
+      <h2>Skills</h2>
+      <div class="head-controls">
+        <div class="seg" id="skills-scope" role="group" aria-label="Scope">
+          <button data-scope="all" aria-pressed="true">All</button>
+          <button data-scope="global" aria-pressed="false">Global</button>
+          <button data-scope="project" aria-pressed="false">Projects</button>
+        </div>
+        <div class="seg" id="skills-days" role="group" aria-label="Range">
+          <button data-days="7" aria-pressed="false">7d</button>
+          <button data-days="30" aria-pressed="true">30d</button>
+          <button data-days="90" aria-pressed="false">90d</button>
+        </div>
+      </div>
+    </div>
+    <div class="stat-cards" id="skills-cards"></div>
+    <div class="skills-tools">
+      <input id="skills-q" class="field" type="search" placeholder="Filter by skill, description or project" autocomplete="off">
+      <div class="pills" id="skills-temp"></div>
+    </div>
+    <div class="status-line" id="skills-status"></div>
+    <div class="sheet">
+      <div class="scroll-x">
+        <table>
+          <thead><tr><th>Skill</th><th>Scope</th><th>Temp</th><th>Uses</th><th>Total</th><th>Sessions</th><th>Last used</th><th>Trend</th></tr></thead>
+          <tbody id="skills-rows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="empty" id="skills-empty" hidden>No skills match.</div>
   </section>
 </main>
 <div class="backdrop" id="backdrop" hidden></div>

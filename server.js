@@ -12,6 +12,7 @@ import { REPEATS, nextAfter } from './lib/schedule.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { listCommands } from './lib/commands.js'
+import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
@@ -49,7 +50,7 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
 const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
-const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage'])
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage', '/skills'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
@@ -456,9 +457,18 @@ async function indexedEntries() {
     const state = path ? scanStore.states.get(path) : null
     if (!state) continue
     const summary = toSummary(raw)
-    entries.push({ id: raw.sessionId, title: summary.title, project: summary.project, cwd: summary.cwd, archived: summary.archived, messages: state.messages, byId: state.byId })
+    entries.push({ id: raw.sessionId, title: summary.title, project: summary.project, cwd: summary.cwd, projectRoot: summary.projectRoot, archived: summary.archived, messages: state.messages, byId: state.byId, skills: state.skills })
   }
   return entries
+}
+
+async function installedSkills() {
+  const projects = new Map()
+  for (const raw of await readRawSessions()) {
+    const { project, projectRoot } = toSummary(raw)
+    if (project && projectRoot && !projects.has(project)) projects.set(project, projectRoot)
+  }
+  return listSkills({ projects, home: CLAUDE_HOME })
 }
 
 async function changesFor(id) {
@@ -766,6 +776,18 @@ const getRoutes = {
     const project = (url.searchParams.get('project') ?? '').slice(0, 200)
     const result = searchSessions(await indexedEntries(), q, project)
     return json(res, 200, { ...result, query: q, project, indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running } })
+  },
+  async '/api/skills'(url, res) {
+    const [entries, installed] = await Promise.all([indexedEntries(), installedSkills()])
+    return json(res, 200, {
+      skills: aggregateSkills(entries, installed),
+      indexed: { done: indexStatus.done, total: indexStatus.total, running: indexStatus.running },
+    })
+  },
+  async '/api/skill'(url, res) {
+    const key = (url.searchParams.get('key') ?? '').slice(0, 400)
+    const skill = (await installedSkills()).find((item) => item.key === key)
+    return skill ? json(res, 200, await skillDetail(skill)) : json(res, 404, { error: 'skill not found' })
   },
   async '/api/usage'(url, res) {
     const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 120)

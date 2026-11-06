@@ -5,12 +5,13 @@ import { newSessionIds } from './autofocus.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, fixOutcome } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
+import { SCOPE_FILTERS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
-const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage' }
-const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', mrs: 'Merge requests', search: 'Search', usage: 'Usage' }
+const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills' }
+const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills' }
 const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
@@ -49,6 +50,7 @@ const state = {
   attachments: new Map(),
   search: { timer: null, runId: 0 },
   usage: { days: 30, metric: 'output', data: null, at: 0 },
+  skills: { data: null, scope: 'all', temp: null, days: 30, query: '', at: 0, open: new Set(), details: new Map() },
   loops: { data: null, filter: 'all', at: 0, open: new Set() },
   background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
   mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
@@ -62,6 +64,7 @@ try {
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
 state.backgroundSeenAt = Number(localStorage.getItem('board.backgroundSeen')) || 0
   state.usage.metric = localStorage.getItem('board.usageMetric') || 'output'
+  state.skills.days = [7, 30, 90].includes(Number(localStorage.getItem('board.skillsDays'))) ? Number(localStorage.getItem('board.skillsDays')) : 30
 } catch {}
 
 const remember = (key, value) => { try { localStorage.setItem(key, value) } catch {} }
@@ -415,12 +418,16 @@ function keepWarm(id) {
   renderFocus()
 }
 
-function tempBadge(t, session) {
+function meterBadge(t, tip) {
   const box = el('span', `temp ${t.tier}`)
   const meter = el('span', 'meter')
   for (let i = 1; i <= 4; i++) meter.append(el('i', i <= t.bars ? 'f' : undefined))
   box.append(meter, text(t.label))
-  return attachTip(box, () => warmthTip(session, t, state.kept[session.id] ?? 0))
+  return attachTip(box, tip)
+}
+
+function tempBadge(t, session) {
+  return meterBadge(t, () => warmthTip(session, t, state.kept[session.id] ?? 0))
 }
 
 function visible() {
@@ -2332,6 +2339,196 @@ async function loadUsage() {
   } catch {}
 }
 
+async function loadSkills() {
+  try {
+    state.skills.data = await getJson('/api/skills')
+    state.skills.at = Date.now()
+    renderSkillsPage()
+  } catch {}
+}
+
+async function fetchSkillDetail(key) {
+  state.skills.details.set(key, { loading: true })
+  try {
+    const response = await fetch(`/api/skill?key=${encodeURIComponent(key)}`, { cache: 'no-store' })
+    state.skills.details.set(key, response.ok ? await response.json() : { error: 'Could not read SKILL.md.' })
+  } catch {
+    state.skills.details.set(key, { error: 'Could not read SKILL.md.' })
+  }
+  renderSkillsPage()
+}
+
+function sparkline(values, { width, height, titles = [] }) {
+  const svgNs = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(svgNs, 'svg')
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`)
+  svg.setAttribute('width', String(width))
+  svg.setAttribute('height', String(height))
+  svg.setAttribute('class', 'spark')
+  svg.setAttribute('role', 'img')
+  const max = Math.max(...values, 1)
+  const slot = width / values.length
+  values.forEach((value, index) => {
+    const h = value ? Math.max(2, (value / max) * height) : 1
+    const rect = document.createElementNS(svgNs, 'rect')
+    rect.setAttribute('x', String(index * slot + slot * 0.15))
+    rect.setAttribute('y', String(height - h))
+    rect.setAttribute('width', String(slot * 0.7))
+    rect.setAttribute('height', String(h))
+    rect.setAttribute('rx', '1')
+    if (!value) rect.setAttribute('class', 'zero')
+    if (titles[index]) {
+      const title = document.createElementNS(svgNs, 'title')
+      title.textContent = titles[index]
+      rect.append(title)
+    }
+    svg.append(rect)
+  })
+  return svg
+}
+
+function skillScope(skill) {
+  return skill.scope === 'project' ? projectChip(skill) : el('span', `scope-tag ${skill.scope}`, scopeLabel(skill))
+}
+
+function skillDetailBox(skill, now) {
+  const box = el('div', 'loop-detail')
+  const description = [skill.description, skill.hint ? `Argument hint: ${skill.hint}` : ''].filter(Boolean).join('\n\n')
+  if (description) box.append(el('div', 'loop-prompt', description))
+  const facts = el('div', 'loop-facts')
+  const stamp = (ms) => (ms ? new Date(ms).toLocaleString() : 'never')
+  for (const [label, value] of [
+    ['Scope', skill.scope === 'project' ? `Project · ${skill.project}` : scopeLabel(skill)],
+    ['Uses', `${skill.uses} total · ${skill.toolUses} by Claude · ${skill.commandUses} by slash command`],
+    ['Sessions', String(skill.sessions)],
+    ['First used', stamp(skill.firstUsedAt)],
+    ['Last used', stamp(skill.lastUsedAt)],
+    ...(skill.path ? [['Path', home(skill.path)]] : []),
+  ]) facts.append(el('span', undefined, `${label}: ${value}`))
+  box.append(facts)
+
+  const { days } = state.skills
+  const keys = dayKeys(days, now)
+  const values = dailyUses(skill, days, now)
+  const trend = el('div', 'skill-trend')
+  trend.append(el('div', 'skill-section-title', `Uses per day, last ${days} days`), sparkline(values, { width: Math.min(720, days * 14), height: 44, titles: keys.map((day, i) => `${day}: ${values[i]} use${values[i] === 1 ? '' : 's'}`) }))
+  box.append(trend)
+
+  if (skill.byProject.length) {
+    const chips = el('div', 'chips')
+    for (const entry of skill.byProject) {
+      const chip = projectChip({ project: entry.project })
+      chip.append(text(` · ${entry.uses}`))
+      chips.append(chip)
+    }
+    box.append(el('div', 'skill-section-title', 'Used in projects'), chips)
+  }
+
+  if (skill.recent.length) {
+    const list = el('div', 'skill-sessions')
+    for (const item of skill.recent) {
+      const row = el('div', 'skill-session')
+      row.append(el('span', 'row-title', item.title), projectChip(item), el('span', 'num', `${item.uses}×`), el('span', 'num', relative(item.lastAt)), openLink(item.sessionId))
+      list.append(row)
+    }
+    box.append(el('div', 'skill-section-title', 'Recent sessions'), list)
+  }
+
+  if (skill.scope !== 'missing') {
+    box.append(el('div', 'skill-section-title', 'SKILL.md'))
+    const detail = state.skills.details.get(skill.key)
+    if (!detail || detail.loading) box.append(el('span', 'dim', 'Loading…'))
+    else if (detail.error) box.append(el('span', 'dim', detail.error))
+    else {
+      if (detail.files.length) {
+        const files = el('div', 'chips')
+        for (const file of detail.files) files.append(el('span', 'run-chip', file))
+        box.append(files)
+      }
+      box.append(el('pre', 'skill-body', detail.body || '(empty)'))
+      if (detail.truncated) box.append(el('span', 'dim', 'Truncated for display.'))
+    }
+  }
+  return box
+}
+
+function renderSkillsPage() {
+  hideTip()
+  const data = state.skills.data
+  if (!data) return
+  const { scope, temp, days, query, open } = state.skills
+  const now = Date.now()
+  const all = data.skills
+  const summary = summarize(all, days, now)
+  const cards = $('skills-cards')
+  cards.replaceChildren()
+  for (const [value, label, small] of [
+    [String(summary.installed), 'skills installed'],
+    [String(summary.usedInRange), `used in the last ${days} days`],
+    [String(summary.neverUsed), 'never used'],
+    [summary.top ? summary.top.name : '—', summary.top ? `most used · ${summary.top.uses} in ${days} days` : 'most used', true],
+  ]) {
+    const card = el('div', 'stat-card')
+    card.append(el('b', small ? 'small' : undefined, value), el('span', undefined, label))
+    cards.append(card)
+  }
+
+  const counts = skillCounts(all.filter((skill) => SCOPE_FILTERS[scope](skill)), now)
+  const pills = $('skills-temp')
+  pills.replaceChildren()
+  for (const group of ['warm', 'cool', 'unused']) {
+    const b = el('button', 'pill', `${group[0].toUpperCase()}${group.slice(1)} ${counts[group]}`)
+    b.setAttribute('aria-pressed', String(temp === group))
+    b.onclick = () => { state.skills.temp = temp === group ? null : group; renderSkillsPage() }
+    pills.append(b)
+  }
+
+  const rows = visibleSkills(all, { scope, temp, query, days, now })
+  $('skills-status').textContent = `${rows.length} of ${all.length} skills${data.indexed?.running ? ` · indexing ${data.indexed.done}/${data.indexed.total} sessions` : ''} · uses counted from Skill tool calls and slash commands in the main conversation`
+  $('skills-empty').hidden = rows.length > 0
+  const body = $('skills-rows')
+  body.replaceChildren()
+  for (const skill of rows) {
+    const t = skillTemperature(skill, now)
+    const tr = document.createElement('tr')
+    tr.className = 'loop-row'
+    const name = el('div')
+    name.append(el('div', 'row-title', skill.name))
+    if (skill.description) name.append(el('div', 'skill-desc', skill.description))
+    const values = dailyUses(skill, days, now)
+    tr.append(
+      cell(name),
+      cell(skillScope(skill)),
+      cell(meterBadge(t, () => skillTip(skill, t))),
+      cell(el('span', 'num', String(usesInRange(skill, days, now)))),
+      cell(el('span', 'num', String(skill.uses))),
+      cell(el('span', 'num', String(skill.sessions))),
+      cell(el('span', 'num', skill.lastUsedAt ? relative(skill.lastUsedAt) : '—')),
+      cell(sparkline(values, { width: 90, height: 18 }))
+    )
+    tr.onclick = (event) => {
+      if (event.target.closest('a')) return
+      if (open.has(skill.key)) open.delete(skill.key)
+      else {
+        open.add(skill.key)
+        if (skill.scope !== 'missing' && !state.skills.details.has(skill.key)) fetchSkillDetail(skill.key)
+      }
+      renderSkillsPage()
+    }
+    body.append(tr)
+    if (open.has(skill.key)) {
+      const detail = document.createElement('tr')
+      detail.className = 'loop-detail-row'
+      const td = cell(skillDetailBox(skill, now))
+      td.colSpan = 8
+      detail.append(td)
+      body.append(detail)
+    }
+  }
+  document.querySelectorAll('#skills-scope button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scope === scope)))
+  document.querySelectorAll('#skills-days button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.days) === days)))
+}
+
 const pathTab = () => ROUTES[location.pathname.replace(/(.)\/+$/, '$1')] ?? 'all'
 
 function writeFilters() {
@@ -2383,6 +2580,7 @@ function applyRoute() {
     $('search-q').focus()
   }
   if (tab === 'usage') loadUsage()
+  if (tab === 'skills') loadSkills()
   if (tab === 'loops') loadLoops()
   if (tab === 'mrs') loadMrs()
   if (tab === 'background') { loadBackground(); markBackgroundSeen() }
@@ -2427,6 +2625,7 @@ async function refresh() {
     if (prunePending()) renderFocus()
     pollChanges()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
+    if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'loops' && Date.now() - state.loops.at > 5_000) loadLoops()
     if (Date.now() - state.mrs.at > 60_000) loadMrs()
     if (state.tab === 'background' && Date.now() - state.background.at > 4_000) { state.background.output.clear(); loadBackground() }
@@ -2515,6 +2714,7 @@ $('tab-all').onclick = (event) => { event.preventDefault(); navigate('/') }
 $('tab-focus').onclick = (event) => { event.preventDefault(); navigate('/focus') }
 $('tab-search').onclick = (event) => { event.preventDefault(); navigate('/search') }
 $('tab-usage').onclick = (event) => { event.preventDefault(); navigate('/usage') }
+$('tab-skills').onclick = (event) => { event.preventDefault(); navigate('/skills') }
 window.onpopstate = applyRoute
 $('q').oninput = () => { renderRows(); writeFilters() }
 $('archived').onchange = () => { renderSummary(); renderRows(); writeFilters() }
@@ -2567,6 +2767,13 @@ document.querySelectorAll('#usage-metric button').forEach((b) => {
 document.querySelectorAll('#usage-days button').forEach((b) => {
   b.onclick = () => { state.usage.days = Number(b.dataset.days); remember('board.usageDays', String(state.usage.days)); loadUsage() }
 })
+document.querySelectorAll('#skills-scope button').forEach((b) => {
+  b.onclick = () => { state.skills.scope = b.dataset.scope; renderSkillsPage() }
+})
+document.querySelectorAll('#skills-days button').forEach((b) => {
+  b.onclick = () => { state.skills.days = Number(b.dataset.days); remember('board.skillsDays', String(state.skills.days)); renderSkillsPage() }
+})
+$('skills-q').oninput = () => { state.skills.query = $('skills-q').value; renderSkillsPage() }
 $('backdrop').onclick = () => setExpanded(null)
 $('cards').addEventListener('focusin', (event) => {
   const card = event.target.closest?.('.card')

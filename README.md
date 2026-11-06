@@ -78,6 +78,7 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 - **New chat** (top bar) opens the desktop app's new session screen on a folder you pick, with an optional prompt filled in. You press send in the app, and the session joins Focus once the app records it.
 - `/search` full-text search inside every conversation, grouped by session with highlighted snippets. A project dropdown narrows it to one project (`?project=`).
 - `/usage` tokens per day and per project (stacked chart) plus the top sessions.
+- `/skills` every installed skill (global, plugin and per-project) with uses over 7, 30 or 90 days, a Hot/Warm/Cooling/Cold/Unused temperature from when it was last used, and a detail row with the trend, projects, recent sessions and the `SKILL.md` body. Uses are counted from `Skill` tool calls and slash commands in the main conversation.
 
 ## Focus cards
 
