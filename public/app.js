@@ -17,6 +17,7 @@ const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approva
 const $ = (id) => document.getElementById(id)
 
 const state = {
+  resume: new Map(),
   tab: 'all',
   sessions: [],
   focusIds: [],
@@ -126,7 +127,23 @@ const projectChip = (s) => {
   chip.style.setProperty('--project', projectColor(s.project))
   return chip
 }
+const copyResume = (command) => {
+  const button = el('button', 'btn', 'Copy resume')
+  button.title = `Board-only session: the desktop app cannot open it. Copies: ${command}`
+  button.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(command)
+      button.textContent = 'Copied'
+    } catch {
+      button.textContent = 'Copy failed'
+    }
+    setTimeout(() => { button.textContent = 'Copy resume' }, 1500)
+  }
+  return button
+}
 const openLink = (id, primary) => {
+  const resume = state.resume.get(id)
+  if (resume) return copyResume(resume)
   const a = el('a', `btn${primary ? ' primary' : ''}`, 'Open')
   a.append(icon('arrow-up-right', { size: 14 }))
   a.href = `claude://code/continue?session=${encodeURIComponent(id)}`
@@ -1104,7 +1121,7 @@ function renderComposer(c) {
   } else if (running) {
     note.textContent = c.run.stopRequested
       ? 'Stopping the board run…'
-      : `Board run in progress (${c.run.mode}) · started ${relative(c.run.startedAt)}. Do not type in the desktop app until it finishes or you press Stop.`
+      : `Board run in progress (${c.run.mode}) · started ${relative(c.run.startedAt)}.${c.source === 'board' ? '' : ' Do not type in the desktop app until it finishes or you press Stop.'}`
     note.classList.add('running')
   } else if (c.run?.state === 'done' && c.run.handoff?.ready) {
     note.textContent = 'Handoff written. A new chat should be open in the desktop app: press Enter there to start it. '
@@ -1127,7 +1144,7 @@ function renderComposer(c) {
     }
   } else if (c.run?.state === 'stopped') {
     note.textContent = 'Last prompt was stopped.'
-  } else if (c.active) {
+  } else if (c.active && c.source !== 'board') {
     note.textContent = 'Busy in the desktop app. New prompts are queued until it is idle.'
   }
 
@@ -1158,8 +1175,9 @@ function handoffLinkFor(c) {
 
 function handoffButton(c) {
   const writing = c.run?.state === 'running' && c.run.handoff
-  const button = el('button', 'btn primary handoff', writing ? 'Writing handoff…' : 'Hand off')
-  button.title = 'Run /handoff in this session, then open a new chat with the document'
+  const board = c.source === 'board'
+  const button = el('button', 'btn primary handoff', writing ? 'Writing handoff…' : (board ? 'Move to desktop' : 'Hand off'))
+  button.title = board ? 'Run /handoff in this board session, then open a new chat in the desktop app with the document' : 'Run /handoff in this session, then open a new chat with the document'
   button.disabled = Boolean(writing || c.run?.state === 'running' || c.active)
   button.onclick = async () => {
     button.disabled = true
@@ -1194,6 +1212,7 @@ function renderUsage(c, head) {
     if (level === 'danger') row.prepend(handoffButton(c))
     row.prepend(el('span', `context-alert ${level}`, `Over ${compact(limit)} · ${verb}`))
   }
+  if (c.source === 'board' && level !== 'danger') row.prepend(handoffButton(c))
   head.append(row)
 }
 
@@ -1398,7 +1417,8 @@ function renderCard(c) {
   const titleBox = el('div', 'head-title')
   const meta = el('div', 'meta-line')
   meta.append(projectChip(c), el('span', 'path', home(c.cwd)))
-  for (const t of [c.model?.replace(/^claude-/, ''), c.effort && `${c.effort} effort`, c.permissionMode, `${c.completedTurns} ${c.completedTurns === 1 ? 'turn' : 'turns'}`]) {
+  const turns = c.source === 'board' ? null : `${c.completedTurns} ${c.completedTurns === 1 ? 'turn' : 'turns'}`
+  for (const t of [c.source === 'board' && 'board only', c.model?.replace(/^claude-/, ''), c.effort && `${c.effort} effort`, c.permissionMode, turns]) {
     if (t) meta.append(el('span', 'dotted', t))
   }
   titleBox.append(el('div', 'title', c.title), meta)
@@ -1674,6 +1694,27 @@ async function chooseFolder() {
     if (select.value === '') showCustomFolder(true)
   }
   select.focus()
+}
+
+async function startHere() {
+  const folder = ($('new-chat-folder').value || $('new-chat-custom').value).trim()
+  const prompt = $('new-chat-text').value.trim()
+  const status = $('new-chat-status')
+  if (!folder.startsWith('/')) return void (status.textContent = 'Use an absolute folder path, like /Users/you/project.')
+  if (!prompt) return void (status.textContent = 'Write the first prompt: Start here runs it right away.')
+  const button = $('new-chat-here')
+  button.disabled = true
+  status.textContent = 'Starting…'
+  const result = await postJson('/api/new-session', { folder, prompt }).catch(() => ({ ok: false, data: {} }))
+  button.disabled = false
+  if (!result.ok) return void (status.textContent = result.data?.error ?? 'Could not start the session.')
+  status.textContent = ''
+  $('new-chat-dialog').close()
+  $('new-chat-text').value = ''
+  toast({ id: result.data.id, title: 'Started on the board', kind: 'finished', message: 'It runs here only. Use Move to desktop on its card to continue it in the app.' })
+  state.signature = ''
+  navigate('/focus')
+  await refresh()
 }
 
 function startNewChat() {
@@ -2708,6 +2749,7 @@ async function refresh() {
     if (signature !== state.signature) {
       state.signature = signature
       state.sessions = sessions
+      state.resume = new Map(sessions.filter((s) => s.resume).map((s) => [s.id, s.resume]))
       state.focusIds = focus.ids
       state.cards = focus.cards
       renderSummary()
@@ -2829,6 +2871,7 @@ $('search-q').oninput = () => { clearTimeout(state.search.timer); state.search.t
 $('new-chat').onclick = openNewChat
 $('new-chat-cancel').onclick = () => $('new-chat-dialog').close()
 $('new-chat-start').onclick = startNewChat
+$('new-chat-here').onclick = startHere
 $('new-chat-folder').onchange = chooseFolder
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()

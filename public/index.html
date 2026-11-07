@@ -235,10 +235,12 @@
   <h3>New chat</h3>
   <select id="new-chat-folder" class="field" aria-label="Folder"></select>
   <input id="new-chat-custom" class="field" placeholder="/absolute/path/to/folder" autocomplete="off" spellcheck="false" hidden>
-  <textarea id="new-chat-text" placeholder="Optional first prompt. It is filled in for you to review and send in the app."></textarea>
+  <textarea id="new-chat-text" placeholder="First prompt. Open in Claude fills it in for you to review and send in the app; Start here sends it now."></textarea>
+  <div class="hint" id="new-chat-hint">Start here runs the prompt on the board right away, with the permission mode shown on the card. It will not appear in the desktop app: use Move to desktop on its card later if you want it there.</div>
   <div class="status-line" id="new-chat-status"></div>
   <div class="actions">
     <button class="btn" id="new-chat-cancel">Cancel</button>
+    <button class="btn" id="new-chat-here" title="Run the prompt now on the board only">Start here (board only)</button>
     <button class="btn primary" id="new-chat-start">Open in Claude</button>
   </div>
 </dialog>

@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRunManager, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, MAX_PROMPT_CHARS } from '../lib/runs.js'
+import { createRunManager, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, BOARD_NO_TRANSCRIPT_MESSAGE, BOARD_LIMIT_MESSAGE, MAX_PROMPT_CHARS } from '../lib/runs.js'
+import { boardRaw, newBoardSession } from '../lib/boardsessions.js'
 
 const SID = 'local_aaaa-1111'
 const CLI = 'cli-1111'
@@ -47,6 +48,8 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     transcript: true,
     alive: new Map(),
     spawnError: false,
+    board: [],
+    boardFull: false,
     runsFile: join(dir, 'runs.json'),
   }
   let nextPid = 40_000
@@ -74,6 +77,7 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     adoptPollMs: 10,
     desktopPollMs: 10,
     homeDir: dir,
+    boardStore: { add: async (entry) => { if (h.boardFull) return false; h.board.push(entry); return true } },
     scanSession: async () => h.scan,
     hasTranscript: async () => h.transcript,
     buildCard: async (raw) => h.card(raw),
@@ -541,4 +545,76 @@ test('a running child is saved with its pid and forgotten when it closes', async
   assert.equal((await h.saved())[SID].mode, 'bypassPermissions')
   child.emit('close', 0, null)
   await until(async () => !(SID in (await h.saved())))
+})
+
+test('a new board session is recorded and its first run uses --session-id, not --resume', async (t) => {
+  const h = harness(t)
+  const result = await h.manager.requestNewSession({ folder: h.dir, prompt: '  build the thing  ' })
+  assert.equal(result.status, 202)
+  assert.match(result.body.id, /^local_board-[0-9a-f-]{36}$/)
+  assert.equal(h.board.length, 1)
+  assert.equal(h.board[0].sessionId, result.body.id)
+  assert.equal(h.board[0].cwd, h.dir)
+  assert.equal(h.board[0].title, 'build the thing')
+  const [child] = h.spawned
+  const flag = child.args.indexOf('--session-id')
+  assert.equal(child.args[0], '-p')
+  assert.equal(child.args[flag + 1], h.board[0].cliSessionId)
+  assert.ok(!child.args.includes('--resume'))
+  assert.equal(child.options.cwd, h.dir)
+  assert.equal(child.input, 'build the thing')
+  assert.equal(h.manager.runFor(result.body.id).state, 'running')
+  await until(async () => (await h.saved())[result.body.id])
+  assert.equal((await h.saved())[result.body.id].cliSessionId, h.board[0].cliSessionId)
+})
+
+test('a new board session rejects a missing prompt, a relative or missing folder, and blocked commands', async (t) => {
+  const h = harness(t)
+  assert.equal((await h.manager.requestNewSession({ folder: h.dir, prompt: '   ' })).status, 400)
+  assert.equal((await h.manager.requestNewSession({ folder: 'relative/dir', prompt: 'hi' })).status, 400)
+  assert.equal((await h.manager.requestNewSession({ folder: join(h.dir, 'nope'), prompt: 'hi' })).status, 400)
+  assert.equal((await h.manager.requestNewSession({ folder: `${h.dir}/../x`, prompt: 'hi' })).status, 400)
+  const blocked = await h.manager.requestNewSession({ folder: h.dir, prompt: '/clear' })
+  assert.equal(blocked.status, 400)
+  assert.equal(blocked.body.error, BLOCKED_MESSAGE)
+  assert.equal((await h.manager.requestNewSession({ folder: h.dir, prompt: 'x'.repeat(MAX_PROMPT_CHARS + 1) })).status, 400)
+  assert.equal(h.spawned.length, 0)
+  assert.equal(h.board.length, 0)
+})
+
+test('a full board list refuses a new session before spawning anything', async (t) => {
+  const h = harness(t)
+  h.boardFull = true
+  const result = await h.manager.requestNewSession({ folder: h.dir, prompt: 'hi' })
+  assert.equal(result.status, 409)
+  assert.equal(result.body.error, BOARD_LIMIT_MESSAGE)
+  assert.equal(h.spawned.length, 0)
+})
+
+test('follow-up prompts on a board session resume it and never start the desktop guard', async (t) => {
+  const entry = newBoardSession({ cwd: tmpdir(), prompt: 'first', permissionMode: 'bypassPermissions' })
+  const raw = boardRaw(entry, { run: null })
+  const h = harness(t, { sessions: [raw] })
+  assert.equal((await start(h, raw.sessionId, 'second')).status, 202)
+  const [child] = h.spawned
+  assert.equal(child.args[child.args.indexOf('--resume') + 1], entry.cliSessionId)
+  assert.ok(!child.args.includes('--session-id'))
+  // Bytes the desktop app would write mid-run must not stop a board run.
+  const transcript = join(h.dir, 'board.jsonl')
+  writeFileSync(transcript, '')
+  h.transcriptPaths.set(entry.cliSessionId, transcript)
+  appendFileSync(transcript, `${JSON.stringify({ type: 'user', entry: 'desktop' })}\n`)
+  await sleep(60)
+  assert.equal(h.manager.runFor(raw.sessionId).interfered, undefined)
+  assert.equal(h.manager.runFor(raw.sessionId).state, 'running')
+})
+
+test('a board session whose first run left no transcript gets the board-specific message', async (t) => {
+  const entry = newBoardSession({ cwd: tmpdir(), prompt: 'first', permissionMode: 'bypassPermissions' })
+  const h = harness(t, { sessions: [boardRaw(entry, { run: null })] })
+  h.transcript = false
+  const result = await start(h, entry.sessionId, 'again')
+  assert.equal(result.status, 409)
+  assert.equal(result.body.error, BOARD_NO_TRANSCRIPT_MESSAGE)
+  assert.notEqual(result.body.error, NO_TRANSCRIPT_MESSAGE)
 })

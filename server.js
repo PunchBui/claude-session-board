@@ -23,6 +23,7 @@ import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFo
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
+import { createBoardStore, boardRaw } from './lib/boardsessions.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -43,6 +44,7 @@ const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const RUNS_FILE = join(DATA_DIR, 'runs.json')
+const BOARD_SESSIONS_FILE = join(DATA_DIR, 'board-sessions.json')
 const ADOPT_POLL_MS = 2000
 const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: homedir() })
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
@@ -129,6 +131,8 @@ function toSummary(raw) {
     status: statusOf(raw),
     detail: raw.postTurnSummary?.status_detail ?? raw.turnWrapUp?.description ?? null,
     cliSessionId: raw.cliSessionId ?? null,
+    source: raw.source ?? 'desktop',
+    resume: raw.resume ?? null,
   }
 }
 
@@ -152,7 +156,17 @@ async function readRawSessions() {
       }
     })
   )
-  return parsed.filter(Boolean).map(keepTitle)
+  return [...parsed.filter(Boolean).map(keepTitle), ...(await boardRaws())]
+}
+
+async function boardRaws() {
+  return Promise.all(
+    boardStore.all().map(async (entry) => {
+      const path = await findTranscript(entry.cliSessionId)
+      const info = path ? await stat(path).catch(() => null) : null
+      return boardRaw(entry, { lastActivityAt: info?.mtimeMs, run: manager.runFor(entry.sessionId) })
+    })
+  )
 }
 
 async function loadSessions() {
@@ -244,6 +258,7 @@ const readJson = (file, fallback) =>
   readJsonQuarantine(file, fallback, { onCorrupt: ({ file: path, kept }) => console.error(`${path} did not parse; kept it as ${kept}`) })
 
 const writeJson = writeJsonAtomic
+const boardStore = createBoardStore({ file: BOARD_SESSIONS_FILE, readJson, writeJson })
 
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
@@ -279,6 +294,7 @@ async function persistQueues() {
 }
 
 async function loadStores() {
+  await boardStore.load()
   const storedQueues = await readJson(QUEUE_FILE, {})
   for (const [id, queue] of Object.entries(storedQueues)) {
     if (SESSION_ID.test(id) && Array.isArray(queue.items)) queues.set(id, { items: queue.items, paused: Boolean(queue.paused) })
@@ -575,6 +591,7 @@ const manager = createRunManager({
   graceMs: KILL_GRACE_MS,
   adoptPollMs: ADOPT_POLL_MS,
   homeDir: homedir(),
+  boardStore,
   scanSession,
   hasTranscript,
   buildCard,
@@ -641,6 +658,11 @@ const postRoutes = {
   },
   async '/api/prompt'(body, res) {
     return reply(res, await manager.requestPrompt(body, body.prompt))
+  },
+  async '/api/new-session'(body, res) {
+    const result = await manager.requestNewSession(body)
+    if (result.status === 202) await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
+    return reply(res, result)
   },
   async '/api/handoff'(body, res) {
     const file = handoffFile(String(body.id ?? ''), tmpdir())
