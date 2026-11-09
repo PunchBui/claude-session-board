@@ -58,3 +58,9 @@ test('parseBranchLine reads ahead and behind', () => {
   assert.deepEqual(parseBranchLine('## main...origin/main [ahead 2, behind 1]'), { branch: 'main', upstream: 'origin/main', ahead: 2, behind: 1 })
   assert.equal(parseBranchLine('## feature/x').branch, 'feature/x')
 })
+
+test('weekly repeats on the same weekday and skips missed weeks', () => {
+  const at = Date.parse('2026-11-09T10:00:00')
+  assert.equal(nextAfter(at, 'weekly', at), Date.parse('2026-11-16T10:00:00'))
+  assert.equal(nextAfter(at, 'weekly', Date.parse('2026-11-25T00:00:00')), Date.parse('2026-11-30T10:00:00'))
+})

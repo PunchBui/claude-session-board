@@ -1,6 +1,6 @@
 import { CONTEXT_CAUTION, CONTEXT_DANGER, contextLevel, diffAlerts } from './alerts.js'
 import { icon } from './icons.js'
-import { splitFences } from './richtext.js'
+import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
@@ -9,10 +9,13 @@ import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loo
 import { SCOPE_FILTERS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
+import { splitAttachments, visibleText } from './attachments.js'
+import { groupCards, groupOf, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
+import { initMobile, isMobile } from './mobile.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
-const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills' }
-const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills' }
+const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
+const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
 const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
@@ -28,15 +31,14 @@ const state = {
   kept: {},
   signature: '',
   timer: null,
-  cols: 'auto',
-  expanded: null,
-  flashId: null,
+  selected: null,
+  loaded: false,
+  draft: false,
   history: [],
   commands: new Map(),
   pending: new Map(),
   historyOpen: false,
   historyNew: new Set(),
-  flashUntil: 0,
   drafts: new DraftStore((() => { try { return localStorage } catch { return null } })()),
   notes: new Map(),
   ui: new Map(),
@@ -53,14 +55,15 @@ const state = {
   search: { timer: null, runId: 0 },
   usage: { days: 30, metric: 'output', data: null, at: 0 },
   skills: { data: null, scope: 'all', temp: null, days: 30, query: '', at: 0, open: new Set(), details: new Map() },
+  schedule: { data: null, at: 0, built: false },
   loops: { data: null, filter: 'all', at: 0, open: new Set() },
   background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
   mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
 }
 
 try {
-  state.cols = localStorage.getItem('board.cols') || 'auto'
-  state.focusSort = localStorage.getItem('board.focusSort') === 'prompt' ? 'prompt' : 'manual'
+  state.selected = localStorage.getItem('board.selected')
+  state.focusSort = sortKey(localStorage.getItem('board.focusSort'))
   state.kept = JSON.parse(localStorage.getItem('board.kept') || '{}')
   state.alertsOn = localStorage.getItem('board.alerts') === '1'
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
@@ -123,7 +126,9 @@ function sinceSpan(iso) {
   return span
 }
 const projectChip = (s) => {
-  const chip = el('span', 'chip', s.project ?? 'unknown')
+  const chip = el('span', 'chip')
+  chip.append(el('span', 'chip-name', s.project ?? 'unknown'))
+  chip.title = s.project ?? 'unknown'
   chip.style.setProperty('--project', projectColor(s.project))
   return chip
 }
@@ -182,27 +187,65 @@ function withAttachments(id, prompt) {
   return `${prompt || 'Please look at the attached files.'}\n\nAttached files:\n${lines}`
 }
 
+// Drop files anywhere on a card (chat, header or prompt box) to attach them. One set of
+// document-level listeners, so cards that are re-rendered or patched in place keep working,
+// and a file dropped elsewhere is ignored instead of making the browser open it.
+const dropOverlay = el('div', 'drop-overlay', 'Drop to attach')
+document.body.append(dropOverlay)
+const hasFiles = (event) => [...(event.dataTransfer?.types ?? [])].includes('Files')
+function dropTarget(event) {
+  const card = event.target instanceof Element ? event.target.closest('article.card') : null
+  if (!card) return null
+  const key = card.classList.contains('new-chat') ? NEW_KEY : card.dataset.id
+  return key ? { card, key } : null
+}
+function showDrop(card) {
+  const box = card.getBoundingClientRect()
+  Object.assign(dropOverlay.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px` })
+  dropOverlay.classList.add('on')
+}
+const hideDrop = () => dropOverlay.classList.remove('on')
+document.addEventListener('dragover', (event) => {
+  if (!hasFiles(event)) return
+  event.preventDefault()
+  const target = dropTarget(event)
+  event.dataTransfer.dropEffect = target ? 'copy' : 'none'
+  if (target) showDrop(target.card)
+  else hideDrop()
+})
+document.addEventListener('dragleave', (event) => { if (!event.relatedTarget) hideDrop() })
+document.addEventListener('drop', (event) => {
+  if (!hasFiles(event)) return
+  event.preventDefault()
+  hideDrop()
+  const target = dropTarget(event)
+  if (target && event.dataTransfer.files.length) attachFiles(target.key, event.dataTransfer.files)
+})
+window.addEventListener('dragend', hideDrop)
+window.addEventListener('blur', hideDrop)
+
 async function attachFiles(id, files) {
   const list = [...files]
+  const note = (message) => (id === NEW_KEY ? setDraftNote(message, message?.startsWith('Uploading') ? 'running' : 'error') : setNote(id, message))
   if (!list.length) return
-  setNote(id, `Uploading ${list.length} file${list.length === 1 ? '' : 's'}…`)
+  note(`Uploading ${list.length} file${list.length === 1 ? '' : 's'}…`)
   renderFocus()
   const added = []
   for (const file of list) {
     const type = file.type || 'application/octet-stream'
     try {
-      const res = await fetch(`/api/upload?name=${encodeURIComponent(file.name || 'pasted')}`, { method: 'POST', headers: { 'content-type': type }, body: file })
+      const res = signedOut(await fetch(`/api/upload?name=${encodeURIComponent(file.name || 'pasted')}`, { method: 'POST', headers: { 'content-type': type }, body: file }))
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) { setNote(id, data.error ?? `Could not upload ${file.name}`); renderFocus(); return }
+      if (!res.ok) { note(data.error ?? `Could not upload ${file.name}`); renderFocus(); return }
       added.push({ ...data, preview: data.image ? URL.createObjectURL(file) : null })
     } catch {
-      setNote(id, `Could not upload ${file.name}`)
+      note(`Could not upload ${file.name}`)
       renderFocus()
       return
     }
   }
   state.attachments.set(id, [...attachmentsOf(id), ...added])
-  setNote(id, null)
+  note(null)
   renderFocus()
 }
 
@@ -237,16 +280,19 @@ function renderAttachments(c) {
   return row
 }
 
+// Over a tunnel the board answers 401 once the login cookie is gone; reloading shows the sign-in page.
+const signedOut = (res) => { if (res.status === 401) location.reload(); return res }
+
 async function postJson(path, body) {
   try {
-    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const res = signedOut(await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }))
     return { ok: res.ok, data: await res.json().catch(() => ({})) }
   } catch {
     return { ok: false, data: { error: 'Could not reach the board. It may be restarting.' } }
   }
 }
 const shouldQueue = (result) => !result.ok && result.data.queueable === true
-const getJson = (path) => fetch(path, { cache: 'no-store' }).then((r) => r.json())
+const getJson = (path) => fetch(path, { cache: 'no-store' }).then((r) => signedOut(r).json())
 const resync = async () => { state.signature = ''; await refresh() }
 
 function setNote(id, message) {
@@ -417,6 +463,39 @@ async function setFocus(id, focused) {
   }
 }
 
+function closeMenus() { document.querySelectorAll('.kebab-menu').forEach((m) => m.remove()) }
+document.addEventListener('click', (event) => { if (!event.target.closest?.('.kebab-wrap')) closeMenus() })
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenus() })
+
+// Three-dot menu on a Focus sidebar item: currently just "Unfocus session".
+function kebabMenu(id) {
+  const wrap = el('div', 'kebab-wrap')
+  const b = el('button', 'icon-only kebab-btn')
+  b.append(icon('more', { size: 18 }))
+  b.title = 'More'
+  b.setAttribute('aria-label', 'Session menu')
+  b.setAttribute('aria-haspopup', 'menu')
+  b.onclick = (event) => {
+    event.stopPropagation()
+    const open = wrap.querySelector('.kebab-menu')
+    closeMenus()
+    if (open) return
+    const menu = el('div', 'kebab-menu')
+    menu.setAttribute('role', 'menu')
+    const item = el('button', undefined, 'Unfocus session')
+    item.setAttribute('role', 'menuitem')
+    item.onclick = () => { closeMenus(); setFocus(id, false) }
+    menu.append(item)
+    wrap.append(menu)
+    const box = b.getBoundingClientRect()
+    menu.style.top = `${Math.min(box.bottom + 4, window.innerHeight - menu.offsetHeight - 8)}px`
+    menu.style.left = `${Math.max(8, box.right - menu.offsetWidth)}px`
+  }
+  wrap.onkeydown = (event) => event.stopPropagation()
+  wrap.append(b)
+  return wrap
+}
+
 function starButton(id) {
   const on = state.focusIds.includes(id)
   const b = el('button', 'star')
@@ -442,6 +521,16 @@ function meterBadge(t, tip) {
   for (let i = 1; i <= 4; i++) meter.append(el('i', i <= t.bars ? 'f' : undefined))
   box.append(meter, text(t.label))
   return attachTip(box, tip)
+}
+
+// Just the bars, for tight spots like the sidebar; the label and details are in the tooltip.
+function tempMeter(t, session) {
+  const box = el('span', `temp compact ${t.tier}`)
+  const meter = el('span', 'meter')
+  for (let i = 1; i <= 4; i++) meter.append(el('i', i <= t.bars ? 'f' : undefined))
+  box.append(meter)
+  box.setAttribute('aria-label', t.label)
+  return attachTip(box, () => warmthTip(session, t, state.kept[session.id] ?? 0))
 }
 
 function tempBadge(t, session) {
@@ -669,14 +758,67 @@ function codeBlock(part) {
   return wrap
 }
 
+function renderBlock(block) {
+  if (block.type === 'heading') {
+    const h = el('div', `md-h md-h${Math.min(block.level, 4)}`)
+    inline(h, block.text)
+    return h
+  }
+  if (block.type === 'rule') return el('hr', 'md-rule')
+  if (block.type === 'quote') {
+    const q = el('blockquote', 'md-quote')
+    inline(q, block.text)
+    return q
+  }
+  if (block.type === 'list') {
+    const list = document.createElement(block.ordered ? 'ol' : 'ul')
+    list.className = 'md-list'
+    for (const item of block.items) {
+      const li = document.createElement('li')
+      if (item.depth) li.style.marginLeft = `${item.depth * 20}px`
+      inline(li, item.text)
+      list.append(li)
+    }
+    return list
+  }
+  if (block.type === 'table') {
+    const scroll = el('div', 'md-table-wrap')
+    const table = el('table', 'md-table')
+    const head = document.createElement('tr')
+    block.header.forEach((cell, i) => {
+      const th = document.createElement('th')
+      if (block.aligns[i]) th.style.textAlign = block.aligns[i]
+      inline(th, cell)
+      head.append(th)
+    })
+    const thead = document.createElement('thead')
+    thead.append(head)
+    const tbody = document.createElement('tbody')
+    for (const row of block.rows) {
+      const tr = document.createElement('tr')
+      row.forEach((cell, i) => {
+        const td = document.createElement('td')
+        if (block.aligns[i]) td.style.textAlign = block.aligns[i]
+        inline(td, cell)
+        tr.append(td)
+      })
+      tbody.append(tr)
+    }
+    table.append(thead, tbody)
+    scroll.append(table)
+    return scroll
+  }
+  const para = el('div', 'para')
+  inline(para, block.text)
+  return para
+}
+
 function richText(parent, value) {
   for (const part of splitFences(value)) {
     if (part.type === 'code') {
       parent.append(codeBlock(part))
     } else {
-      const para = el('div', 'para')
-      inline(para, part.text)
-      parent.append(para)
+      for (const block of parseBlocks(part.text)) parent.append(renderBlock(block))
     }
   }
 }
@@ -830,16 +972,17 @@ async function createSchedule(c, box) {
   await resync()
 }
 
-async function loadCommands(id) {
+async function loadCommands(id, query = `id=${encodeURIComponent(id)}`) {
   const known = state.commands.get(id)
   if (known && (known.loading || Date.now() - known.at < 60_000)) return
   state.commands.set(id, { items: known?.items ?? null, loading: true, at: Date.now() })
   let items = known?.items ?? []
   try {
-    items = (await getJson(`/api/commands?id=${encodeURIComponent(id)}`)).items ?? []
+    items = (await getJson(`/api/commands?${query}`)).items ?? []
   } catch {}
   state.commands.set(id, { items, loading: false, at: Date.now() })
-  resyncSlash(id)
+  if (id.startsWith('folder:')) syncScheduleSlash()
+  else resyncSlash(id)
 }
 
 function slashMatches(id, value) {
@@ -915,7 +1058,36 @@ function renderQueue(c) {
     remove.append(icon('x', { size: 14 }))
     remove.title = 'Remove from queue'
     remove.onclick = () => postJson('/api/queue/remove', { id: c.id, qid: item.qid }).then(resync)
-    row.append(el('span', 'n', String(index + 1)), el('span', 't', item.prompt), remove)
+    const force = el('button', 'btn', 'Send now')
+    force.title = 'Send this message now, even if the session looks busy in the desktop app'
+    force.onclick = async () => {
+      const result = await postJson('/api/queue/force', { id: c.id, qid: item.qid })
+      if (!result.ok) toast({ id: 'force-send', title: 'Could not send now', kind: 'finished', message: result.data?.error ?? 'Could not send' })
+      resync()
+    }
+    const { text: body, files } = splitAttachments(item.prompt)
+    const content = el('div', 't')
+    const shown = visibleText(body)
+    if (shown) content.append(el('div', 'qtext', shown))
+    if (files.length) {
+      const strip = el('div', 'qfiles')
+      for (const file of files) {
+        const chip = el('div', 'qfile')
+        chip.title = file.path
+        if (file.image) {
+          const thumb = document.createElement('img')
+          thumb.src = `/api/upload?path=${encodeURIComponent(file.path)}`
+          thumb.alt = file.name
+          thumb.loading = 'lazy'
+          thumb.onerror = () => thumb.replaceWith(icon('paperclip', { size: 14 }))
+          chip.append(thumb)
+        } else chip.append(icon('paperclip', { size: 14 }))
+        chip.append(el('span', 'n', file.name))
+        strip.append(chip)
+      }
+      content.append(strip)
+    }
+    row.append(el('span', 'n', String(index + 1)), content, force, remove)
     wrap.append(row)
   })
   return wrap
@@ -1154,14 +1326,6 @@ function renderComposer(c) {
   const attachments = renderAttachments(c)
   if (attachments) dock.append(attachments)
   dock.append(composer, note)
-  dock.ondragover = (event) => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); dock.classList.add('dropping') } }
-  dock.ondragleave = (event) => { if (!dock.contains(event.relatedTarget)) dock.classList.remove('dropping') }
-  dock.ondrop = (event) => {
-    if (!event.dataTransfer?.files.length) return
-    event.preventDefault()
-    dock.classList.remove('dropping')
-    attachFiles(c.id, event.dataTransfer.files)
-  }
   syncSlash(c.id, dock, box)
   requestAnimationFrame(() => autosize(box))
   return dock
@@ -1406,7 +1570,7 @@ function pollChanges() {
 function renderCard(c) {
   const ui = uiOf(c.id)
   const heat = temperatureOf(c)
-  const card = el('article', `card temp-${heat.tier}${heat.group === 'cool' ? ' cool' : ''}${c.active ? ' active' : ''}${state.expanded === c.id ? ' expanded' : ''}${state.flashId === c.id && Date.now() < state.flashUntil ? ' flash' : ''}`)
+  const card = el('article', `card temp-${heat.tier}${heat.group === 'cool' ? ' cool' : ''}${c.active ? ' active' : ''}`)
   card.dataset.id = c.id
   card.style.setProperty('--project', projectColor(c.project))
   const level = contextLevel(c.usage?.context ?? 0)
@@ -1424,37 +1588,49 @@ function renderCard(c) {
   titleBox.append(el('div', 'title', c.title), meta)
   const live = el('span', 'live')
   live.append(el('span', 'dot'), text(c.active ? 'Working' : `Idle · ${relative(c.touchedAt)}`))
-  const expand = el('button', 'icon-only')
-  const isExpanded = state.expanded === c.id
-  expand.append(icon(isExpanded ? 'minimize' : 'maximize', { size: 16 }))
-  expand.title = isExpanded ? 'Shrink (Esc)' : 'Enlarge this card'
-  expand.onclick = () => setExpanded(isExpanded ? null : c.id)
-  const actions = el('div', 'head-actions')
-  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, openLink(c.id), expand].filter(Boolean))
-  row.append(starButton(c.id), titleBox, actions)
-  head.append(row)
-  for (const part of [renderAttention(c), ui.pane === 'chat' ? null : renderNowDoing(c)]) if (part) head.append(part)
-  renderUsage(c, head)
-  if (c.detail) head.append(el('div', 'summary-line', c.detail))
-
   const switcher = el('div', 'seg pane-switch')
   for (const [pane, label] of [['chat', 'Chat'], ['changes', 'Changes']]) {
     const b = el('button', undefined, label)
     if (pane === 'changes' && c.details?.filesEdited) b.append(el('span', 'n', String(c.details.filesEdited)))
     b.setAttribute('aria-pressed', String(ui.pane === pane))
-    b.onclick = () => { ui.pane = pane; renderFocus(); if (pane === 'changes') loadChanges(c.id) }
+    b.onclick = () => { ui.pane = pane; if (isMobile()) ui.more = false; renderFocus(); if (pane === 'changes') loadChanges(c.id) }
     switcher.append(b)
   }
-  head.append(switcher)
+  const step = el('div', 'stepper')
+  for (const [dir, glyph, title] of [[-1, 'chevron-up', 'Previous session (↑)'], [1, 'chevron-down', 'Next session (↓)']]) {
+    const b = el('button', 'icon-only')
+    b.append(icon(glyph, { size: 16 }))
+    b.title = title
+    b.onclick = () => stepSelected(dir)
+    step.append(b)
+  }
+  const actions = el('div', 'head-actions')
+  const phone = isMobile()
+  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, step, openLink(c.id)].filter(Boolean))
+  row.append(starButton(c.id), titleBox)
+  if (phone) {
+    // Phone: the actions, including Chat/Changes, fold behind a ... button.
+    const more = el('button', 'icon-only more-btn')
+    more.append(icon('more', { size: 18 }))
+    more.setAttribute('aria-label', 'Session actions')
+    more.setAttribute('aria-expanded', String(Boolean(ui.more)))
+    more.onclick = () => { ui.more = !ui.more; renderFocus() }
+    row.append(more)
+    card.classList.toggle('more-open', Boolean(ui.more))
+  }
+  row.append(actions)
+  head.append(row)
+  for (const part of [renderAttention(c), ui.pane === 'chat' ? null : renderNowDoing(c)]) if (part) head.append(part)
+  renderUsage(c, head)
   if (heat.group === 'cool') head.append(coolNudge(c))
 
-  card.append(head, ui.pane === 'changes' ? renderChanges(c) : renderChat(c), renderComposer(c))
+  const dock = renderComposer(c)
+  card.append(head, ui.pane === 'changes' ? renderChanges(c) : renderChat(c), dock)
   return card
 }
 
 function orderedCards() {
-  if (state.focusSort !== 'prompt') return state.cards
-  return [...state.cards].sort((a, b) => temperatureOf(b).at - temperatureOf(a).at)
+  return sortCards(state.cards, state.focusSort, { promptAt: (c) => temperatureOf(c).at })
 }
 
 function coolNudge(c) {
@@ -1539,16 +1715,219 @@ function bindChat(card) {
   })
 }
 
+function sideGroups() {
+  return groupCards(orderedCards(), $('side-q').value)
+}
+
+function selectedCard(groups = sideGroups()) {
+  return pickSelected(groups, state.selected)
+}
+
+function selectCard(id) {
+  if (state.selected === id && !state.draft) return
+  state.draft = false
+  state.selected = id
+  remember('board.selected', id)
+  if (state.tab === 'focus') history.replaceState({}, '', `/focus?card=${encodeURIComponent(id)}`)
+  clearNotifications(id)
+  renderFocus()
+}
+
+function stepSelected(step) {
+  const groups = sideGroups()
+  const current = selectedCard(groups)
+  const next = current && neighbour(groups, current.id, step)
+  if (next) selectCard(next)
+}
+
+function sideItem(c, selected) {
+  const item = el('div', `item${selected ? ' sel' : ''}`)
+  item.dataset.id = c.id
+  item.tabIndex = 0
+  item.setAttribute('role', 'option')
+  item.setAttribute('aria-selected', String(selected))
+  item.title = c.detail ? `${c.title}\n${c.detail}` : c.title
+  const attention = c.live?.attention
+  const working = c.active || c.run?.state === 'running'
+  const top = el('div', 'item-top')
+  top.append(el('span', `dot ${attention ? 'ask' : working ? 'work' : c.status === 'completed' ? 'done' : 'idle'}`), el('span', 'item-title', c.title), tempMeter(temperatureOf(c), c), el('span', 'item-time', working ? 'now' : shortAge(c.touchedAt)), kebabMenu(c.id))
+  const sub = el('div', 'item-sub')
+  let note = c.detail ?? ''
+  let mono = false
+  if (attention) note = attention.kind === 'question' ? (attention.text?.split('\n')[0] || 'Waiting for your answer') : `${attention.tool} may need approval`
+  else if (working && c.live?.phase === 'tool') { note = `${c.live.current.name}${c.live.current.text ? ` · ${c.live.current.text}` : ''}`; mono = true }
+  else if (working) note = phaseLabel(c.live) ?? 'Working'
+  sub.append(projectChip(c), el('span', `note${mono ? ' mono' : ''}`, note))
+  const level = contextLevel(c.usage?.context ?? 0)
+  if (level) sub.append(el('span', `tag ctx ${level}`, compact(c.usage.context)))
+  const queued = c.queue?.items.length ?? 0
+  if (queued) sub.append(el('span', 'tag q', `+${queued}`))
+  const sched = c.schedules ?? []
+  if (sched.length) {
+    const tag = el('span', 'tag sched')
+    tag.append(icon('clock', { size: 11 }), document.createTextNode(sched.length > 1 ? ` ${sched.length}` : ` ${clock(new Date(sched[0].at).toISOString())}`))
+    tag.title = sched.map((x) => `${dateTime(x.at)}${x.repeat === 'none' ? '' : ` · ${x.repeat}`}: ${x.prompt}`).join('\n')
+    sub.append(tag)
+  }
+  item.append(top, sub)
+  if (working && c.usage) {
+    const bar = el('div', 'item-bar')
+    const fill = el('i', level ? 'warn' : undefined)
+    fill.style.width = `${Math.min(100, Math.round((c.usage.context / CONTEXT_DANGER) * 100))}%`
+    bar.append(fill)
+    item.append(bar)
+  }
+  item.dataset.group = groupOf(c)
+  item.draggable = true
+  item.ondragstart = (event) => {
+    state.dragId = c.id
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('application/x-board-session', c.id)
+    requestAnimationFrame(() => item.classList.add('dragging'))
+  }
+  item.ondragend = endSideDrag
+  item.ondragover = (event) => {
+    if (!state.dragId || !sameSideGroup(state.dragId, c.id)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    const box = item.getBoundingClientRect()
+    showSideDrop(item, event.clientY > box.top + box.height / 2)
+  }
+  item.ondrop = (event) => {
+    if (!state.dragId || !sameSideGroup(state.dragId, c.id)) return
+    event.preventDefault()
+    const box = item.getBoundingClientRect()
+    dropSessionOn(c.id, event.clientY > box.top + box.height / 2)
+  }
+  item.onclick = () => selectCard(c.id)
+  item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectCard(c.id) } }
+  return item
+}
+
+// Drag a sidebar session to reorder it. The new order is saved as the Manual order, so it
+// also takes over from any other sort. Sessions only move inside their own group.
+const sideItemOf = (id) => document.querySelector(`#side-list .item[data-id="${CSS.escape(id)}"]`)
+const sameSideGroup = (a, b) => sideItemOf(a)?.dataset.group === sideItemOf(b)?.dataset.group
+
+function showSideDrop(item, after) {
+  clearSideDrop()
+  item.classList.add(after ? 'drop-after' : 'drop-before')
+}
+const clearSideDrop = () => document.querySelectorAll('#side-list .drop-before, #side-list .drop-after').forEach((n) => n.classList.remove('drop-before', 'drop-after'))
+
+function endSideDrag() {
+  const dirty = state.dragDirty
+  state.dragId = null
+  state.dragDirty = false
+  clearSideDrop()
+  document.querySelectorAll('#side-list .dragging').forEach((n) => n.classList.remove('dragging'))
+  if (dirty) renderFocus()
+}
+
+async function dropSessionOn(targetId, after) {
+  const id = state.dragId
+  const shown = orderedCards().map((c) => c.id)
+  const next = moveWithin(shown, id, targetId, after, sameSideGroup)
+  endSideDrag()
+  if (next === shown || next.join() === shown.join()) return
+  state.focusSort = 'manual'
+  remember('board.focusSort', 'manual')
+  const byId = new Map(state.cards.map((c) => [c.id, c]))
+  state.cards = next.map((x) => byId.get(x)).filter(Boolean)
+  state.focusIds = next
+  renderFocus()
+  const result = await postJson('/api/focus/order', { ids: next })
+  if (!result.ok) setNote(id, result.data?.error ?? 'Could not save the new order')
+  state.signature = ''
+  await refresh()
+}
+
+// Phone drawer: every session that is not starred, so the drawer lists all of them.
+// Tapping one stars it (it becomes a Focus card) and opens it.
+function renderOthers(list) {
+  const q = $('side-q').value.trim().toLowerCase()
+  const starred = new Set(state.focusIds)
+  const rest = state.sessions
+    .filter((s) => !starred.has(s.id) && ($('archived').checked || !s.archived) && (!q || `${s.title} ${s.project} ${s.cwd}`.toLowerCase().includes(q)))
+    .sort((a, b) => (b.touchedAt ?? b.lastActivityAt ?? 0) - (a.touchedAt ?? a.lastActivityAt ?? 0))
+  if (!rest.length) {
+    if (!list.children.length) list.append(el('div', 'side-empty', q ? 'No session matches.' : 'No sessions yet.'))
+    return
+  }
+  const head = el('div', 'grp', 'Other sessions')
+  head.append(el('span', 'n', String(rest.length)))
+  list.append(head)
+  for (const s of rest.slice(0, 60)) {
+    const item = el('div', 'item other-item')
+    item.tabIndex = 0
+    item.setAttribute('role', 'option')
+    const top = el('div', 'item-top')
+    top.append(el('span', `dot ${s.active ? 'work' : s.status === 'completed' ? 'done' : 'idle'}`), el('span', 'item-title', s.title), el('span', 'item-time', s.active ? 'now' : shortAge(s.touchedAt ?? s.lastActivityAt)))
+    const sub = el('div', 'item-sub')
+    sub.append(projectChip(s))
+    item.append(top, sub)
+    const open = async () => { await setFocus(s.id, true); goToCard(s.id) }
+    item.onclick = open
+    item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open() } }
+    list.append(item)
+  }
+  if (rest.length > 60) list.append(el('div', 'side-empty', `${rest.length - 60} more: use the filter or All sessions`))
+}
+
+function renderMobileHeader(current) {
+  const box = $('m-title')
+  if (!isMobile()) return box.replaceChildren()
+  const onFocus = state.tab === 'focus'
+  const title = el('div', 'm-title-main', onFocus ? (state.draft ? 'New chat' : current?.title ?? 'Focus') : PAGE_TITLES[state.tab])
+  box.replaceChildren(title)
+  if (onFocus && !state.draft && current) {
+    const attention = current.live?.attention
+    const working = current.active || current.run?.state === 'running'
+    const sub = el('div', 'm-title-sub')
+    sub.append(el('span', `dot ${attention ? 'ask' : working ? 'work' : 'idle'}`), el('span', undefined, `${attention ? 'Needs you' : working ? 'Working' : 'Idle'}${current.project ? ` · ${current.project}` : ''}`))
+    box.append(sub)
+  }
+}
+
+function renderSide(groups, selected) {
+  const list = $('side-list')
+  const scroll = list.scrollTop
+  list.replaceChildren()
+  for (const g of groups) {
+    const head = el('div', `grp${g.key === 'need' ? ' need' : ''}`, g.label)
+    head.append(el('span', 'n', String(g.cards.length)))
+    list.append(head)
+    for (const c of g.cards) list.append(sideItem(c, c.id === selected?.id))
+  }
+  if (!groups.length && !isMobile()) list.append(el('div', 'side-empty', $('side-q').value.trim() ? 'No focused session matches.' : ''))
+  if (isMobile()) renderOthers(list)
+  list.scrollTop = scroll
+  list.querySelector('.item.sel')?.scrollIntoView({ block: 'nearest' })
+}
+
 function renderFocus() {
+  if (state.dragId) { state.dragDirty = true; return }
   hideTip()
-  const grid = $('cards')
-  grid.className = `cards cols-${state.cols}`
+  const stage = $('cards')
   const active = document.activeElement
   const keep = active?.dataset?.keep
   const caret = keep && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null
   const pageTop = window.scrollY
   const pageLeft = window.scrollX
-  const wanted = orderedCards()
+  const groups = sideGroups()
+  const current = selectedCard(groups)
+  // A selection that never showed up (stale id from an earlier visit) is replaced by the card we fell
+  // back to, so the chat stops following whichever row is on top. A selection that was showing and then
+  // vanished (one poll missed it) is kept, so it comes back when the card does.
+  if (current && !state.draft && !$('side-q').value.trim()) {
+    if (state.selected === current.id) state.selectedSeen = current.id
+    else if (state.selectedSeen !== state.selected) {
+      state.selected = current.id
+      state.selectedSeen = current.id
+      remember('board.selected', current.id)
+    }
+  }
+  const wanted = current && !state.draft ? [current] : []
   const ids = wanted.map((c) => c.id)
   for (const [id, view] of views) {
     if (ids.includes(id)) continue
@@ -1564,12 +1943,9 @@ function renderFocus() {
       views.set(c.id, { node: built, ...snapshotOf(built) })
       built.dataset.stick = 'true'
       created.add(c.id)
+      stage.append(built)
     }
   }
-  ids.forEach((id, i) => {
-    const node = views.get(id).node
-    if (grid.children[i] !== node) grid.insertBefore(node, grid.children[i] ?? null)
-  })
   for (const id of ids) {
     const card = views.get(id).node
     bindChat(card)
@@ -1581,87 +1957,247 @@ function renderFocus() {
     if (created.has(id)) requestAnimationFrame(() => { place(); syncJump(card) })
   }
   if (keep) {
-    const field = grid.querySelector(`[data-keep="${keep}"]`)
+    const field = stage.querySelector(`[data-keep="${keep}"]`)
     if (field && !field.disabled) {
       field.focus({ preventScroll: true })
       if (caret && field.setSelectionRange && field.type !== 'datetime-local') field.setSelectionRange(...caret)
     }
   }
+  if (state.draft) {
+    if (!draft) buildDraft()
+    if (!draft.node.isConnected) stage.append(draft.node)
+    if (draft.rootsKey !== [...folderRoots().keys()].join('|')) fillFolders()
+    syncDraftAttachments()
+  } else draft?.node.remove()
   if (window.scrollY !== pageTop || window.scrollX !== pageLeft) window.scrollTo(pageLeft, pageTop)
-  if (state.expanded && !state.cards.some((c) => c.id === state.expanded) && state.cards.length) state.expanded = null
-  document.body.classList.toggle('modal-open', Boolean(state.expanded))
-  $('backdrop').hidden = !state.expanded
-  $('focus-empty').hidden = state.cards.length > 0
+  renderSide(groups, state.draft ? null : current)
+  const none = state.loaded && state.cards.length === 0 && !state.draft
+  stage.hidden = none
+  $('focus-empty').hidden = !none
+  $('new-chat').setAttribute('aria-pressed', String(state.draft))
   const badge = $('focus-count')
-  badge.hidden = state.cards.length === 0
+  badge.hidden = none
   badge.textContent = String(state.cards.length)
-  document.querySelectorAll('#layout button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cols === state.cols)))
-  document.querySelectorAll('#focus-sort button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sort === state.focusSort)))
+  renderSortMenu()
+  renderMobileHeader(state.draft ? null : current)
 }
 
 function goToCard(id) {
-  if (state.expanded && state.expanded !== id) {
-    state.expanded = null
-    history.replaceState({}, '', '/focus')
+  state.draft = false
+  state.selected = id
+  remember('board.selected', id)
+  clearNotifications(id)
+  if (state.tab !== 'focus') navigate(`/focus?card=${encodeURIComponent(id)}`)
+  else {
+    history.replaceState({}, '', `/focus?card=${encodeURIComponent(id)}`)
+    renderFocus()
   }
-  state.flashId = id
-  state.flashUntil = Date.now() + 2200
-  if (state.tab !== 'focus') navigate('/focus')
-  else renderFocus()
-  const reveal = (attempt = 0) => {
-    const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`)
-    if (!card) return attempt < 20 ? setTimeout(() => reveal(attempt + 1), 150) : undefined
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }
-  requestAnimationFrame(() => reveal())
-  setTimeout(() => {
-    state.flashId = null
-    document.querySelectorAll('.card.flash').forEach((node) => node.classList.remove('flash'))
-  }, 2300)
 }
 
-function setExpanded(id) {
-  if (id) {
-    history.pushState({ card: id }, '', `/focus?card=${encodeURIComponent(id)}`)
-  } else if (history.state?.card) {
-    history.back()
-    return
-  } else {
-    history.replaceState({}, '', '/focus')
-  }
-  state.expanded = id
-  renderFocus()
-}
+let draft = null
+const NEW_KEY = 'new-chat'
 
-function openNewChat() {
+function folderRoots() {
   const roots = new Map()
   for (const s of state.sessions) {
     const root = s.projectRoot ?? s.cwd
     if (root && !roots.has(root)) roots.set(root, s.project ?? root.split('/').pop())
   }
-  const select = $('new-chat-folder')
+  return roots
+}
+
+function fillFolders() {
+  const roots = folderRoots()
+  draft.rootsKey = [...roots.keys()].join('|')
+  const { select } = draft
   const previous = select.value
-  select.replaceChildren(...[...roots].map(([root, name]) => new Option(`${name} — ${home(root)}`, root)), new Option('Other folder…', ''))
-  select.value = roots.has(previous) ? previous : ([...roots.keys()][0] ?? '')
+  const extra = [...select.options].map((o) => o.value).filter((v) => v && !roots.has(v))
+  select.replaceChildren(
+    ...[...roots].map(([root, name]) => new Option(`${name} — ${home(root)}`, root)),
+    ...extra.map((path) => new Option(`${path.split('/').filter(Boolean).pop() ?? path} — ${home(path)}`, path)),
+    new Option('Other folder…', ''),
+  )
+  const known = [...select.options].some((o) => o.value === previous && previous !== '')
+  select.value = known ? previous : ([...roots.keys()][0] ?? '')
   state.lastFolder = select.value || null
-  syncCustomFolder()
-  $('new-chat-status').textContent = ''
-  $('new-chat').blur()
-  $('new-chat-dialog').showModal()
-  $('new-chat-text').focus()
+  syncDraftFolder()
 }
 
-function showCustomFolder(show) {
-  $('new-chat-custom').hidden = !show
-  if (show) $('new-chat-custom').focus()
+const draftFolder = () => draft.select.value
+
+// Settings a board session can start with, as `claude` flags. '' leaves the CLI / board default.
+const NEW_OPTIONS = [
+  ['model', 'Model', [['', 'Default'], ['fable', 'Fable'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']]],
+  ['effort', 'Effort', [['', 'Default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']]],
+  ['chrome', 'Chrome', [['', 'Off'], ['on', 'On (Claude in Chrome)']]],
+  ['permissionMode', 'Permissions', [['', 'Board default'], ['manual', 'Ask (denies in headless)'], ['acceptEdits', 'Accept edits'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['dontAsk', "Don't ask"], ['bypassPermissions', 'Bypass permissions']]],
+]
+
+function setDraftNote(message, kind) {
+  draft.note.textContent = message ?? ''
+  draft.note.className = `run-note${kind ? ` ${kind}` : ''}`
 }
 
-function syncCustomFolder() {
-  showCustomFolder($('new-chat-folder').value === '')
+function syncDraftFolder() {
+  const folder = draftFolder()
+  draft.sub.textContent = folder ? home(folder) : 'Choose a folder to work in'
+  showNewDefaults(folder)
+}
+
+// The first option of each select says what "default" really is for the chosen folder: the
+// model and effort `claude` would use from its settings files, and the board's permission mode.
+const defaultsByFolder = new Map()
+let defaultsFor = null
+async function showNewDefaults(folder) {
+  defaultsFor = folder
+  const key = folder || ''
+  if (!defaultsByFolder.has(key)) {
+    const found = await getJson(`/api/new-defaults?folder=${encodeURIComponent(folder || '')}`).catch(() => null)
+    if (!found) return
+    defaultsByFolder.set(key, found)
+  }
+  if (defaultsFor !== folder || !draft) return
+  const found = defaultsByFolder.get(key)
+  for (const [name, label, choices] of NEW_OPTIONS) {
+    if (name === 'chrome') continue
+    const first = draft.optSelects[name].options[0]
+    const value = found[name]
+    const shown = value ? (choices.find(([v]) => v === value)?.[1] ?? value) : null
+    const base = name === 'permissionMode' ? 'Board default' : 'Default'
+    first.textContent = shown ? `${base} (${shown})` : `${base} (account setting)`
+  }
+}
+
+function buildDraft() {
+  const node = el('article', 'card new-chat')
+  const head = el('div', 'card-head')
+  const row = el('div', 'head-row')
+  const titleBox = el('div', 'head-title')
+  titleBox.append(el('div', 'title', 'New chat'))
+  const close = el('button', 'icon-only')
+  close.append(icon('x', { size: 16 }))
+  close.title = 'Cancel (Esc)'
+  close.onclick = closeNewChat
+  const actions = el('div', 'head-actions')
+  actions.append(close)
+  row.append(titleBox, actions)
+  head.append(row)
+
+  const wrap = el('div', 'chat-wrap')
+  const chat = el('div', 'chat')
+  const hello = el('div', 'chat-empty new-hello')
+  const sub = el('div', 'hello-sub')
+  hello.append(el('div', 'hello-title', 'What should Claude work on?'), sub)
+  chat.append(hello)
+  wrap.append(chat)
+
+  const dock = el('div', 'dock')
+  const pick = el('div', 'new-pick')
+  const select = el('select', 'field')
+  select.setAttribute('aria-label', 'Project folder')
+  pick.append(el('span', 'new-label', 'Project'), select)
+
+  const opts = el('div', 'new-opts')
+  const optSelects = {}
+  const saved = (() => { try { return JSON.parse(localStorage.getItem('board.newOpts') || '{}') } catch { return {} } })()
+  for (const [key, label, choices] of NEW_OPTIONS) {
+    const field = el('label', 'new-opt')
+    const sel = el('select', 'field')
+    sel.setAttribute('aria-label', label)
+    sel.replaceChildren(...choices.map(([value, name]) => new Option(name, value)))
+    sel.value = choices.some(([value]) => value === saved[key]) ? saved[key] : ''
+    sel.onchange = () => {
+      const now = Object.fromEntries(Object.entries(optSelects).map(([k, s]) => [k, s.value]))
+      try { localStorage.setItem('board.newOpts', JSON.stringify(now)) } catch {}
+    }
+    optSelects[key] = sel
+    field.append(el('span', 'new-label', label), sel)
+    opts.append(field)
+  }
+  opts.title = 'Used by Start here. Open in Claude opens the desktop app, which has its own model and effort pickers.'
+
+  const composer = el('div', 'composer')
+  const box = document.createElement('textarea')
+  box.rows = 1
+  box.placeholder = 'Describe the first task · Enter to start'
+  composer.append(box)
+  const picker = document.createElement('input')
+  picker.type = 'file'
+  picker.multiple = true
+  picker.hidden = true
+  picker.onchange = () => { attachFiles(NEW_KEY, picker.files); picker.value = '' }
+  const attach = el('button', 'tool')
+  attach.append(icon('paperclip', { size: 18 }))
+  attach.title = 'Attach files or images (you can also paste or drop them)'
+  attach.onclick = () => picker.click()
+  const tools = el('div', 'tools')
+  tools.append(attach, picker)
+  composer.append(tools)
+  const open = el('button', 'send stop-side')
+  open.append(icon('arrow-up-right', { size: 18 }))
+  open.title = 'Open in Claude: opens the desktop app on this folder with the prompt filled in. You press send there.'
+  open.setAttribute('aria-label', 'Open in Claude')
+  const here = el('button', 'send')
+  here.append(icon('arrow-up', { size: 18, strokeWidth: 2.5 }))
+  here.title = 'Start here: run the prompt now on the board only (Enter)'
+  here.setAttribute('aria-label', 'Start here')
+  composer.append(open, here)
+  const note = el('div', 'run-note')
+  const hint = el('div', 'new-hint', '↑ (Enter) starts it here and runs on the board only, with the permission mode shown on its card. ↗ opens the desktop app on this folder with the prompt filled in: you press send there.')
+  const attachments = el('div', 'attachments-slot')
+  dock.append(pick, opts, attachments, composer, hint, note)
+
+  node.append(head, wrap, dock)
+  draft = { node, select, optSelects, text: box, note, sub, here, open, attachments, shown: '' }
+  select.onchange = chooseFolder
+  here.onclick = startHere
+  open.onclick = startNewChat
+  box.oninput = () => autosize(box)
+  box.onpaste = (event) => {
+    const files = [...(event.clipboardData?.files ?? [])]
+    if (!files.length) return
+    event.preventDefault()
+    attachFiles(NEW_KEY, files)
+  }
+  box.onkeydown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); startHere() }
+  }
+  return draft
+}
+
+function syncDraftAttachments() {
+  const files = attachmentsOf(NEW_KEY)
+  const key = files.map((f) => f.path).join('|')
+  if (draft.shown === key) return
+  draft.shown = key
+  const row = renderAttachments({ id: NEW_KEY })
+  draft.attachments.replaceChildren(...(row ? [row] : []))
+}
+
+function clearDraftAttachments() {
+  for (const file of attachmentsOf(NEW_KEY)) if (file.preview) URL.revokeObjectURL(file.preview)
+  state.attachments.delete(NEW_KEY)
+  syncDraftAttachments()
+}
+
+function openNewChat() {
+  if (state.tab !== 'focus') return void navigate('/focus?new=1')
+  state.draft = true
+  history.replaceState({}, '', '/focus?new=1')
+  renderFocus()
+  draft.text.focus()
+}
+
+function closeNewChat() {
+  if (!state.draft) return
+  state.draft = false
+  const current = selectedCard()
+  history.replaceState({}, '', current ? `/focus?card=${encodeURIComponent(current.id)}` : '/focus')
+  renderFocus()
 }
 
 function addPickedFolder(path) {
-  const select = $('new-chat-folder')
+  const { select } = draft
   const existing = [...select.options].find((o) => o.value === path)
   if (existing) return void (select.value = path)
   const option = new Option(`${path.split('/').filter(Boolean).pop() ?? path} — ${home(path)}`, path)
@@ -1670,68 +2206,69 @@ function addPickedFolder(path) {
 }
 
 async function chooseFolder() {
-  const select = $('new-chat-folder')
+  const { select } = draft
   if (select.value !== '') {
     state.lastFolder = select.value
-    showCustomFolder(false)
+    syncDraftFolder()
     return
   }
-  const status = $('new-chat-status')
-  status.textContent = 'Choose a folder in the Finder window…'
+  setDraftNote('Choose a folder in the Finder window…')
   select.disabled = true
   const { ok, data } = await postJson('/api/pick-folder', {}).catch(() => ({ ok: false, data: {} }))
   const result = ok ? data : { error: true }
   select.disabled = false
-  status.textContent = ''
+  setDraftNote('')
   if (result.path) {
     addPickedFolder(result.path)
     state.lastFolder = result.path
-    showCustomFolder(false)
-  } else if (result.unsupported || result.error) {
-    showCustomFolder(true)
   } else {
     select.value = state.lastFolder ?? ''
-    if (select.value === '') showCustomFolder(true)
+    if (result.unsupported || result.error) setDraftNote('The folder picker is not available here. Open a session in that folder once and it will appear in this list.', 'error')
   }
+  syncDraftFolder()
   select.focus()
 }
 
 async function startHere() {
-  const folder = ($('new-chat-folder').value || $('new-chat-custom').value).trim()
-  const prompt = $('new-chat-text').value.trim()
-  const status = $('new-chat-status')
-  if (!folder.startsWith('/')) return void (status.textContent = 'Use an absolute folder path, like /Users/you/project.')
-  if (!prompt) return void (status.textContent = 'Write the first prompt: Start here runs it right away.')
-  const button = $('new-chat-here')
-  button.disabled = true
-  status.textContent = 'Starting…'
-  const result = await postJson('/api/new-session', { folder, prompt }).catch(() => ({ ok: false, data: {} }))
-  button.disabled = false
-  if (!result.ok) return void (status.textContent = result.data?.error ?? 'Could not start the session.')
-  status.textContent = ''
-  $('new-chat-dialog').close()
-  $('new-chat-text').value = ''
-  toast({ id: result.data.id, title: 'Started on the board', kind: 'finished', message: 'It runs here only. Use Move to desktop on its card to continue it in the app.' })
+  const folder = draftFolder()
+  const typed = draft.text.value.trim()
+  if (!folder.startsWith('/')) return void setDraftNote('Choose a project folder first.', 'error')
+  if (!typed && !attachmentsOf(NEW_KEY).length) return void setDraftNote('Write the first prompt: Start here runs it right away.', 'error')
+  const prompt = withAttachments(NEW_KEY, typed)
+  draft.here.disabled = true
+  setDraftNote('Starting…', 'running')
+  const chosen = Object.fromEntries(Object.entries(draft.optSelects).map(([key, sel]) => [key, sel.value]))
+  const result = await postJson('/api/new-session', { folder, prompt, ...chosen }).catch(() => ({ ok: false, data: {} }))
+  draft.here.disabled = false
+  if (!result.ok) return void setDraftNote(result.data?.error ?? 'Could not start the session.', 'error')
+  setDraftNote('')
+  draft.text.value = ''
+  autosize(draft.text)
+  clearDraftAttachments()
+  state.draft = false
+  const focused = await postJson('/api/focus', { id: result.data.id, focused: true }).catch(() => null)
+  if (focused?.ok) state.focusIds = focused.data.ids
+  state.selected = result.data.id
+  remember('board.selected', state.selected)
+  history.replaceState({}, '', `/focus?card=${encodeURIComponent(state.selected)}`)
   state.signature = ''
-  navigate('/focus')
+  renderFocus()
   await refresh()
 }
 
 function startNewChat() {
-  const folder = ($('new-chat-folder').value || $('new-chat-custom').value).trim()
-  const prompt = $('new-chat-text').value.trim()
-  if (folder && !folder.startsWith('/')) {
-    $('new-chat-status').textContent = 'Use an absolute folder path, like /Users/you/project.'
-    return
-  }
+  const folder = draftFolder()
+  const prompt = withAttachments(NEW_KEY, draft.text.value.trim()).trim()
   const params = new URLSearchParams()
   if (folder) params.set('folder', folder)
   if (prompt) params.set('q', prompt)
   const link = el('a')
   link.href = `claude://code/new${params.size ? `?${params}` : ''}`
   link.click()
-  $('new-chat-dialog').close()
-  $('new-chat-text').value = ''
+  draft.text.value = ''
+  autosize(draft.text)
+  clearDraftAttachments()
+  closeNewChat()
   toast({ id: 'new-chat', title: 'Opening Claude', kind: 'finished', message: 'The new session joins Focus once the app records it.' })
 }
 
@@ -2353,6 +2890,359 @@ async function loadMrs(force = false) {
   }
 }
 
+const REPEAT_LABELS = { none: 'Once', daily: 'Every day', weekdays: 'Weekdays', weekly: 'Every week' }
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const sched = { fields: {}, note: null }
+
+// Same project picker as New chat: known projects, then "Other folder…" opens the Finder picker.
+function fillScheduleFolders() {
+  const select = sched.fields.folder
+  if (!select) return
+  const roots = folderRoots()
+  const key = [...roots.keys()].join('|')
+  if (sched.rootsKey === key) return
+  sched.rootsKey = key
+  const previous = select.value
+  const extra = [...select.options].map((o) => o.value).filter((v) => v && !roots.has(v))
+  select.replaceChildren(
+    ...[...roots].map(([root, name]) => new Option(`${name} — ${home(root)}`, root)),
+    ...extra.map((path) => new Option(`${path.split('/').filter(Boolean).pop() ?? path} — ${home(path)}`, path)),
+    new Option('Other folder…', ''),
+  )
+  const known = [...select.options].some((o) => o.value === previous && previous !== '')
+  select.value = known ? previous : ([...roots.keys()][0] ?? '')
+  sched.lastFolder = select.value || null
+}
+
+async function chooseScheduleFolder() {
+  const select = sched.fields.folder
+  if (select.value !== '') return void (sched.lastFolder = select.value)
+  setSchedNote('Choose a folder in the Finder window…')
+  select.disabled = true
+  const { ok, data } = await postJson('/api/pick-folder', {})
+  select.disabled = false
+  setSchedNote('')
+  if (ok && data.path) {
+    if (![...select.options].some((o) => o.value === data.path)) select.insertBefore(new Option(`${data.path.split('/').filter(Boolean).pop() ?? data.path} — ${home(data.path)}`, data.path), select.querySelector('option[value=""]'))
+    select.value = data.path
+    sched.lastFolder = data.path
+  } else {
+    select.value = sched.lastFolder ?? ''
+    if (!ok || data.unsupported) setSchedNote('The folder picker is not available here. Open a session in that folder once and it will appear in this list.', true)
+  }
+}
+
+function buildScheduleForm() {
+  const form = $('schedule-form')
+  const f = sched.fields
+  const labelled = (cls, label, node) => {
+    const wrap = el('label', cls)
+    wrap.append(el('span', 'new-label', label), node)
+    return wrap
+  }
+  const select = (choices) => {
+    const node = el('select', 'field')
+    node.replaceChildren(...choices.map(([value, name]) => new Option(name, value)))
+    return node
+  }
+
+  f.name = el('input', 'field sched-name')
+  f.name.type = 'text'
+  f.name.placeholder = 'Name (optional, defaults to the prompt)'
+  f.name.setAttribute('aria-label', 'Name')
+
+  f.folder = el('select', 'field')
+  f.folder.setAttribute('aria-label', 'Project folder')
+  f.folder.onchange = chooseScheduleFolder
+  const pick = labelled('sched-pick', 'Project', f.folder)
+
+  f.repeat = select(Object.entries(REPEAT_LABELS))
+  f.repeat.value = 'daily'
+  f.repeat.setAttribute('aria-label', 'Repeat')
+  f.repeat.onchange = syncScheduleWhen
+  f.at = el('input', 'field')
+  f.at.type = 'time'
+  f.at.value = '09:00'
+  f.at.setAttribute('aria-label', 'Time')
+  f.atLabel = labelled('sched-opt', 'Time', f.at)
+  const when = el('div', 'sched-opts')
+  f.day = select(DAY_NAMES.map((name, index) => [String(index), name]))
+  f.day.value = String((new Date().getDay() + 1) % 7)
+  f.day.setAttribute('aria-label', 'Day of the week')
+  f.dayLabel = labelled('sched-opt', 'On', f.day)
+  f.dayLabel.hidden = true
+  when.append(labelled('sched-opt', 'Repeat', f.repeat), f.dayLabel, f.atLabel)
+
+  const opts = el('div', 'sched-opts')
+  for (const [name, label, choices] of NEW_OPTIONS) {
+    f[name] = select(choices)
+    f[name].setAttribute('aria-label', label)
+    opts.append(labelled('sched-opt', label, f[name]))
+  }
+
+  const composer = el('div', 'composer')
+  f.prompt = document.createElement('textarea')
+  f.prompt.rows = 2
+  f.prompt.placeholder = 'The prompt to run in a new session each time'
+  const go = el('button', 'send')
+  go.type = 'submit'
+  go.append(icon('arrow-up', { size: 18, strokeWidth: 2.5 }))
+  go.title = 'Add schedule'
+  go.setAttribute('aria-label', 'Add schedule')
+  const cancel = el('button', 'btn', 'Cancel')
+  cancel.type = 'button'
+  cancel.hidden = true
+  cancel.onclick = () => endEdit()
+  f.go = go
+  f.cancel = cancel
+  composer.append(f.prompt, go)
+  const composerBox = el('div', 'sched-composer')
+  composerBox.append(composer)
+  sched.composerBox = composerBox
+  sched.note = el('div', 'sched-note')
+  const foot = el('div', 'sched-foot')
+  foot.append(sched.note, cancel)
+
+  form.append(f.name, pick, when, opts, composerBox, foot)
+  form.onsubmit = (event) => { event.preventDefault(); saveSchedule() }
+  f.prompt.oninput = () => { sched.slashIndex = 0; sched.slashDismissed = null; syncScheduleSlash() }
+  f.prompt.onfocus = () => { if (f.prompt.value.startsWith('/')) syncScheduleSlash() }
+  f.prompt.onblur = () => sched.menu?.remove()
+  f.folder.addEventListener('change', () => { sched.menu?.remove(); syncScheduleSlash() })
+  f.prompt.onkeydown = (event) => {
+    const options = sched.slashItems ?? []
+    if (options.length) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        sched.slashIndex = (sched.slashIndex + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
+        return void syncScheduleSlash()
+      }
+      const chosen = options[sched.slashIndex]
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !event.isComposing && f.prompt.value !== `/${chosen.name}`)) {
+        event.preventDefault()
+        return void acceptScheduleSlash(chosen)
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        sched.slashDismissed = f.prompt.value
+        return void syncScheduleSlash()
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); saveSchedule() }
+  }
+  state.schedule.built = true
+}
+
+// Slash-command suggestions for the prompt, from the commands and skills of the chosen project.
+function scheduleCommandKey() {
+  const folder = sched.fields.folder?.value
+  return folder ? `folder:${folder}` : null
+}
+
+function syncScheduleSlash() {
+  sched.menu?.remove()
+  sched.menu = null
+  const f = sched.fields
+  const key = scheduleCommandKey()
+  sched.slashItems = []
+  if (!key || !f.prompt || !f.prompt.value.startsWith('/') || document.activeElement !== f.prompt) return
+  if (!state.commands.has(key)) loadCommands(key, `folder=${encodeURIComponent(f.folder.value)}`)
+  const matches = sched.slashDismissed === f.prompt.value ? null : slashMatches(key, f.prompt.value)
+  if (!matches?.length) return
+  sched.slashItems = matches
+  sched.slashIndex = Math.min(sched.slashIndex ?? 0, matches.length - 1)
+  const menu = el('div', 'popover slash-menu')
+  matches.forEach((item, index) => {
+    const row = el('div', `slash-item${index === sched.slashIndex ? ' active' : ''}`)
+    const main = el('div', 'slash-main')
+    main.append(el('span', 'slash-name', `/${item.name}`))
+    if (item.hint) main.append(el('span', 'slash-hint', item.hint))
+    main.append(el('span', `slash-src ${item.source}`, item.source))
+    row.append(main)
+    if (item.description) row.append(el('div', 'slash-desc', item.description))
+    row.onmousedown = (event) => { event.preventDefault(); acceptScheduleSlash(item) }
+    menu.append(row)
+  })
+  sched.composerBox.append(menu)
+  sched.menu = menu
+  menu.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
+}
+
+function acceptScheduleSlash(item) {
+  const box = sched.fields.prompt
+  box.value = `/${item.name} `
+  box.setSelectionRange(box.value.length, box.value.length)
+  sched.slashDismissed = null
+  syncScheduleSlash()
+}
+
+// Edit mode: the form at the top is loaded with a schedule and saving updates it.
+function loadScheduleForm(r) {
+  const f = sched.fields
+  f.name.value = r.name
+  if (![...f.folder.options].some((o) => o.value === r.folder)) f.folder.insertBefore(new Option(`${r.folder.split('/').filter(Boolean).pop() ?? r.folder} — ${home(r.folder)}`, r.folder), f.folder.querySelector('option[value=""]'))
+  f.folder.value = r.folder
+  sched.lastFolder = r.folder
+  f.repeat.value = r.repeat
+  syncScheduleWhen()
+  const at = new Date(r.at)
+  f.day.value = String(at.getDay())
+  f.at.value = f.at.type === 'time' ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : toLocalInput(Math.max(r.at, Date.now() + 60_000))
+  for (const [name] of NEW_OPTIONS) f[name].value = name === 'chrome' ? (r.chrome ? 'on' : '') : (r[name] ?? '')
+  f.prompt.value = r.prompt
+  renderSchedulePage()
+  f.prompt.focus()
+  $('schedule-form').scrollIntoView({ block: 'start', behavior: 'smooth' })
+}
+
+function startEdit(r) {
+  const f = sched.fields
+  sched.editing = r.rid
+  loadScheduleForm(r)
+  f.go.title = 'Save changes'
+  f.go.setAttribute('aria-label', 'Save changes')
+  f.cancel.hidden = false
+  $('schedule-title').textContent = 'Edit schedule'
+  setSchedNote(`Editing “${r.name}”. Saving puts it back on the schedule.`)
+}
+
+// Clone: the same settings in the form as a new schedule. Nothing is saved until you press send.
+function startClone(r) {
+  const f = sched.fields
+  sched.editing = null
+  loadScheduleForm({ ...r, name: `${r.name} (copy)` })
+  f.go.title = 'Add schedule'
+  f.go.setAttribute('aria-label', 'Add schedule')
+  f.cancel.hidden = false
+  $('schedule-title').textContent = 'Clone schedule'
+  setSchedNote(`Cloned from “${r.name}”. Change what you need, then press send to add it.`)
+}
+
+function endEdit() {
+  const f = sched.fields
+  sched.editing = null
+  f.name.value = ''
+  f.prompt.value = ''
+  f.go.title = 'Add schedule'
+  f.go.setAttribute('aria-label', 'Add schedule')
+  f.cancel.hidden = true
+  $('schedule-title').textContent = 'Schedule a session'
+  setSchedNote('')
+  renderSchedulePage()
+}
+
+// Once needs a date and time; every day and weekdays only need the time of day.
+function syncScheduleWhen() {
+  const f = sched.fields
+  const repeating = f.repeat.value !== 'none'
+  f.dayLabel.hidden = f.repeat.value !== 'weekly'
+  const stamp = f.at.value
+  const wanted = repeating ? 'time' : 'datetime-local'
+  if (f.at.type === wanted) return
+  const time = stamp.includes('T') ? stamp.split('T')[1] : stamp
+  f.at.type = wanted
+  f.at.value = repeating ? time : toLocalInput(nextOccurrence(time))
+  f.atLabel.firstChild.textContent = repeating ? 'Time' : 'When'
+  f.at.setAttribute('aria-label', repeating ? 'Time' : 'When')
+}
+
+// The next moment the clock shows hh:mm, today if it is still ahead.
+function nextOccurrence(time, weekday = null) {
+  const [h, m] = time.split(':').map(Number)
+  const d = new Date()
+  d.setHours(h, m, 0, 0)
+  if (weekday !== null) d.setDate(d.getDate() + ((weekday - d.getDay() + 7) % 7))
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + (weekday !== null ? 7 : 1))
+  return d.getTime()
+}
+
+function setSchedNote(message, isError = false) {
+  sched.note.textContent = message
+  sched.note.className = `sched-note${isError ? ' error' : ''}`
+}
+
+async function saveSchedule() {
+  const f = sched.fields
+  if (!f.at.value) return setSchedNote('Pick a time.', true)
+  const at = f.at.type === 'time' ? nextOccurrence(f.at.value, f.repeat.value === 'weekly' ? Number(f.day.value) : null) : new Date(f.at.value).getTime()
+  const body = { name: f.name.value, folder: f.folder.value, prompt: f.prompt.value, at, repeat: f.repeat.value }
+  for (const [name] of NEW_OPTIONS) body[name] = f[name].value
+  setSchedNote('Saving…')
+  const editing = sched.editing
+  const { ok, data } = await postJson(editing ? '/api/routines/update' : '/api/routines', editing ? { ...body, rid: editing } : body)
+  if (!ok) return setSchedNote(data.error ?? 'Could not save the schedule.', true)
+  state.schedule.data = data
+  if (editing || !f.cancel.hidden) endEdit()
+  else { f.name.value = ''; f.prompt.value = '' }
+  setSchedNote(editing ? 'Saved.' : 'Added.')
+  renderSchedulePage()
+}
+
+async function loadSchedule() {
+  if (!state.schedule.built) buildScheduleForm()
+  fillScheduleFolders()
+  try {
+    state.schedule.data = await getJson('/api/routines')
+    state.schedule.at = Date.now()
+    renderSchedulePage()
+  } catch {}
+}
+
+async function scheduleAction(path, body) {
+  const { ok, data } = await postJson(path, body)
+  if (data.routines) state.schedule.data = { routines: data.routines }
+  setSchedNote(ok ? '' : (data.error ?? 'Something went wrong.'), !ok)
+  if (ok && path.endsWith('/run')) { state.signature = ''; refresh() }
+  renderSchedulePage()
+}
+
+function renderSchedulePage() {
+  const data = state.schedule.data
+  if (!data) return
+  const rows = [...data.routines].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.at - b.at)
+  const active = rows.filter((r) => r.enabled).length
+  $('schedule-status').textContent = rows.length ? `${rows.length} total · ${active} active` : ''
+  $('schedule-empty').hidden = rows.length > 0
+  const list = $('schedule-rows')
+  list.replaceChildren()
+  for (const r of rows) {
+    const item = el('div', `rt-item${r.enabled ? '' : ' off'}${sched.editing === r.rid ? ' editing' : ''}`)
+    const main = el('div', 'rt-main')
+    const nextText = r.enabled
+      ? (r.repeat === 'none' ? new Date(r.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : `${r.repeat === 'weekly' ? `Every ${DAY_NAMES[new Date(r.at).getDay()]}` : REPEAT_LABELS[r.repeat]} at ${new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`)
+      : (r.repeat === 'none' && r.runs ? 'Done' : `Paused · ${REPEAT_LABELS[r.repeat]}`)
+    const meta = el('div', 'rt-meta')
+    meta.append(el('span', undefined, nextText), el('span', 'path', home(r.folder)))
+    if (r.lastSessionId) {
+      const link = el('a', undefined, `Last run ${relative(r.lastFiredAt)}`)
+      link.href = `/focus?card=${encodeURIComponent(r.lastSessionId)}`
+      link.title = 'Open the session from the last run'
+      link.onclick = (event) => { event.preventDefault(); state.selected = r.lastSessionId; remember('board.selected', state.selected); navigate(`/focus?card=${encodeURIComponent(r.lastSessionId)}`) }
+      meta.append(link)
+    }
+    if (r.runs) meta.append(el('span', undefined, `${r.runs} run${r.runs === 1 ? '' : 's'}`))
+    if (r.lastError) meta.append(el('span', 'err', r.lastError))
+    main.append(el('div', 'rt-title', r.name), meta)
+    const actions = el('div', 'rt-actions')
+    const run = el('button', 'btn', 'Run now')
+    run.title = 'Start a session with this prompt right now'
+    run.onclick = () => scheduleAction('/api/routines/run', { rid: r.rid })
+    const toggle = el('button', 'btn', r.enabled ? 'Pause' : 'Resume')
+    toggle.onclick = () => scheduleAction('/api/routines/toggle', { rid: r.rid, enabled: !r.enabled })
+    if (!r.enabled && r.repeat === 'none' && r.runs) toggle.disabled = true
+    const edit = el('button', 'btn', 'Edit')
+    edit.onclick = () => startEdit(r)
+    const clone = el('button', 'btn', 'Clone')
+    clone.title = 'Copy these settings into a new schedule'
+    clone.onclick = () => startClone(r)
+    const del = el('button', 'btn', 'Delete')
+    del.onclick = () => scheduleAction('/api/routines/remove', { rid: r.rid }).then(() => { if (sched.editing === r.rid) endEdit() })
+    actions.append(run, toggle, edit, clone, del)
+    item.append(main, actions)
+    list.append(item)
+  }
+}
+
 async function loadLoops() {
   try {
     state.loops.data = await getJson('/api/loops')
@@ -2484,7 +3374,7 @@ async function loadSkills() {
 async function fetchSkillDetail(key) {
   state.skills.details.set(key, { loading: true })
   try {
-    const response = await fetch(`/api/skill?key=${encodeURIComponent(key)}`, { cache: 'no-store' })
+    const response = signedOut(await fetch(`/api/skill?key=${encodeURIComponent(key)}`, { cache: 'no-store' }))
     state.skills.details.set(key, response.ok ? await response.json() : { error: 'Could not read SKILL.md.' })
   } catch {
     state.skills.details.set(key, { error: 'Could not read SKILL.md.' })
@@ -2695,16 +3585,19 @@ function applyRoute() {
   const tab = pathTab()
   if (tab === 'all') readFilters()
   state.tab = tab
-  state.expanded = tab === 'focus' ? new URLSearchParams(location.search).get('card') : null
+  const query = new URLSearchParams(location.search)
+  state.draft = tab === 'focus' && query.has('new')
+  if (tab === 'focus') state.selected = query.get('card') ?? state.selected
   for (const name of Object.values(ROUTES)) {
     $(`tab-${name}`).setAttribute('aria-selected', String(name === tab))
     $(`view-${name}`).hidden = name !== tab
   }
   const onAll = tab === 'all'
   $('q').hidden = !onAll
-  $('archived').parentElement.hidden = !onAll
+  $('archived').parentElement.hidden = !onAll && !isMobile()
   state.unseen = 0
   updateTitle()
+  renderMobileHeader(null)
   renderSummary()
   renderRows()
   renderFocus()
@@ -2717,6 +3610,7 @@ function applyRoute() {
   }
   if (tab === 'usage') loadUsage()
   if (tab === 'skills') loadSkills()
+  if (tab === 'schedule') loadSchedule()
   if (tab === 'loops') loadLoops()
   if (tab === 'mrs') loadMrs()
   if (tab === 'background') { loadBackground(); markBackgroundSeen() }
@@ -2752,10 +3646,12 @@ async function refresh() {
       state.resume = new Map(sessions.filter((s) => s.resume).map((s) => [s.id, s.resume]))
       state.focusIds = focus.ids
       state.cards = focus.cards
+      state.loaded = true
       renderSummary()
       renderRows()
       renderFocus()
       renderLoopsBadge()
+      if (state.tab === 'schedule' && state.schedule.built) fillScheduleFolders()
       renderBackgroundBadge()
       if (state.tab === 'background') markBackgroundSeen()
     }
@@ -2764,6 +3660,7 @@ async function refresh() {
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'loops' && Date.now() - state.loops.at > 5_000) loadLoops()
+    if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
     if (Date.now() - state.mrs.at > 60_000) loadMrs()
     if (state.tab === 'background' && Date.now() - state.background.at > 4_000) { state.background.output.clear(); loadBackground() }
   } catch {}
@@ -2852,9 +3749,10 @@ $('tab-focus').onclick = (event) => { event.preventDefault(); navigate('/focus')
 $('tab-search').onclick = (event) => { event.preventDefault(); navigate('/search') }
 $('tab-usage').onclick = (event) => { event.preventDefault(); navigate('/usage') }
 $('tab-skills').onclick = (event) => { event.preventDefault(); navigate('/skills') }
+$('tab-schedule').onclick = (event) => { event.preventDefault(); navigate('/schedule') }
 window.onpopstate = applyRoute
 $('q').oninput = () => { renderRows(); writeFilters() }
-$('archived').onchange = () => { renderSummary(); renderRows(); writeFilters() }
+$('archived').onchange = () => { renderSummary(); renderRows(); writeFilters(); if (isMobile()) renderFocus() }
 $('interval').onchange = schedule
 $('alerts').onclick = toggleAlerts
 $('history').onclick = (event) => { event.stopPropagation(); setHistoryOpen(!state.historyOpen) }
@@ -2869,23 +3767,36 @@ window.addEventListener('storage', (event) => {
 $('search-project').onchange = runSearch
 $('search-q').oninput = () => { clearTimeout(state.search.timer); state.search.timer = setTimeout(runSearch, 250) }
 $('new-chat').onclick = openNewChat
-$('new-chat-cancel').onclick = () => $('new-chat-dialog').close()
-$('new-chat-start').onclick = startNewChat
-$('new-chat-here').onclick = startHere
-$('new-chat-folder').onchange = chooseFolder
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()
 $('broadcast-send').onclick = sendBroadcast
-document.querySelectorAll('#focus-sort button').forEach((b) => {
-  b.onclick = () => { state.focusSort = b.dataset.sort; remember('board.focusSort', state.focusSort); renderFocus() }
-})
-document.querySelectorAll('#layout button').forEach((b) => {
-  b.onclick = () => {
-    state.cols = b.dataset.cols
-    remember('board.cols', state.cols)
-    renderFocus()
-  }
-})
+function setSortMenu(open) {
+  $('side-sort-menu').hidden = !open
+  $('side-sort-btn').setAttribute('aria-expanded', String(open))
+}
+function renderSortMenu() {
+  const button = $('side-sort-btn')
+  const current = SORTS.find((s) => s.key === state.focusSort) ?? SORTS[0]
+  button.replaceChildren(icon('arrow-up-down', { size: 15 }))
+  button.title = `Sort: ${current.label}`
+  button.setAttribute('aria-label', `Sort focused sessions (now ${current.label})`)
+  button.classList.toggle('on', current.key !== 'manual')
+  $('side-sort-menu').replaceChildren(...SORTS.map((s) => {
+    const item = el('button')
+    item.setAttribute('role', 'menuitemradio')
+    item.setAttribute('aria-checked', String(s.key === current.key))
+    const tick = el('span', 'tick')
+    if (s.key === current.key) tick.append(icon('check', { size: 14 }))
+    item.append(tick, text(s.label))
+    item.onclick = () => { state.focusSort = sortKey(s.key); remember('board.focusSort', state.focusSort); setSortMenu(false); renderFocus() }
+    return item
+  }))
+}
+$('side-sort-btn').onclick = (event) => { event.stopPropagation(); setSortMenu($('side-sort-menu').hidden) }
+document.addEventListener('click', (event) => { if (!$('side-sort-menu').hidden && !$('side-sort-menu').contains(event.target)) setSortMenu(false) })
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('side-sort-menu').hidden) setSortMenu(false) })
+renderSortMenu()
+$('side-q').oninput = renderFocus
 document.querySelectorAll('#background-filter button').forEach((b) => {
   b.onclick = () => { state.background.filter = b.dataset.filter; renderBackgroundPage() }
 })
@@ -2912,7 +3823,6 @@ document.querySelectorAll('#skills-days button').forEach((b) => {
   b.onclick = () => { state.skills.days = Number(b.dataset.days); remember('board.skillsDays', String(state.skills.days)); renderSkillsPage() }
 })
 $('skills-q').oninput = () => { state.skills.query = $('skills-q').value; renderSkillsPage() }
-$('backdrop').onclick = () => setExpanded(null)
 $('cards').addEventListener('focusin', (event) => {
   const card = event.target.closest?.('.card')
   if (card) clearNotifications(card.dataset.id)
@@ -2920,9 +3830,17 @@ $('cards').addEventListener('focusin', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && state.historyOpen) { setHistoryOpen(false); return }
-  if (event.key !== 'Escape' || $('broadcast').open || $('new-chat-dialog').open || !state.expanded) return
-  const ui = uiOf(state.expanded)
-  if (ui.popover) { ui.popover = null; renderFocus() } else setExpanded(null)
+  if (state.tab !== 'focus' || $('broadcast').open) return
+  const typing = event.target.closest?.('input, textarea, select, [contenteditable]')
+  if (event.key === 'Escape') {
+    if (state.draft) return void closeNewChat()
+    const current = selectedCard()
+    if (current && uiOf(current.id).popover) { uiOf(current.id).popover = null; renderFocus() }
+    return
+  }
+  if (typing || event.metaKey || event.ctrlKey || event.altKey) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); stepSelected(event.key === 'ArrowDown' ? 1 : -1) }
+  else if (event.key === '/') { event.preventDefault(); $('side-q').focus() }
 })
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { state.unseen = 0; updateTitle() }
@@ -2931,6 +3849,38 @@ setInterval(() => {
   document.querySelectorAll('[data-since]').forEach((node) => { node.textContent = duration(Date.now() - Number(node.dataset.since)) })
 }, 1000)
 
+function resetIn(ms) {
+  const m = Math.max(0, Math.round(ms / 60000))
+  if (m >= 1440) return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`
+  return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
+}
+
+function limitNode(label, w) {
+  const box = el('div', `limit${w.percent >= 90 ? ' high' : w.percent >= 70 ? ' warn' : ''}`)
+  const left = w.resetsAt ? Math.max(0, new Date(w.resetsAt) - Date.now()) : 0
+  box.title = `${label} limit: ${w.percent}% used${w.resetsAt ? `, resets in ${resetIn(left)} (${dateTime(new Date(w.resetsAt).getTime())})` : ''}`
+  const head = el('span')
+  head.append(`${label} `, Object.assign(document.createElement('b'), { textContent: `${w.percent}%` }), w.resetsAt ? ` · ${resetIn(left)}` : '')
+  const bar = el('div', 'bar')
+  const fill = document.createElement('i')
+  fill.style.width = `${Math.min(w.percent, 100)}%`
+  bar.append(fill)
+  box.append(head, bar)
+  return box
+}
+
+async function refreshLimits() {
+  const box = $('limits')
+  try {
+    const data = await signedOut(await fetch('/api/limits')).json()
+    const nodes = data.available ? [['5h', data.fiveHour], ['Week', data.weekly]].filter(([, w]) => w).map(([l, w]) => limitNode(l, w)) : []
+    box.replaceChildren(...nodes)
+    box.hidden = !nodes.length
+  } catch { box.hidden = true }
+}
+
+const topbar = document.querySelector('.topbar')
+if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--topbar-h', `${topbar.offsetHeight}px`)).observe(topbar)
 if (location.hash === '#focus') history.replaceState({}, '', '/focus')
 $('history').append(icon('bell', { size: 18 }))
 state.history = readHistory()
@@ -2939,10 +3889,18 @@ renderAlertsButton()
 $('new-chat').replaceChildren(icon('plus', { size: 16 }), text('New chat'))
 $('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), text('Broadcast'))
 $('brand-mark').replaceChildren(icon('asterisk', { size: 22, strokeWidth: 2.4 }))
+$('menu-btn').replaceChildren(icon('menu', { size: 22 }))
+$('drawer-close').replaceChildren(icon('x', { size: 20 }))
+$('drawer-brand').replaceChildren(icon('asterisk', { size: 20, strokeWidth: 2.4 }), text('Sessions'))
 loadSnippets()
+initMobile({ onChange: () => { state.signature = ''; applyRoute() } })
+// On a phone the app opens on Focus, not the All sessions table.
+if (isMobile() && location.pathname === '/' && !location.search) history.replaceState({}, '', '/focus')
 applyRoute()
 schedule()
 attachTip($('live'), serverTip)
 checkServer()
 setInterval(checkServer, 3000)
+refreshLimits()
+setInterval(refreshLimits, 60_000)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})

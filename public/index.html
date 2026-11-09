@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Claude Session Board</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#d97757">
+<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Sessions">
@@ -16,6 +17,8 @@
 </head>
 <body>
 <header class="topbar">
+  <button id="menu-btn" class="icon-only menu-btn" type="button" aria-label="Menu" aria-controls="drawer" aria-expanded="false"></button>
+  <div class="m-title" id="m-title" aria-live="polite"></div>
   <div class="brand"><span class="mark" id="brand-mark"></span>Sessions<span class="live" id="live" data-state="checking" role="status"><span class="live-dot"></span><span class="live-text">Checking</span></span></div>
   <nav class="tabs" role="tablist">
     <a role="tab" id="tab-all" href="/" aria-selected="true">All sessions</a>
@@ -26,11 +29,11 @@
     <a role="tab" id="tab-search" href="/search" aria-selected="false">Search</a>
     <a role="tab" id="tab-usage" href="/usage" aria-selected="false">Usage</a>
     <a role="tab" id="tab-skills" href="/skills" aria-selected="false">Skills</a>
+    <a role="tab" id="tab-schedule" href="/schedule" aria-selected="false">Schedule</a>
   </nav>
   <div class="spacer"></div>
   <input id="q" class="field" type="search" placeholder="Filter sessions">
   <label class="toggle"><input id="archived" type="checkbox"> Archived</label>
-  <button id="new-chat" class="icon-btn" title="Start a new Claude Code session in the desktop app"></button>
   <button id="alerts" class="icon-btn" aria-pressed="false" title="Notify when a focused session finishes, asks a question or needs approval">Alerts</button>
   <label class="toggle">Refresh
     <select id="interval" class="field">
@@ -40,6 +43,7 @@
       <option value="60000">60s</option>
     </select>
   </label>
+  <div class="limits" id="limits" hidden></div>
   <button id="history" class="icon-only history-btn" aria-haspopup="dialog" aria-expanded="false" title="Notification history"><span class="bell-badge" id="history-count" hidden></span></button>
   <div class="notif-panel" id="notif-panel" role="dialog" aria-label="Notification history" hidden></div>
 </header>
@@ -62,19 +66,17 @@
       <h2>Focus</h2>
       <div class="right">
         <button id="broadcast-open" class="icon-btn" title="Queue one prompt on several sessions">Broadcast</button>
-        <div class="seg" id="focus-sort" role="group" aria-label="Order">
-          <button data-sort="manual" aria-pressed="true">Manual</button>
-          <button data-sort="prompt" aria-pressed="false">Last prompt</button>
-        </div>
-        <div class="seg" id="layout" role="group" aria-label="Columns">
-          <button data-cols="1" aria-pressed="false">1</button>
-          <button data-cols="2" aria-pressed="false">2</button>
-          <button data-cols="auto" aria-pressed="true">Auto</button>
-        </div>
       </div>
     </div>
-    <div class="cards cols-auto" id="cards"></div>
-    <div class="empty" id="focus-empty" hidden>Nothing in focus yet.<br>Star a session on the All sessions tab to pin it here.</div>
+    <div class="split" id="split">
+      <aside class="side" aria-label="Focused sessions">
+        <div class="side-top"><button id="new-chat" class="btn primary" title="Start a new Claude Code session"></button><div class="side-filter"><input id="side-q" class="field" type="search" placeholder="Filter focused sessions" aria-label="Filter focused sessions"><button id="side-sort-btn" class="icon-only" aria-haspopup="menu" aria-expanded="false"></button><div class="sort-menu" id="side-sort-menu" role="menu" hidden></div></div></div>
+        <div class="side-list" id="side-list" role="listbox" aria-label="Focused sessions"></div>
+        <div class="side-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> switch</span><span><kbd>/</kbd> filter</span></div>
+      </aside>
+      <section class="stage" id="cards"></section>
+      <div class="empty" id="focus-empty" hidden>Nothing in focus yet.<br>Star a session on the All sessions tab to pin it here,<br>or start one with New chat.</div>
+    </div>
   </section>
   <section id="view-loops" hidden>
     <div class="page-head">
@@ -185,6 +187,18 @@
       </div>
     </div>
   </section>
+  <section id="view-schedule" hidden>
+    <div class="sched-page">
+      <div class="sched-hello">
+        <div class="hello-title" id="schedule-title">Schedule a session</div>
+        <div class="hello-sub">Each run starts a new board-only session in the project, with the prompt below. It shows up in Focus when it starts. The board has to be running at the time.</div>
+      </div>
+      <form class="sched-form" id="schedule-form" autocomplete="off"></form>
+      <div class="sched-head"><h3>Scheduled</h3><span id="schedule-status"></span></div>
+      <div class="rt-list" id="schedule-rows"></div>
+      <div class="empty" id="schedule-empty" hidden>No schedules yet.</div>
+    </div>
+  </section>
   <section id="view-skills" hidden>
     <div class="page-head">
       <h2>Skills</h2>
@@ -218,7 +232,15 @@
     <div class="empty" id="skills-empty" hidden>No skills match.</div>
   </section>
 </main>
-<div class="backdrop" id="backdrop" hidden></div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Menu" aria-hidden="true">
+  <div class="drawer-head"><span class="drawer-brand" id="drawer-brand"></span><button id="drawer-close" class="icon-only" type="button" aria-label="Close menu"></button></div>
+  <div class="drawer-body">
+    <div id="drawer-side"></div>
+    <nav id="drawer-nav" class="drawer-nav" aria-label="Pages"></nav>
+    <div id="drawer-foot" class="drawer-foot"></div>
+  </div>
+</aside>
 <div class="toasts" id="toasts"></div>
 <dialog id="broadcast">
   <h3>Broadcast a prompt</h3>
@@ -229,19 +251,6 @@
   <div class="actions">
     <button class="btn" id="broadcast-cancel">Cancel</button>
     <button class="btn primary" id="broadcast-send">Queue on selected</button>
-  </div>
-</dialog>
-<dialog id="new-chat-dialog">
-  <h3>New chat</h3>
-  <select id="new-chat-folder" class="field" aria-label="Folder"></select>
-  <input id="new-chat-custom" class="field" placeholder="/absolute/path/to/folder" autocomplete="off" spellcheck="false" hidden>
-  <textarea id="new-chat-text" placeholder="First prompt. Open in Claude fills it in for you to review and send in the app; Start here sends it now."></textarea>
-  <div class="hint" id="new-chat-hint">Start here runs the prompt on the board right away, with the permission mode shown on the card. It will not appear in the desktop app: use Move to desktop on its card later if you want it there.</div>
-  <div class="status-line" id="new-chat-status"></div>
-  <div class="actions">
-    <button class="btn" id="new-chat-cancel">Cancel</button>
-    <button class="btn" id="new-chat-here" title="Run the prompt now on the board only">Start here (board only)</button>
-    <button class="btn primary" id="new-chat-start">Open in Claude</button>
   </div>
 </dialog>
 <script type="module" src="/app.js"></script>

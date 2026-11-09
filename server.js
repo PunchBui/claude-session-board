@@ -3,14 +3,16 @@ import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, extname, basename } from 'node:path'
+import { join, extname, basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createScanStore } from './lib/scan.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
 import { REPEATS, nextAfter } from './lib/schedule.js'
+import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, applyEdit } from './lib/routines.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
+import { createLimitsReader } from './lib/limits.js'
 import { listCommands } from './lib/commands.js'
 import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
@@ -23,6 +25,10 @@ import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFo
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
+import { readNewSessionDefaults } from './lib/defaults.js'
+import { validFolderPath } from './lib/boardsessions.js'
+import { reorderFocus } from './lib/focusorder.js'
+import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
 import { createBoardStore, boardRaw } from './lib/boardsessions.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 
@@ -42,6 +48,7 @@ const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
+const ROUTINE_FILE = join(DATA_DIR, 'routines.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const RUNS_FILE = join(DATA_DIR, 'runs.json')
 const BOARD_SESSIONS_FILE = join(DATA_DIR, 'board-sessions.json')
@@ -52,7 +59,14 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
 const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`])
 const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`])
-const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage', '/skills'])
+// Hostnames a tunnel (tailscale serve) forwards here; they need the login cookie. See lib/remote.js.
+const remote = await readRemoteConfig({ file: join(DATA_DIR, 'remote.json') })
+const REMOTE_HOSTS = new Set(remote.hosts)
+for (const host of REMOTE_HOSTS) ALLOWED_ORIGINS.add(`https://${host}`)
+const loginLimiter = createLoginLimiter()
+// Static files the browser fetches without cookies (install prompt, icons). They hold nothing private.
+const PUBLIC_ASSETS = new Set(['/manifest.webmanifest', '/favicon.ico', '/favicon.png', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png'])
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage', '/skills', '/schedule'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
@@ -60,7 +74,7 @@ const CHAT_ITEMS = 60
 const MAX_QUEUE = 20
 const MAX_SCHEDULES = 50
 const MAX_SNIPPETS = 40
-const RUN_TIMEOUT_MS = 15 * 60_000
+const RUN_TIMEOUT_MS = 0 // 0 = no run timeout
 const KILL_GRACE_MS = 5000
 const spawnEnv = await resolveSpawnEnv()
 const DEFAULT_SNIPPETS = [
@@ -75,6 +89,8 @@ const scanStore = createScanStore()
 const transcriptPaths = new Map()
 const queues = new Map()
 let schedules = []
+let routines = []
+let firingRoutines = false
 let customSnippets = null
 const indexStatus = { done: 0, total: 0, running: false }
 
@@ -301,10 +317,12 @@ async function loadStores() {
   }
   const storedSchedules = await readJson(SCHEDULE_FILE, {})
   schedules = Array.isArray(storedSchedules.items) ? storedSchedules.items : []
+  routines = parseRoutinesFile(await readJson(ROUTINE_FILE, {}))
   const storedSnippets = await readJson(SNIPPET_FILE, null)
   customSnippets = Array.isArray(storedSnippets?.items) ? storedSnippets.items : null
 }
 
+const persistRoutines = () => writeJson(ROUTINE_FILE, { items: routines })
 const persistSchedules = () => writeJson(SCHEDULE_FILE, { items: schedules })
 const snippets = () => customSnippets ?? DEFAULT_SNIPPETS
 const persistSnippets = () => writeJson(SNIPPET_FILE, { items: snippets() })
@@ -344,8 +362,36 @@ async function fireDueSchedules() {
   pump()
 }
 
+// Starts one new board-only session for a routine and puts it in Focus.
+async function startRoutineSession(routine) {
+  try {
+    const result = await manager.requestNewSession(routine)
+    if (result.status !== 202) return { error: result.body?.error ?? 'Could not start the session.' }
+    await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
+    return { sessionId: result.body.id }
+  } catch (error) {
+    return { error: String(error?.message ?? error) }
+  }
+}
+
+async function fireDueRoutines() {
+  if (firingRoutines) return
+  firingRoutines = true
+  try {
+    for (const routine of routines.filter((r) => isDue(r, Date.now()))) {
+      const now = Date.now()
+      const outcome = await startRoutineSession(routine)
+      routines = routines.map((r) => (r.rid === routine.rid ? afterFire(r, outcome, now) : r))
+      await persistRoutines()
+    }
+  } finally {
+    firingRoutines = false
+  }
+}
+
 async function tick() {
   try {
+    await fireDueRoutines()
     await fireDueSchedules()
     await pump()
   } catch {}
@@ -561,6 +607,19 @@ async function saveUpload(req, res, url) {
   return json(res, 201, { path, name, size: data.length, image: IMAGE_TYPE.test(req.headers['content-type'] ?? '') })
 }
 
+// Serves an image the board saved, so queued prompts can show a preview. Only files inside
+// the upload folder, and only common image types.
+const IMAGE_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
+async function serveUpload(res, url) {
+  const path = resolve(url.searchParams.get('path') ?? '')
+  const type = IMAGE_EXT[extname(path).toLowerCase()]
+  if (!type || !path.startsWith(`${resolve(UPLOAD_DIR)}${sep}`)) return send(res, 404, 'not found', 'text/plain')
+  const data = await readFile(path).catch(() => null)
+  if (!data) return send(res, 404, 'not found', 'text/plain')
+  res.writeHead(200, { 'content-type': type, 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' })
+  return res.end(data)
+}
+
 async function pruneUploads() {
   const dirs = await readdir(UPLOAD_DIR, { withFileTypes: true }).catch(() => [])
   for (const dir of dirs) {
@@ -656,6 +715,12 @@ const postRoutes = {
     await writeJson(FOCUS_FILE, { ids: next })
     return json(res, 200, { ids: next })
   },
+  async '/api/focus/order'(body, res) {
+    if (!Array.isArray(body.ids) || body.ids.length > 500 || !body.ids.every((id) => SESSION_ID.test(id ?? ''))) return json(res, 400, { error: 'bad request' })
+    const ids = reorderFocus(await readFocus(), body.ids)
+    await writeJson(FOCUS_FILE, { ids })
+    return json(res, 200, { ids })
+  },
   async '/api/prompt'(body, res) {
     return reply(res, await manager.requestPrompt(body, body.prompt))
   },
@@ -687,6 +752,18 @@ const postRoutes = {
     queue.items = queue.items.filter((item) => item.qid !== body.qid)
     await persistQueues()
     return json(res, 200, { queue: publicQueue(body.id) })
+  },
+  async '/api/queue/force'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '')) return json(res, 400, { error: 'bad request' })
+    const queue = queueFor(body.id)
+    const item = queue.items.find((entry) => entry.qid === body.qid)
+    if (!item) return json(res, 404, { error: 'queued message not found' })
+    const result = await manager.requestPrompt({ id: body.id }, item.prompt, { force: true })
+    if (result.status === 202) {
+      queue.items = queue.items.filter((entry) => entry.qid !== body.qid)
+      await persistQueues()
+    }
+    return reply(res, result)
   },
   async '/api/queue/resume'(body, res) {
     if (!SESSION_ID.test(body.id ?? '')) return json(res, 400, { error: 'bad request' })
@@ -727,6 +804,50 @@ const postRoutes = {
     schedules = schedules.filter((item) => item.sid !== body.sid)
     if (schedules.length !== before) await persistSchedules()
     return json(res, 200, { ok: true })
+  },
+  async '/api/routines'(body, res) {
+    const parsed = parseRoutineInput(body, { validPrompt })
+    if (parsed.error) return json(res, 400, { error: parsed.error })
+    if (isBlocked(parsed.routine.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
+    if (routines.length >= MAX_ROUTINES) return json(res, 409, { error: `Too many schedules (${MAX_ROUTINES}). Delete one first.` })
+    routines = [...routines, parsed.routine]
+    await persistRoutines()
+    return json(res, 201, { routines })
+  },
+  async '/api/routines/update'(body, res) {
+    const existing = routines.find((r) => r.rid === body.rid)
+    if (!existing) return json(res, 404, { error: 'not found' })
+    const parsed = parseRoutineInput(body, { validPrompt })
+    if (parsed.error) return json(res, 400, { error: parsed.error })
+    if (isBlocked(parsed.routine.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
+    routines = routines.map((r) => (r.rid === existing.rid ? applyEdit(r, parsed.routine) : r))
+    await persistRoutines()
+    return json(res, 200, { routines })
+  },
+  async '/api/routines/toggle'(body, res) {
+    const routine = routines.find((r) => r.rid === body.rid)
+    if (!routine) return json(res, 404, { error: 'not found' })
+    const enabled = Boolean(body.enabled)
+    // Switching a finished one-off back on needs a new time, otherwise it would fire at once.
+    if (enabled && routine.at < Date.now() && routine.repeat === 'none') return json(res, 400, { error: 'This one-off already ran. Create a new schedule for another run.' })
+    routines = routines.map((r) => (r.rid === routine.rid ? { ...r, enabled, at: enabled && r.at < Date.now() ? (nextAfter(r.at, r.repeat) ?? r.at) : r.at } : r))
+    await persistRoutines()
+    return json(res, 200, { routines })
+  },
+  async '/api/routines/run'(body, res) {
+    const routine = routines.find((r) => r.rid === body.rid)
+    if (!routine) return json(res, 404, { error: 'not found' })
+    const outcome = await startRoutineSession(routine)
+    routines = routines.map((r) => (r.rid === routine.rid ? { ...r, lastFiredAt: Date.now(), lastSessionId: outcome.sessionId ?? r.lastSessionId, lastError: outcome.error ?? null, runs: r.runs + (outcome.sessionId ? 1 : 0) } : r))
+    await persistRoutines()
+    if (outcome.error) return json(res, 409, { error: outcome.error, routines })
+    return json(res, 202, { routines, sessionId: outcome.sessionId })
+  },
+  async '/api/routines/remove'(body, res) {
+    const before = routines.length
+    routines = routines.filter((r) => r.rid !== body.rid)
+    if (routines.length !== before) await persistRoutines()
+    return json(res, 200, { routines })
   },
   async '/api/snippets'(body, res) {
     const label = String(body.label ?? '').trim().slice(0, 40)
@@ -779,6 +900,13 @@ const getRoutes = {
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())
   },
+  async '/api/new-defaults'(url, res) {
+    const folder = url.searchParams.get('folder')
+    return json(res, 200, await readNewSessionDefaults({ home: CLAUDE_HOME, folder: validFolderPath(folder) ? folder : null, permissionMode: PROMPT_PERMISSION_MODE }))
+  },
+  async '/api/routines'(url, res) {
+    return json(res, 200, { routines })
+  },
   async '/api/snippets'(url, res) {
     return json(res, 200, { items: snippets() })
   },
@@ -789,6 +917,8 @@ const getRoutes = {
     return result ? json(res, 200, result) : json(res, 404, { error: 'session not found' })
   },
   async '/api/commands'(url, res) {
+    const folder = url.searchParams.get('folder')
+    if (folder) return validFolderPath(folder) ? json(res, 200, { items: await commandsFor(folder) }) : json(res, 400, { error: 'bad folder' })
     const raw = await findRaw(url.searchParams.get('id'))
     if (!raw) return json(res, 404, { error: 'session not found' })
     return json(res, 200, { items: await commandsFor(raw.cwd ?? raw.originCwd ?? null) })
@@ -811,11 +941,16 @@ const getRoutes = {
     const skill = (await installedSkills()).find((item) => item.key === key)
     return skill ? json(res, 200, await skillDetail(skill)) : json(res, 404, { error: 'skill not found' })
   },
+  async '/api/limits'(url, res) {
+    return json(res, 200, await readLimits())
+  },
   async '/api/usage'(url, res) {
     const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 120)
     return json(res, 200, aggregateUsage(await indexedEntries(), days))
   },
 }
+
+const readLimits = createLimitsReader()
 
 installCrashGuard()
 await loadStores()
@@ -825,10 +960,33 @@ setInterval(tick, 2000)
 warmIndex()
 setInterval(warmIndex, 60_000)
 
+async function login(req, res) {
+  const who = String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? '').split(',')[0].trim().slice(0, 64)
+  if (loginLimiter.blocked(who)) return json(res, 429, { error: 'Too many attempts. Try again later.' })
+  const body = await readBody(req)
+  if (typeof body.token !== 'string' || !safeEqual(body.token, remote.token)) {
+    loginLimiter.fail(who)
+    return json(res, 401, { error: 'Wrong token.' })
+  }
+  loginLimiter.reset(who)
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'set-cookie': sessionCookie(remote.token) })
+  res.end('{"ok":true}')
+}
+
 createServer(async (req, res) => {
-  if (!ALLOWED_HOSTS.has(req.headers.host ?? '')) return send(res, 403, 'forbidden', 'text/plain')
-  const url = new URL(req.url, `http://${req.headers.host}`)
+  const host = (req.headers.host ?? '').toLowerCase()
+  const viaTunnel = REMOTE_HOSTS.has(host)
+  if (!ALLOWED_HOSTS.has(host) && !viaTunnel) return send(res, 403, 'forbidden', 'text/plain')
+  const url = new URL(req.url, `http://${host}`)
   try {
+    if (viaTunnel && !isAuthed(req.headers.cookie, remote.token) && !PUBLIC_ASSETS.has(url.pathname)) {
+      if (req.method === 'POST' && url.pathname === '/api/login') {
+        if (!ALLOWED_ORIGINS.has(req.headers.origin ?? '')) return send(res, 403, 'forbidden', 'text/plain')
+        return await login(req, res)
+      }
+      if (req.method === 'GET' && !url.pathname.startsWith('/api/')) return send(res, 401, LOGIN_PAGE, 'text/html; charset=utf-8')
+      return json(res, 401, { error: 'Login required.' })
+    }
     if (req.method === 'POST') {
       if (!ALLOWED_ORIGINS.has(req.headers.origin ?? '')) return send(res, 403, 'forbidden', 'text/plain')
       if (url.pathname === '/api/upload') return await saveUpload(req, res, url)
@@ -837,6 +995,7 @@ createServer(async (req, res) => {
       return await route(await readBody(req), res)
     }
     if (req.method !== 'GET') return send(res, 405, 'method not allowed', 'text/plain')
+    if (url.pathname === '/api/upload') return await serveUpload(res, url)
     const route = getRoutes[url.pathname]
     if (route) return await route(url, res)
     return await serveStatic(res, url.pathname)

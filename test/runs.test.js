@@ -618,3 +618,61 @@ test('a board session whose first run left no transcript gets the board-specific
   assert.equal(result.body.error, BOARD_NO_TRANSCRIPT_MESSAGE)
   assert.notEqual(result.body.error, NO_TRANSCRIPT_MESSAGE)
 })
+
+test('a new board session carries its model, effort and permission mode into every run', async (t) => {
+  const h = harness(t)
+  const result = await h.manager.requestNewSession({ folder: h.dir, prompt: 'go', model: 'opus', effort: 'high', permissionMode: 'plan' })
+  assert.equal(result.status, 202)
+  const [first] = h.spawned
+  assert.equal(first.args[first.args.indexOf('--model') + 1], 'opus')
+  assert.equal(first.args[first.args.indexOf('--effort') + 1], 'high')
+  assert.equal(first.args[first.args.indexOf('--permission-mode') + 1], 'plan')
+  assert.deepEqual([h.board[0].model, h.board[0].effort, h.board[0].permissionMode], ['opus', 'high', 'plan'])
+  assert.equal(h.manager.runFor(result.body.id).mode, 'plan')
+  h.manager.runFor(result.body.id).stop()
+  first.emit('close', 0, null)
+  await until(() => h.manager.runFor(result.body.id).state !== 'running')
+  const raw = boardRaw(h.board[0], { run: null })
+  h.raws.push({ cwd: h.dir, ...raw })
+  assert.equal((await start(h, raw.sessionId, 'again')).status, 202)
+  const second = h.spawned.at(-1)
+  assert.equal(second.args[second.args.indexOf('--model') + 1], 'opus')
+  assert.equal(second.args[second.args.indexOf('--effort') + 1], 'high')
+  assert.equal(second.args[second.args.indexOf('--permission-mode') + 1], 'plan')
+})
+
+test('empty options fall back to the board default and add no flags', async (t) => {
+  const h = harness(t)
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'go', model: '', effort: '', permissionMode: '' })
+  const [child] = h.spawned
+  assert.ok(!child.args.includes('--model'))
+  assert.ok(!child.args.includes('--effort'))
+  assert.equal(child.args[child.args.indexOf('--permission-mode') + 1], 'bypassPermissions')
+})
+
+test('invalid options are refused before anything starts', async (t) => {
+  const h = harness(t)
+  for (const bad of [{ model: 'x y; rm -rf /' }, { model: '--help' }, { effort: 'extreme' }, { permissionMode: 'yolo' }]) {
+    const result = await h.manager.requestNewSession({ folder: h.dir, prompt: 'go', ...bad })
+    assert.equal(result.status, 400, JSON.stringify(bad))
+  }
+  assert.equal(h.spawned.length, 0)
+  assert.equal(h.board.length, 0)
+})
+
+test('desktop sessions never get board model or effort flags', async (t) => {
+  const h = harness(t, { sessions: [{ sessionId: SID, cliSessionId: CLI, model: 'claude-opus-5', effort: 'high' }] })
+  await start(h)
+  const [child] = h.spawned
+  assert.ok(!child.args.includes('--model'))
+  assert.ok(!child.args.includes('--effort'))
+})
+
+test('Chrome is only passed to board sessions that were started with it', async (t) => {
+  const h = harness(t)
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'plain' })
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'browse', chrome: 'on' })
+  assert.equal(h.spawned[0].args.includes('--chrome'), false)
+  assert.equal(h.spawned[1].args.includes('--chrome'), true)
+  assert.equal(h.board[1].chrome, true)
+})

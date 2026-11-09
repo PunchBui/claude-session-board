@@ -36,3 +36,34 @@ test('indented fences inside lists are recognised', () => {
   const parts = splitFences('- step\n  ```\n  npm start\n  ```')
   assert.deepEqual(parts.map((p) => p.type), ['text', 'code'])
 })
+
+import { parseBlocks } from '../public/richtext.js'
+
+test('parses a pipe table with alignment', () => {
+  const [t] = parseBlocks('| Platform | Result |\n|---|:-:|\n| Facebook | Posted |\n| TikTok | Under review |')
+  assert.equal(t.type, 'table')
+  assert.deepEqual(t.header, ['Platform', 'Result'])
+  assert.deepEqual(t.aligns, [null, 'center'])
+  assert.deepEqual(t.rows, [['Facebook', 'Posted'], ['TikTok', 'Under review']])
+})
+
+test('table cells keep links and pad short rows', () => {
+  const [t] = parseBlocks('a | b\n--|--\nhttps://x.co/s |')
+  assert.deepEqual(t.rows, [['https://x.co/s', '']])
+})
+
+test('text around a table stays separate', () => {
+  const blocks = parseBlocks('Done:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nBye')
+  assert.deepEqual(blocks.map((b) => b.type), ['para', 'table', 'para'])
+})
+
+test('a lone pipe line is not a table', () => {
+  assert.deepEqual(parseBlocks('a | b\nc | d').map((b) => b.type), ['para'])
+})
+
+test('headings, lists, quotes and rules', () => {
+  const blocks = parseBlocks('## Title\n- one\n  - two\n1. first\n> note\n---')
+  assert.deepEqual(blocks.map((b) => b.type), ['heading', 'list', 'list', 'quote', 'rule'])
+  assert.equal(blocks[1].items[1].depth, 1)
+  assert.equal(blocks[2].ordered, true)
+})
