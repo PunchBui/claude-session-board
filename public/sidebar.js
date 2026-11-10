@@ -1,13 +1,22 @@
 export const GROUPS = [
   { key: 'need', label: 'Needs you' },
+  { key: 'babysit', label: 'Babysit' },
   { key: 'working', label: 'Working' },
   { key: 'idle', label: 'Idle' },
 ]
 
+export const COLLAPSIBLE = new Set(['babysit'])
+
 export function groupOf(card) {
   if (card.live?.attention) return 'need'
+  if (card.babysit) return 'babysit'
   if (card.active || card.run?.state === 'running') return 'working'
   return 'idle'
+}
+
+export function cardTitle(card) {
+  const iid = /\/merge_requests\/(\d+)/.exec(card.babysit?.url ?? '')?.[1]
+  return iid ? `Babysit !${iid}` : card.title
 }
 
 export const SORTS = [
@@ -40,6 +49,20 @@ export function groupCards(cards, query = '') {
   return GROUPS
     .map((g) => ({ ...g, cards: shown.filter((c) => groupOf(c) === g.key) }))
     .filter((g) => g.cards.length)
+}
+
+export function groupSummary(cards) {
+  const running = cards.filter((c) => c.active || c.run?.state === 'running').length
+  const nextAt = Math.min(...cards.flatMap((c) => (c.schedules ?? []).map((item) => item.at)))
+  return { running, idle: cards.length - running, nextAt: Number.isFinite(nextAt) ? nextAt : null }
+}
+
+export function visibleGroups(groups, collapsed, selectedId, filtering = false) {
+  return groups.map((g) => {
+    const closed = !filtering && COLLAPSIBLE.has(g.key) && collapsed.has(g.key)
+    const summary = COLLAPSIBLE.has(g.key) ? groupSummary(g.cards) : null
+    return { ...g, total: g.cards.length, summary, collapsed: closed, cards: closed ? g.cards.filter((c) => c.id === selectedId) : g.cards }
+  })
 }
 
 // Moves `id` next to `targetId` (before it, or after it when `after`), only within the same group.

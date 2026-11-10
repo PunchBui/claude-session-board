@@ -29,6 +29,7 @@ const SHAPES = {
   copy: [['rect', { x: 8, y: 8, width: 14, height: 14, rx: 2 }], ['path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }]],
   'chevron-up': [['path', { d: 'm18 15-6-6-6 6' }]],
   'chevron-down': [['path', { d: 'm6 9 6 6 6-6' }]],
+  'chevron-right': [['path', { d: 'm9 18 6-6-6-6' }]],
   check: [['path', { d: 'M20 6 9 17l-5-5' }]],
   'arrow-up-down': [['path', { d: 'm21 16-4 4-4-4' }], ['path', { d: 'M17 20V4' }], ['path', { d: 'm3 8 4-4 4 4' }], ['path', { d: 'M7 4v16' }]],
   'volume-2': [['polygon', { points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' }], ['path', { d: 'M15.54 8.46a5 5 0 0 1 0 7.07' }], ['path', { d: 'M19.07 4.93a10 10 0 0 1 0 14.14' }]],

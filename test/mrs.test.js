@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, loadMergeRequests, withSessions, createMrCache, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -188,6 +188,55 @@ test('cache with no prior data returns an empty result carrying the error', asyn
   const out = await get()
   assert.equal(out.error, 'not signed in')
   assert.deepEqual(out.authored, [])
+})
+
+const saved = (extra = {}) => ({ host: GITLAB_HOST, me: 'me', fetchedAt: 1000, authored: [{ url: 'old' }], reviewing: [], merged: [], actionable: 0, ...extra })
+
+test('cache serves the saved list at once after a restart while a fresh load runs', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const persisted = []
+  const load = async () => {
+    await gate
+    return saved({ fetchedAt: 5000, authored: [{ url: 'new' }] })
+  }
+  const get = createMrCache({ load, now: () => 5000, restore: async () => saved(), persist: (data) => persisted.push(data) })
+  const first = await get()
+  assert.equal(first.refreshing, true)
+  assert.equal(first.authored[0].url, 'old')
+  release()
+  await new Promise((resolve) => setImmediate(resolve))
+  const next = await get()
+  assert.equal(next.authored[0].url, 'new')
+  assert.equal(next.refreshing, undefined)
+  assert.equal(persisted.length, 1)
+})
+
+test('cache ignores a saved list that is for another host or malformed', async () => {
+  for (const bad of [null, {}, saved({ host: 'other.example' }), saved({ me: null }), saved({ authored: 'x' })]) {
+    let loads = 0
+    const get = createMrCache({ load: async () => { loads++; return saved({ authored: [] }) }, restore: async () => bad, now: () => 2000 })
+    const out = await get()
+    assert.equal(out.refreshing, undefined)
+    assert.equal(loads, 1)
+  }
+  assert.equal(isSavedMrData(saved()), true)
+})
+
+test('cache force skips the saved list and waits for the live load', async () => {
+  const get = createMrCache({ load: async () => saved({ authored: [{ url: 'live' }] }), restore: async () => saved(), now: () => 2000 })
+  const out = await get({ force: true })
+  assert.equal(out.authored[0].url, 'live')
+  assert.equal(out.refreshing, undefined)
+})
+
+test('cache reports the error once a refresh over the saved list fails', async () => {
+  const get = createMrCache({ load: async () => { throw new Error('not signed in') }, restore: async () => saved(), now: () => 2000 })
+  assert.equal((await get()).refreshing, true)
+  await new Promise((resolve) => setImmediate(resolve))
+  const next = await get()
+  assert.equal(next.error, 'not signed in')
+  assert.equal(next.authored[0].url, 'old')
 })
 
 test('finds glab in Homebrew even when launchd gives a bare PATH', () => {

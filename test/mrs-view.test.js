@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, fixOutcome } from '../public/mrs.js'
+import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, BABYSIT_STALL_MS } from '../public/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -95,29 +95,95 @@ test('merging includes the merged list after the open ones', () => {
   assert.equal(mergeMrs({ authored: [mr(1)], reviewing: [] }).length, 1)
 })
 
-test('a direct send that succeeds shows Sent, locks the button and is remembered', () => {
-  assert.deepEqual(fixOutcome({ ok: true, data: {} }, false, 'Fix CI'), { label: 'Sent', title: 'Sent to Fix CI', disabled: true, record: true })
+test('a started session shows Started, locks the button and is remembered', () => {
+  assert.deepEqual(startOutcome({ ok: true, data: { id: 'new' } }), { label: 'Started', title: 'Started in a new session, now in your Focus list', disabled: true, record: true })
 })
 
-test('a queued send shows Queued, stays locked and is not remembered', () => {
-  const outcome = fixOutcome({ ok: true, data: {} }, true, 'Fix CI')
-  assert.equal(outcome.label, 'Queued')
-  assert.match(outcome.title, /session queue/)
-  assert.equal(outcome.disabled, true)
-  assert.equal(outcome.record, false)
+test('a failed start offers Retry with the server error and is not remembered', () => {
+  assert.deepEqual(startOutcome({ ok: false, data: { error: 'That folder does not exist' } }), { label: 'Retry', title: 'That folder does not exist', disabled: false, record: false })
+  assert.equal(startOutcome({ ok: false, data: {} }).title, 'Could not start a session')
+  assert.equal(startOutcome({ ok: false }).title, 'Could not start a session')
 })
 
-test('a failed send offers Retry with the server error and is not remembered', () => {
-  const direct = fixOutcome({ ok: false, data: { error: 'Session is busy' } }, false, 'Fix CI')
-  assert.deepEqual(direct, { label: 'Retry', title: 'Session is busy', disabled: false, record: false })
-  assert.equal(fixOutcome({ ok: false, data: { error: 'Queue is full' } }, true, 'Fix CI').label, 'Retry')
-  assert.equal(fixOutcome({ ok: false, data: {} }, false, 'Fix CI').title, 'Could not send')
-  assert.equal(fixOutcome({ ok: false }, false, 'Fix CI').title, 'Could not send')
+test('fixes are offered only on open merge requests that have a matching folder', () => {
+  const folder = '/Users/me/repos/app'
+  assert.equal(fixOffered(mr(1, { folder })), true)
+  assert.equal(fixOffered(mr(2)), false)
+  assert.equal(fixOffered(mr(3, { folder, mergedAt: NOW - HOUR })), false)
+  assert.equal(fixOffered(mr(4, { folder, sessions: [] })), true)
+  assert.equal(folderName(mr(1, { folder })), 'app')
+  assert.equal(folderName(mr(2)), '')
 })
 
-test('fixes are offered only on open merge requests that have a session', () => {
-  const session = { sessionId: 's1', title: 'Fix CI' }
-  assert.equal(fixOffered(mr(1, { sessions: [session] })), true)
-  assert.equal(fixOffered(mr(2, { sessions: [] })), false)
-  assert.equal(fixOffered(mr(3, { sessions: [session], mergedAt: NOW - HOUR })), false)
+const entry = (over = {}) => ({ state: 'watching', note: 'Pipeline 9 running', attempts: 0, sessionId: 's', startedAt: NOW - HOUR, at: NOW - 60_000, ...over })
+const withSession = { folder: '/Users/me/repos/app' }
+
+test('babysit view names each state and keeps the note', () => {
+  assert.deepEqual(
+    [babysitView(entry(), NOW).label, babysitView(entry({ state: 'in-review' }), NOW).label, babysitView(entry({ state: 'ready-to-merge' }), NOW).tone, babysitView(entry({ state: 'needs-you', note: 'Runner down' }), NOW).tone],
+    ['Watching CI', 'Waiting for approval', 'good', 'bad']
+  )
+  assert.equal(babysitView(entry({ state: 'needs-you', note: 'Runner down' }), NOW).note, 'Runner down')
+  assert.equal(babysitView(null, NOW), null)
+})
+
+test('fixing shows the attempt number', () => {
+  assert.equal(babysitView(entry({ state: 'fixing', attempts: 2 }), NOW).label, 'Fixing CI (2/3)')
+})
+
+test('an active babysit that stopped reporting shows as stalled and no longer blocks a restart', () => {
+  const quiet = entry({ at: NOW - BABYSIT_STALL_MS - 1 })
+  const view = babysitView(quiet, NOW)
+  assert.equal(view.label, 'Babysit stalled')
+  assert.equal(view.active, false)
+  assert.equal(babysitOffered(mr(1, { ...withSession, babysit: quiet }), NOW), true)
+})
+
+test('a final state is never reported as stalled', () => {
+  const view = babysitView(entry({ state: 'needs-you', at: NOW - 3 * DAY }), NOW)
+  assert.equal(view.stalled, false)
+  assert.equal(view.label, 'Needs you')
+})
+
+test('the Babysit button needs an authored, unmerged MR with a matching folder and no live babysit', () => {
+  assert.equal(babysitOffered(mr(1, withSession), NOW), true)
+  assert.equal(babysitOffered(mr(1), NOW), false)
+  assert.equal(babysitOffered(mr(1, { ...withSession, role: 'reviewing' }), NOW), false)
+  assert.equal(babysitOffered(mr(1, { ...withSession, mergedAt: NOW }), NOW), false)
+  assert.equal(babysitOffered(mr(1, { ...withSession, babysit: entry() }), NOW), false)
+  assert.equal(babysitOffered(mr(1, { ...withSession, babysit: entry({ state: 'needs-you' }) }), NOW), true)
+  assert.equal(babysitOffered(mr(1, { ...withSession, babysit: entry({ state: 'merged' }) }), NOW), false)
+})
+
+test('the babysit view is active only while a live babysit is reporting', () => {
+  assert.equal(babysitView(entry(), NOW).active, true)
+  assert.equal(babysitView(entry({ state: 'fixing' }), NOW).active, true)
+  assert.equal(babysitView(entry({ state: 'needs-you' }), NOW).active, false)
+  assert.equal(babysitView(entry({ state: 'ready-to-merge' }), NOW).active, false)
+  assert.equal(babysitView(entry({ at: NOW - BABYSIT_STALL_MS - 1 }), NOW).active, false)
+})
+
+test('the session button needs a babysit session on an open MR, whatever the state', () => {
+  assert.equal(babysitFocusId(mr(1, { babysit: entry() })), 's')
+  assert.equal(babysitFocusId(mr(1, { babysit: entry({ state: 'needs-you' }) })), 's')
+  assert.equal(babysitFocusId(mr(1, { babysit: entry({ sessionId: null }) })), null)
+  assert.equal(babysitFocusId(mr(1)), null)
+  assert.equal(babysitFocusId(mr(1, { mergedAt: NOW, babysit: entry() })), null)
+})
+
+test('a babysit can be stopped while it is live, even when it has stalled', () => {
+  assert.equal(babysitStoppable(mr(1, { babysit: entry() })), true)
+  assert.equal(babysitStoppable(mr(1, { babysit: entry({ at: NOW - BABYSIT_STALL_MS - 1 }) })), true)
+  assert.equal(babysitStoppable(mr(1, { babysit: entry({ state: 'needs-you' }) })), false)
+  assert.equal(babysitStoppable(mr(1, { babysit: entry({ state: 'stopped' }) })), false)
+  assert.equal(babysitStoppable(mr(1)), false)
+  assert.equal(babysitStoppable(mr(1, { mergedAt: NOW, babysit: entry() })), false)
+})
+
+test('the deploy check is offered on your own merged MRs that have a folder', () => {
+  const merged = { mergedAt: NOW, folder: '/Users/me/repos/app' }
+  assert.equal(deployOffered(mr(1, merged)), true)
+  assert.equal(deployOffered(mr(1, { ...merged, role: 'reviewing' })), false)
+  assert.equal(deployOffered(mr(1, { folder: merged.folder })), false)
+  assert.equal(deployOffered(mr(1, { mergedAt: NOW })), false)
 })

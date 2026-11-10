@@ -42,19 +42,24 @@ const matches = (skill, query) => {
   return [skill.name, skill.description, skill.project ?? ''].some((field) => field.toLowerCase().includes(needle))
 }
 
-export function orderSkills(list, count, now = Date.now()) {
+export const SKILL_SORTS = ['uses', 'recent']
+
+export function orderSkills(list, count, now = Date.now(), sort = 'uses') {
+  const byRecent = (a, b) => (b.skill.lastUsedAt ?? 0) - (a.skill.lastUsedAt ?? 0)
+  const byName = (a, b) => a.skill.name.localeCompare(b.skill.name)
   return list
     .map((skill) => ({ skill, used: usesInRange(skill, count, now) }))
-    .sort((a, b) => b.used - a.used || (b.skill.lastUsedAt ?? 0) - (a.skill.lastUsedAt ?? 0) || a.skill.name.localeCompare(b.skill.name))
+    .sort(sort === 'recent' ? (a, b) => byRecent(a, b) || b.used - a.used || byName(a, b) : (a, b) => b.used - a.used || byRecent(a, b) || byName(a, b))
     .map(({ skill }) => skill)
 }
 
-export function visibleSkills(all, { scope = 'all', temp = null, query = '', days = 30, now = Date.now() } = {}) {
+export function visibleSkills(all, { scope = 'all', temp = null, query = '', days = 30, sort = 'uses', now = Date.now() } = {}) {
   const inScope = SCOPE_FILTERS[scope] ?? SCOPE_FILTERS.all
   return orderSkills(
     all.filter((skill) => inScope(skill) && matches(skill, query.trim()) && (!temp || skillTemperature(skill, now).group === temp)),
     days,
-    now
+    now,
+    sort
   )
 }
 

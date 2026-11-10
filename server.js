@@ -21,13 +21,17 @@ import { resolveClaudeBin } from './lib/claudebin.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
-import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS } from './lib/mrs.js'
+import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
 import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
+import { createSubagentStore, isAgentId } from './lib/subagents.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions } from './lib/babysit.js'
+import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
+import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
 import { createBoardStore, boardRaw } from './lib/boardsessions.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
@@ -46,6 +50,8 @@ const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
 const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
+const MR_CACHE_FILE = join(DATA_DIR, 'mr-cache.json')
+const MR_BABYSIT_FILE = join(DATA_DIR, 'mr-babysit.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const ROUTINE_FILE = join(DATA_DIR, 'routines.json')
@@ -86,6 +92,7 @@ const DEFAULT_SNIPPETS = [
 ]
 
 const scanStore = createScanStore()
+const subagentStore = createSubagentStore()
 const transcriptPaths = new Map()
 const queues = new Map()
 let schedules = []
@@ -221,6 +228,8 @@ async function scanSession(raw) {
   return { path, info, state: await scanStore.scan(path, info.size) }
 }
 
+let babysitBySession = new Map()
+
 async function buildCard(raw) {
   const { cliSessionId, ...base } = toSummary(raw)
   const scanned = await scanSession(raw)
@@ -237,6 +246,8 @@ async function buildCard(raw) {
     transcriptFound: Boolean(scanned),
     details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
     usage: scanned ? usageOf(scanned.state) : null,
+    subagents: scanned ? await subagentStore.summary(scanned.path) : null,
+    babysit: babysitBySession.get(raw.sessionId) ?? null,
     live,
     loop: scanned ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,
   }
@@ -286,6 +297,11 @@ async function readMrPings() {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
 }
 
+async function readMrBabysit() {
+  const parsed = await readJson(MR_BABYSIT_FILE, {})
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+}
+
 async function readMrFocusState() {
   const parsed = await readJson(MR_FOCUS_FILE, {})
   return {
@@ -311,6 +327,7 @@ async function persistQueues() {
 
 async function loadStores() {
   await boardStore.load()
+  babysitBySession = babysitSessions(await readMrBabysit())
   const storedQueues = await readJson(QUEUE_FILE, {})
   for (const [id, queue] of Object.entries(storedQueues)) {
     if (SESSION_ID.test(id) && Array.isArray(queue.items)) queues.set(id, { items: queue.items, paused: Boolean(queue.paused) })
@@ -413,7 +430,10 @@ async function loadFocusCards() {
   return { ids, cards }
 }
 
-const mergeRequests = createMrCache()
+const mergeRequests = createMrCache({
+  restore: () => readJson(MR_CACHE_FILE, null),
+  persist: (data) => { writeJson(MR_CACHE_FILE, data).catch(() => {}) },
+})
 
 async function mrSessionLinks() {
   const linked = new Map()
@@ -421,14 +441,33 @@ async function mrSessionLinks() {
     const path = transcriptPaths.get(raw.cliSessionId)
     const state = path ? scanStore.states.get(path) : null
     if (!state) continue
-    const { title, project, archived } = toSummary(raw)
+    const { title, project, archived, cwd } = toSummary(raw)
     for (const url of state.links.keys()) {
       const sessions = linked.get(url) ?? []
-      sessions.push({ sessionId: raw.sessionId, title, project, archived, lastActivityAt: raw.lastActivityAt ?? 0 })
+      sessions.push({ sessionId: raw.sessionId, title, project, archived, cwd, lastActivityAt: raw.lastActivityAt ?? 0 })
       linked.set(url, sessions)
     }
   }
   return linked
+}
+
+const FOLDER_WAIT_MS = 1500
+const remoteOf = createRemoteCache({ read: originUrl })
+const canonicalProject = createCanonicalCache({
+  read: async (path) => JSON.parse(await glab(['api', '--hostname', GITLAB_HOST, `projects/${encodeURIComponent(path)}`])).path_with_namespace,
+})
+
+const listFolders = async (dir) => {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+  return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.')).map((entry) => entry.name)
+}
+
+async function mrFolders(data, linked) {
+  const raws = (await readRawSessions()).filter((raw) => raw.cwd).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+  const sessionFolders = raws.map((raw) => raw.cwd)
+  const siblings = await siblingFolders(sessionFolders, { list: listFolders, home: homedir() })
+  const mine = [...data.authored, ...(data.merged ?? []).filter((mr) => mr.role === 'authored')]
+  return resolveFolders(mine, { linked, known: [...sessionFolders, ...siblings], remoteOf, canonical: canonicalProject })
 }
 
 async function loopHistory() {
@@ -694,6 +733,34 @@ const postRoutes = {
     const mr = mergeRequests.patchAuthored(body.url, (current) => added.reduce((mr, name) => withLabel(mr, name, Date.now()), current))
     return json(res, 200, { ok: true, mr })
   },
+  async '/api/mrs/babysit'(body, res) {
+    const badSession = body.sessionId !== undefined && !SESSION_ID.test(body.sessionId)
+    if (!isMrUrl(body.url) || !isBabysitState(body.state) || badSession) return json(res, 400, { error: 'bad request' })
+    const store = recordBabysit(await readMrBabysit(), body.url, body, Date.now())
+    await writeJson(MR_BABYSIT_FILE, store)
+    babysitBySession = babysitSessions(store)
+    return json(res, 200, { ok: true, babysit: store[body.url] })
+  },
+  async '/api/mrs/babysit/stop'(body, res) {
+    if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
+    const current = await readMrBabysit()
+    const entry = current[body.url]
+    if (!entry || !isBabysitActive(entry.state)) return json(res, 409, { error: 'no active babysit on this merge request' })
+    const store = recordBabysit(current, body.url, { state: 'stopped', note: 'Stopped by you' }, Date.now())
+    await writeJson(MR_BABYSIT_FILE, store)
+    babysitBySession = babysitSessions(store)
+    if (entry.sessionId) {
+      schedules = schedules.filter((item) => !(item.id === entry.sessionId && isBabysitPrompt(item.prompt)))
+      await persistSchedules()
+      const queue = queues.get(entry.sessionId)
+      if (queue) {
+        queue.items = queue.items.filter((item) => !isBabysitPrompt(item.prompt))
+        await persistQueues()
+      }
+      manager.stopPrompt(entry.sessionId)
+    }
+    return json(res, 200, { ok: true, babysit: store[body.url] })
+  },
   async '/api/mrs/ping'(body, res) {
     if (!isMrUrl(body.url) || typeof body.reviewer !== 'string') return json(res, 400, { error: 'bad request' })
     const data = await mergeRequests()
@@ -895,7 +962,11 @@ const getRoutes = {
     const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
     const next = autoFocusNew(data, await readMrFocusState())
     if (next.changed) await writeJson(MR_FOCUS_FILE, { urls: next.urls, seen: next.seen })
-    return json(res, 200, withPings(withFocus(withSessions(data, await mrSessionLinks()), next.urls), await readMrPings()))
+    const linked = await mrSessionLinks()
+    const withLinks = withSessions(data, linked)
+    const folders = await settleWithin(mrFolders(withLinks, linked), FOLDER_WAIT_MS)
+    const shown = folders ? withFolders(withLinks, folders) : { ...withLinks, refreshing: true }
+    return json(res, 200, withBabysit(withPings(withFocus(shown, next.urls), await readMrPings()), await readMrBabysit()))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())
@@ -915,6 +986,17 @@ const getRoutes = {
     if (!SESSION_ID.test(id ?? '')) return json(res, 400, { error: 'bad request' })
     const result = await changesFor(id)
     return result ? json(res, 200, result) : json(res, 404, { error: 'session not found' })
+  },
+  async '/api/subagents'(url, res) {
+    const id = url.searchParams.get('id')
+    const raw = await findRaw(id)
+    const path = raw ? await findTranscript(raw.cliSessionId) : null
+    if (!path) return json(res, 404, { error: 'session not found' })
+    const agent = url.searchParams.get('agent')
+    if (agent === null) return json(res, 200, { items: await subagentStore.list(path) })
+    if (!isAgentId(agent)) return json(res, 400, { error: 'bad request' })
+    const result = await subagentStore.chat(path, agent)
+    return result ? json(res, 200, result) : json(res, 404, { error: 'subagent not found' })
   },
   async '/api/commands'(url, res) {
     const folder = url.searchParams.get('folder')

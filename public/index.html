@@ -121,7 +121,7 @@
     <div class="sheet" id="mrs-sheet">
       <div class="scroll-x">
         <table>
-          <thead><tr><th aria-label="Focus"></th><th>Merge request</th><th>Role</th><th>State</th><th>CI</th><th>Reviewers</th><th>Unresolved threads</th><th>Temp</th><th>Updated</th><th>Session</th></tr></thead>
+          <thead><tr><th aria-label="Focus"></th><th>Merge request</th><th>Role</th><th>State</th><th>Babysit</th><th>CI</th><th>Reviewers</th><th>Unresolved threads</th><th>Temp</th><th>Updated</th><th>Session</th></tr></thead>
           <tbody id="mrs-rows"></tbody>
         </table>
       </div>
@@ -219,6 +219,10 @@
     <div class="skills-tools">
       <input id="skills-q" class="field" type="search" placeholder="Filter by skill, description or project" autocomplete="off">
       <div class="pills" id="skills-temp"></div>
+      <div class="seg" id="skills-sort" role="group" aria-label="Sort">
+        <button data-sort="uses" aria-pressed="true">Most used</button>
+        <button data-sort="recent" aria-pressed="false">Last used</button>
+      </div>
     </div>
     <div class="status-line" id="skills-status"></div>
     <div class="sheet">

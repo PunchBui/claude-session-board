@@ -29,6 +29,24 @@ test('a background command is running until its notification arrives', () => {
   assert.equal(runningCount(state.background), 1)
 })
 
+test('a notification queued while the model was mid-tool-call still ends the task', () => {
+  const state = newScanState()
+  startCommand(state)
+  const body = '<task-notification><task-id>bg1</task-id><status>completed</status><summary>Background command "Start the board server" completed (exit code 0)</summary></task-notification>'
+  feed(state, { type: 'attachment', timestamp: iso(3), attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: body } })
+  const [task] = tasks(state, 5)
+  assert.equal(task.status, 'completed')
+  assert.equal(task.exitCode, 0)
+  assert.equal(runningCount(state.background), 0)
+})
+
+test('queued attachments that are not task notifications are ignored', () => {
+  const state = newScanState()
+  startCommand(state)
+  feed(state, { type: 'attachment', timestamp: iso(3), attachment: { type: 'queued_command', commandMode: 'prompt', prompt: '<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>' } })
+  assert.equal(runningCount(state.background), 1)
+})
+
 test('foreground commands are ignored', () => {
   const state = newScanState()
   feed(state, use('t1', 'Bash', { command: 'ls' }, 0))

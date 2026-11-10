@@ -4,13 +4,13 @@ import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
-import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, fixOutcome } from './mrs.js'
+import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
-import { SCOPE_FILTERS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
+import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { splitAttachments, visibleText } from './attachments.js'
-import { groupCards, groupOf, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
+import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
@@ -43,6 +43,7 @@ const state = {
   notes: new Map(),
   ui: new Map(),
   changes: new Map(),
+  agents: new Map(),
   snippets: [],
   alertsOn: false,
   alertSnap: null,
@@ -54,7 +55,7 @@ const state = {
   attachments: new Map(),
   search: { timer: null, runId: 0 },
   usage: { days: 30, metric: 'output', data: null, at: 0 },
-  skills: { data: null, scope: 'all', temp: null, days: 30, query: '', at: 0, open: new Set(), details: new Map() },
+  skills: { data: null, scope: 'all', temp: null, days: 30, sort: 'uses', query: '', at: 0, open: new Set(), details: new Map() },
   schedule: { data: null, at: 0, built: false },
   loops: { data: null, filter: 'all', at: 0, open: new Set() },
   background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
@@ -64,12 +65,14 @@ const state = {
 try {
   state.selected = localStorage.getItem('board.selected')
   state.focusSort = sortKey(localStorage.getItem('board.focusSort'))
+  state.collapsed = new Set(JSON.parse(localStorage.getItem('board.collapsedGroups') || '[]'))
   state.kept = JSON.parse(localStorage.getItem('board.kept') || '{}')
   state.alertsOn = localStorage.getItem('board.alerts') === '1'
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
 state.backgroundSeenAt = Number(localStorage.getItem('board.backgroundSeen')) || 0
   state.usage.metric = localStorage.getItem('board.usageMetric') || 'output'
   state.skills.days = [7, 30, 90].includes(Number(localStorage.getItem('board.skillsDays'))) ? Number(localStorage.getItem('board.skillsDays')) : 30
+  state.skills.sort = SKILL_SORTS.includes(localStorage.getItem('board.skillsSort')) ? localStorage.getItem('board.skillsSort') : 'uses'
 } catch {}
 
 const remember = (key, value) => { try { localStorage.setItem(key, value) } catch {} }
@@ -1567,6 +1570,107 @@ function pollChanges() {
   }
 }
 
+const AGENT_STATUS = { running: 'Running', done: 'Done', stopped: 'Stopped' }
+
+function agentMeta(item) {
+  const parts = []
+  const end = item.status === 'running' ? Date.now() : item.updatedAt
+  if (item.startedAt && end) parts.push(duration(end - item.startedAt))
+  if (item.toolCount) parts.push(`${item.toolCount} tool call${item.toolCount > 1 ? 's' : ''}`)
+  if (item.usage?.output) parts.push(`${compact(item.usage.output)} output tokens`)
+  if (item.usage?.model) parts.push(item.usage.model.replace(/^claude-/, ''))
+  return parts.join(' · ')
+}
+
+function renderAgentRow(c, entry, item) {
+  const open = entry.open === item.id
+  const row = el('div', `agent-row ${item.status}${open ? ' open' : ''}`)
+  row.dataset.agent = item.id
+  const head = el('button', 'agent-head')
+  head.type = 'button'
+  head.setAttribute('aria-expanded', String(open))
+  head.append(el('span', `dot ${item.status === 'running' ? 'work' : item.status === 'done' ? 'done' : 'idle'}`))
+  const body = el('div', 'agent-body')
+  const top = el('div', 'agent-top')
+  top.append(el('b', undefined, item.type), el('span', 'agent-desc', item.description || 'No description'), el('span', 'agent-state', AGENT_STATUS[item.status] ?? item.status))
+  body.append(top)
+  const meta = [agentMeta(item), item.branch].filter(Boolean).join(' · ')
+  if (meta) body.append(el('div', 'agent-meta', meta))
+  head.append(body, icon(open ? 'chevron-up' : 'chevron-down', { size: 16 }))
+  head.onclick = () => {
+    entry.open = open ? null : item.id
+    renderFocus()
+    if (!open) loadAgentChat(c.id, item.id)
+  }
+  row.append(head)
+  if (open) {
+    const log = el('div', 'agent-log')
+    const chat = entry.chats.get(item.id)
+    if (!chat) log.append(el('div', 'muted', 'Loading transcript…'))
+    else if (!chat.items.length) log.append(el('div', 'muted', 'No messages recorded.'))
+    else log.append(...chat.items.map(renderMessage))
+    row.append(log)
+  }
+  return row
+}
+
+function renderAgents(c) {
+  const wrap = el('div', 'changes agents')
+  const inner = el('div', 'changes-inner')
+  wrap.append(inner)
+  const entry = state.agents.get(c.id)
+  if (!entry?.items) inner.append(el('div', 'chat-empty', 'Loading subagents…'))
+  else if (!entry.items.length) inner.append(el('div', 'chat-empty', 'This session has not started any subagents.'))
+  else inner.append(...entry.items.map((item) => renderAgentRow(c, entry, item)))
+  return wrap
+}
+
+function agentsEntry(id) {
+  if (!state.agents.has(id)) state.agents.set(id, { items: null, at: 0, open: null, chats: new Map(), loading: false })
+  return state.agents.get(id)
+}
+
+async function fetchAgentChat(entry, id, agent) {
+  try {
+    const { chat } = await getJson(`/api/subagents?id=${encodeURIComponent(id)}&agent=${encodeURIComponent(agent)}`)
+    if (JSON.stringify(entry.chats.get(agent)?.items) === JSON.stringify(chat)) return false
+    entry.chats.set(agent, { items: chat })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function loadAgents(id) {
+  const entry = agentsEntry(id)
+  if (entry.loading) return
+  entry.loading = true
+  let changed = false
+  try {
+    const { items } = await getJson(`/api/subagents?id=${encodeURIComponent(id)}`)
+    changed = JSON.stringify(items) !== JSON.stringify(entry.items)
+    entry.items = items
+    entry.at = Date.now()
+  } catch {}
+  if (entry.open && (await fetchAgentChat(entry, id, entry.open))) changed = true
+  entry.loading = false
+  if (changed) renderFocus()
+}
+
+async function loadAgentChat(id, agent) {
+  const entry = agentsEntry(id)
+  if ((await fetchAgentChat(entry, id, agent)) && entry.open === agent) renderFocus()
+}
+
+function pollAgents() {
+  for (const c of state.cards) {
+    if (uiOf(c.id).pane !== 'agents') continue
+    const entry = agentsEntry(c.id)
+    const live = entry.items?.some((item) => item.status === 'running')
+    if (Date.now() - entry.at > (live ? 3000 : 15_000)) loadAgents(c.id)
+  }
+}
+
 function renderCard(c) {
   const ui = uiOf(c.id)
   const heat = temperatureOf(c)
@@ -1589,11 +1693,14 @@ function renderCard(c) {
   const live = el('span', 'live')
   live.append(el('span', 'dot'), text(c.active ? 'Working' : `Idle · ${relative(c.touchedAt)}`))
   const switcher = el('div', 'seg pane-switch')
-  for (const [pane, label] of [['chat', 'Chat'], ['changes', 'Changes']]) {
+  const panes = [['chat', 'Chat'], ['changes', 'Changes']]
+  if (c.subagents?.total || ui.pane === 'agents') panes.push(['agents', 'Agents'])
+  for (const [pane, label] of panes) {
     const b = el('button', undefined, label)
     if (pane === 'changes' && c.details?.filesEdited) b.append(el('span', 'n', String(c.details.filesEdited)))
+    if (pane === 'agents' && c.subagents?.total) b.append(el('span', 'n', c.subagents.running ? `${c.subagents.running}/${c.subagents.total}` : String(c.subagents.total)))
     b.setAttribute('aria-pressed', String(ui.pane === pane))
-    b.onclick = () => { ui.pane = pane; if (isMobile()) ui.more = false; renderFocus(); if (pane === 'changes') loadChanges(c.id) }
+    b.onclick = () => { ui.pane = pane; if (isMobile()) ui.more = false; renderFocus(); if (pane === 'changes') loadChanges(c.id); if (pane === 'agents') loadAgents(c.id) }
     switcher.append(b)
   }
   const step = el('div', 'stepper')
@@ -1625,7 +1732,7 @@ function renderCard(c) {
   if (heat.group === 'cool') head.append(coolNudge(c))
 
   const dock = renderComposer(c)
-  card.append(head, ui.pane === 'changes' ? renderChanges(c) : renderChat(c), dock)
+  card.append(head, ui.pane === 'changes' ? renderChanges(c) : ui.pane === 'agents' ? renderAgents(c) : renderChat(c), dock)
   return card
 }
 
@@ -1687,6 +1794,34 @@ function patchChat(view, oldWrap, newWrap, next) {
   for (let k = 0; k < remove; k += 1) oldInner.lastElementChild.remove()
 }
 
+function scrollers(node) {
+  const found = [[null, node]]
+  for (const log of node.querySelectorAll('.agent-log')) found.push([log.closest('.agent-row')?.dataset.agent ?? null, log])
+  return found
+}
+
+function saveScroll(node) {
+  return scrollers(node).map(([key, target]) => ({
+    key,
+    top: target.scrollTop,
+    stick: target.scrollHeight - target.clientHeight - target.scrollTop < 40
+  }))
+}
+
+function restoreScroll(node, saved) {
+  for (const [key, target] of scrollers(node)) {
+    const was = saved.find((s) => s.key === key)
+    if (!was) continue
+    target.scrollTop = was.stick && key ? target.scrollHeight : was.top
+  }
+}
+
+function replacePane(was, node) {
+  const saved = saveScroll(was)
+  was.replaceWith(node)
+  restoreScroll(node, saved)
+}
+
 function patchCard(view, built) {
   const next = snapshotOf(built)
   const card = view.node
@@ -1699,6 +1834,7 @@ function patchCard(view, built) {
     if (was.className !== node.className) return was.replaceWith(node)
     if (view.parts[i] === next.parts[i]) return
     if (node.classList.contains('chat-wrap')) patchChat(view, was, node, next)
+    else if (node.classList.contains('changes')) replacePane(was, node)
     else was.replaceWith(node)
   })
   view.parts = next.parts
@@ -1719,6 +1855,17 @@ function sideGroups() {
   return groupCards(orderedCards(), $('side-q').value)
 }
 
+function shownGroups(groups, selectedId) {
+  return visibleGroups(groups, state.collapsed, selectedId, Boolean($('side-q').value.trim()))
+}
+
+function toggleGroup(key) {
+  if (state.collapsed.has(key)) state.collapsed.delete(key)
+  else state.collapsed.add(key)
+  remember('board.collapsedGroups', JSON.stringify([...state.collapsed]))
+  renderFocus()
+}
+
 function selectedCard(groups = sideGroups()) {
   return pickSelected(groups, state.selected)
 }
@@ -1736,8 +1883,22 @@ function selectCard(id) {
 function stepSelected(step) {
   const groups = sideGroups()
   const current = selectedCard(groups)
-  const next = current && neighbour(groups, current.id, step)
+  const next = current && neighbour(shownGroups(groups, current.id), current.id, step)
   if (next) selectCard(next)
+}
+
+function sideStar(id) {
+  const b = starButton(id)
+  const toggle = b.onclick
+  b.classList.add('side-star')
+  b.onclick = (event) => { event.stopPropagation(); toggle() }
+  b.onkeydown = (event) => event.stopPropagation()
+  return b
+}
+
+function babysitNote(entry) {
+  const view = babysitView(entry)
+  return view.note ? `${view.label} · ${view.note}` : view.label
 }
 
 function sideItem(c, selected) {
@@ -1750,13 +1911,14 @@ function sideItem(c, selected) {
   const attention = c.live?.attention
   const working = c.active || c.run?.state === 'running'
   const top = el('div', 'item-top')
-  top.append(el('span', `dot ${attention ? 'ask' : working ? 'work' : c.status === 'completed' ? 'done' : 'idle'}`), el('span', 'item-title', c.title), tempMeter(temperatureOf(c), c), el('span', 'item-time', working ? 'now' : shortAge(c.touchedAt)), kebabMenu(c.id))
+  top.append(el('span', `dot ${attention ? 'ask' : working ? 'work' : c.status === 'completed' ? 'done' : 'idle'}`), el('span', 'item-title', cardTitle(c)), tempMeter(temperatureOf(c), c), el('span', 'item-time', working ? 'now' : shortAge(c.touchedAt)), sideStar(c.id), kebabMenu(c.id))
   const sub = el('div', 'item-sub')
   let note = c.detail ?? ''
   let mono = false
   if (attention) note = attention.kind === 'question' ? (attention.text?.split('\n')[0] || 'Waiting for your answer') : `${attention.tool} may need approval`
   else if (working && c.live?.phase === 'tool') { note = `${c.live.current.name}${c.live.current.text ? ` · ${c.live.current.text}` : ''}`; mono = true }
   else if (working) note = phaseLabel(c.live) ?? 'Working'
+  else if (c.babysit) note = babysitNote(c.babysit)
   sub.append(projectChip(c), el('span', `note${mono ? ' mono' : ''}`, note))
   const level = contextLevel(c.usage?.context ?? 0)
   if (level) sub.append(el('span', `tag ctx ${level}`, compact(c.usage.context)))
@@ -1889,13 +2051,32 @@ function renderMobileHeader(current) {
   }
 }
 
+function groupSummaryNode({ running, idle, nextAt }) {
+  const box = el('span', 'sum')
+  if (running) box.append(el('span', 'spinner'), el('span', undefined, `${running} running`))
+  if (idle) box.append(el('span', undefined, `${running ? '· ' : ''}${idle} idle`))
+  if (nextAt) box.append(el('span', 'next', `next ${clock(new Date(nextAt).toISOString())}`))
+  box.title = [running ? `${running} running` : null, idle ? `${idle} idle` : null, nextAt ? `Next scheduled check ${dateTime(nextAt)}` : 'No check scheduled'].filter(Boolean).join(' · ')
+  return box
+}
+
 function renderSide(groups, selected) {
   const list = $('side-list')
   const scroll = list.scrollTop
   list.replaceChildren()
   for (const g of groups) {
-    const head = el('div', `grp${g.key === 'need' ? ' need' : ''}`, g.label)
-    head.append(el('span', 'n', String(g.cards.length)))
+    const collapsible = COLLAPSIBLE.has(g.key) && !$('side-q').value.trim()
+    const head = el('div', `grp${g.key === 'need' ? ' need' : ''}${collapsible ? ' fold' : ''}`)
+    if (collapsible) {
+      head.tabIndex = 0
+      head.setAttribute('role', 'button')
+      head.setAttribute('aria-expanded', String(!g.collapsed))
+      head.append(icon(g.collapsed ? 'chevron-right' : 'chevron-down', { size: 12 }))
+      head.onclick = () => toggleGroup(g.key)
+      head.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleGroup(g.key) } }
+    }
+    head.append(el('span', undefined, g.label), el('span', 'n', String(g.total ?? g.cards.length)))
+    if (g.summary) head.append(groupSummaryNode(g.summary))
     list.append(head)
     for (const c of g.cards) list.append(sideItem(c, c.id === selected?.id))
   }
@@ -1970,7 +2151,7 @@ function renderFocus() {
     syncDraftAttachments()
   } else draft?.node.remove()
   if (window.scrollY !== pageTop || window.scrollX !== pageLeft) window.scrollTo(pageLeft, pageTop)
-  renderSide(groups, state.draft ? null : current)
+  renderSide(shownGroups(groups, current?.id), state.draft ? null : current)
   const none = state.loaded && state.cards.length === 0 && !state.draft
   stage.hidden = none
   $('focus-empty').hidden = !none
@@ -2249,10 +2430,10 @@ async function startHere() {
   const focused = await postJson('/api/focus', { id: result.data.id, focused: true }).catch(() => null)
   if (focused?.ok) state.focusIds = focused.data.ids
   state.selected = result.data.id
+  state.selectedSeen = state.selected
   remember('board.selected', state.selected)
   history.replaceState({}, '', `/focus?card=${encodeURIComponent(state.selected)}`)
   state.signature = ''
-  renderFocus()
   await refresh()
 }
 
@@ -2569,18 +2750,25 @@ const FIX_SENT_KEY = 'board.mrFixSent'
 const MR_FIXES = {
   ci: {
     key: (mr) => mr.pipelineId ?? mr.updatedAt,
-    prompt: (mr) => `The CI pipeline failed on ${mr.url}. Look at the failed jobs, find the cause, fix it, and push.`,
-    title: (mr) => `Ask “${mr.sessions[0].title}” to fix the pipeline`,
+    prompt: (mr) => `The CI pipeline failed on ${mr.url}. Work on branch ${mr.source}: if this folder is on another branch, do not switch it, use a git worktree for ${mr.source} instead. Look at the failed jobs, find the cause, fix it, and push.`,
+    title: (mr) => `Start a new session in ${folderName(mr)} to fix the pipeline`,
   },
   conflicts: {
     key: (mr) => mr.updatedAt,
-    prompt: (mr) => `${mr.url} has merge conflicts with ${mr.target}. Merge ${mr.target} into ${mr.source}, resolve the conflicts, run the tests, and push.`,
-    title: (mr) => `Ask “${mr.sessions[0].title}” to resolve the conflicts`,
+    prompt: (mr) => `${mr.url} has merge conflicts with ${mr.target}. Work on branch ${mr.source}: if this folder is on another branch, do not switch it, use a git worktree for ${mr.source} instead. Merge ${mr.target} into ${mr.source}, resolve the conflicts, run the tests, and push.`,
+    title: (mr) => `Start a new session in ${folderName(mr)} to resolve the conflicts`,
   },
   threads: {
     key: (mr) => `${mr.unresolved}:${mr.updatedAt}`,
-    prompt: (mr) => `${mr.url} has ${mr.unresolved} unresolved review thread${mr.unresolved === 1 ? '' : 's'}. Read each unresolved thread with glab, make the requested change or reply where no change is needed, run the tests, push, and resolve each thread you have addressed.`,
-    title: (mr) => `Ask “${mr.sessions[0].title}” to address the unresolved threads`,
+    prompt: (mr) => `${mr.url} has ${mr.unresolved} unresolved review thread${mr.unresolved === 1 ? '' : 's'}. Work on branch ${mr.source}: if this folder is on another branch, do not switch it, use a git worktree for ${mr.source} instead. Read each unresolved thread with glab, make the requested change or reply where no change is needed, run the tests, push, and resolve each thread you have addressed.`,
+    title: (mr) => `Start a new session in ${folderName(mr)} to address the unresolved threads`,
+  },
+  deploy: {
+    key: (mr) => mr.mergedAt,
+    prompt: (mr) => `${mr.url} was merged into ${mr.target}. Check whether it has deployed. Use glab only and change nothing: find the merge commit and the pipeline that ran on ${mr.target} for it, list its jobs, and for every deploy or environment job say its status (running, success, failed, or a manual job waiting) and whether the change is live there. If a pipeline or deploy job failed, read the failed job log and say why. If a manual deploy job is waiting, tell me which one and do not trigger it. Do not switch branches in this folder.`,
+    title: (mr) => `Start a new session in ${folderName(mr)} to check the deployment of this merged MR`,
+    label: 'Check deploy',
+    sent: 'Deploy check sent',
   },
 }
 
@@ -2595,42 +2783,27 @@ function markFixSent(mr, kind) {
   try { localStorage.setItem(FIX_SENT_KEY, JSON.stringify({ ...readFixSent(), [fixSlot(mr, kind)]: MR_FIXES[kind].key(mr) })) } catch {}
 }
 
-const fixQueued = new Set()
-const fixQueuedSlot = (mr, kind) => `${fixSlot(mr, kind)}|${MR_FIXES[kind].key(mr)}`
-
 function showFixOutcome(button, outcome) {
   button.textContent = outcome.label
   button.title = outcome.title
   button.disabled = outcome.disabled
 }
 
+const startMrSession = (mr, prompt) => postJson('/api/new-session', { folder: mr.folder, prompt })
+
 async function sendMrFix(mr, kind, button) {
   if (button.disabled) return
-  const [session] = mr.sessions
-  const prompt = MR_FIXES[kind].prompt(mr)
   button.disabled = true
-  button.textContent = 'Sending…'
-  let queued = false
-  let result
-  try {
-    result = await postJson('/api/prompt', { id: session.sessionId, prompt })
-    if (shouldQueue(result)) {
-      queued = true
-      result = await postJson('/api/queue', { id: session.sessionId, prompt })
-    }
-  } catch {
-    result = { ok: false, data: { error: 'Could not send' } }
-  }
-  const outcome = fixOutcome(result, queued, session.title)
+  button.textContent = 'Starting…'
+  const result = await startMrSession(mr, MR_FIXES[kind].prompt(mr))
+  const outcome = startOutcome(result)
   showFixOutcome(button, outcome)
   if (outcome.record) markFixSent(mr, kind)
-  if (queued && result.ok) fixQueued.add(fixQueuedSlot(mr, kind))
 }
 
 function mrFixButton(mr, kind) {
-  const b = el('button', 'btn mr-fix', 'Fix')
+  const b = el('button', 'btn mr-fix', MR_FIXES[kind].label ?? 'Fix')
   b.title = MR_FIXES[kind].title(mr)
-  if (fixQueued.has(fixQueuedSlot(mr, kind))) showFixOutcome(b, fixOutcome({ ok: true }, true, mr.sessions[0].title))
   b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, kind, b) }
   return b
 }
@@ -2643,7 +2816,7 @@ function mrThreads(mr) {
 }
 
 function mrFixControl(mr, kind) {
-  return fixSent(mr, kind) ? el('span', 'dim mr-fix-sent', 'Fix sent') : mrFixButton(mr, kind)
+  return fixSent(mr, kind) ? el('span', 'dim mr-fix-sent', MR_FIXES[kind].sent ?? 'Fix sent') : mrFixButton(mr, kind)
 }
 
 function mrTempBadge(mr) {
@@ -2700,6 +2873,74 @@ async function addMrLabel(mr, label, button) {
   }
 }
 
+function setMrBabysit(url, babysit) {
+  const patch = (list) => list.map((item) => (item.url === url ? { ...item, babysit } : item))
+  const data = state.mrs.data
+  state.mrs.data = { ...data, authored: patch(data.authored), merged: patch(data.merged ?? []) }
+  updateMrRow(url)
+}
+
+async function startBabysit(mr, button) {
+  if (button.disabled) return
+  button.disabled = true
+  button.textContent = 'Starting…'
+  const result = await startMrSession(mr, `/csb-babysit ${mr.url}`)
+  showFixOutcome(button, startOutcome(result))
+  if (!result.ok) return
+  const saved = await postJson('/api/mrs/babysit', { url: mr.url, state: 'starting', sessionId: result.data.id })
+  if (saved.ok) setMrBabysit(mr.url, saved.data.babysit)
+}
+
+async function stopBabysit(mr, button) {
+  if (button.disabled) return
+  button.disabled = true
+  button.textContent = 'Stopping…'
+  const { ok, data } = await postJson('/api/mrs/babysit/stop', { url: mr.url })
+  if (ok) return setMrBabysit(mr.url, data.babysit)
+  button.disabled = false
+  button.textContent = 'Stop'
+  button.title = data.error ?? 'Could not stop the babysit'
+}
+
+function mrBabysit(mr) {
+  const box = el('div', 'mr-babysit')
+  const view = mr.mergedAt ? null : babysitView(mr.babysit)
+  const sessionId = babysitFocusId(mr)
+  if (view || sessionId) {
+    const status = el('div', 'mr-babysit-status')
+    if (view?.active) {
+      const spinner = el('span', 'spinner')
+      spinner.title = 'Babysit is running'
+      status.append(spinner)
+    }
+    if (view) {
+      const chip = el('span', `mr-badge ${view.tone}`, view.label)
+      if (view.note) chip.title = view.note
+      status.append(chip)
+    }
+    if (sessionId) status.append(focusButton(sessionId, 'Go to the babysit session in Focus'))
+    box.append(status)
+  }
+  if (view?.note) {
+    const note = el('div', 'dim mr-babysit-note', view.note)
+    note.title = view.note
+    box.append(note)
+  }
+  if (babysitStoppable(mr)) {
+    const stop = el('button', 'btn mr-babysit-stop', 'Stop')
+    stop.title = 'Stop this babysit: cancel its running check and its scheduled checks'
+    stop.onclick = () => stopBabysit(mr, stop)
+    box.append(stop)
+  }
+  if (babysitOffered(mr)) {
+    const button = el('button', 'btn mr-babysit-start', mr.babysit ? 'Babysit again' : 'Babysit')
+    button.title = `Start a new session in ${folderName(mr)} to watch the pipeline, fix failures, mark the MR ready for review and ready to merge, and tell you when it needs you`
+    button.onclick = () => startBabysit(mr, button)
+    box.append(button)
+  }
+  return box.childNodes.length ? box : el('span', 'dim', '—')
+}
+
 function mrVerdict(mr) {
   const box = el('span', 'mr-verdict')
   box.append(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.code === 'waiting' ? `${mr.verdict.label} (${shortSpan(Date.now() - mr.updatedAt)} ago)` : mr.verdict.label))
@@ -2709,6 +2950,7 @@ function mrVerdict(mr) {
     button.onclick = () => addMrLabel(mr, action, button)
     box.append(button)
   }
+  if (deployOffered(mr)) box.append(mrFixControl(mr, 'deploy'))
   if (mr.role === 'authored' && mr.conflicts && mr.verdict.code !== 'merged') {
     if (mr.verdict.code !== 'conflicts') box.append(el('span', 'mr-badge bad', 'Has conflicts'))
     if (fixOffered(mr)) box.append(mrFixControl(mr, 'conflicts'))
@@ -2769,12 +3011,29 @@ function mrReviewers(mr) {
 
 const mrSessionsOpen = new Set()
 
+async function openInFocus(id) {
+  if (!state.focusIds.includes(id)) await setFocus(id, true)
+  goToCard(id)
+}
+
+function focusButton(id, title) {
+  const link = el('a', 'mr-go')
+  link.append(icon('arrow-up-right', { size: 14 }))
+  link.href = `/focus?card=${encodeURIComponent(id)}`
+  link.title = title
+  link.setAttribute('aria-label', title)
+  link.onclick = (event) => { event.preventDefault(); openInFocus(id) }
+  return link
+}
+
 function mrSession(mr) {
   if (!mr.sessions.length) return el('span', 'dim', '—')
   const list = el('div', 'mr-session')
   for (const session of mr.sessions) {
     const item = el('div', 'mr-session-item')
-    item.append(el('div', 'row-title', session.title), openLink(session.sessionId))
+    const name = el('span', 'mr-session-title', session.title.startsWith('/csb-babysit') ? 'Babysit' : session.title)
+    name.title = session.title
+    item.append(name, focusButton(session.sessionId, 'Open as a Focus item'))
     list.append(item)
   }
   if (mr.sessions.length === 1) return list
@@ -2803,6 +3062,7 @@ function buildMrRow(mr) {
     cell(title),
     cell(el('span', 'dim', mr.role === 'authored' ? 'Mine' : `Review · ${mr.author}`)),
     cell(mrVerdict(mr)),
+    cell(mr.role === 'authored' ? mrBabysit(mr) : el('span', 'dim', '—')),
     cell(mrCi(mr)),
     cell(mrReviewers(mr)),
     cell(mrThreads(mr)),
@@ -2820,7 +3080,7 @@ function renderMrsSummary(all, rows) {
   const counts = tempCounts(open)
   const focused = open.filter((mr) => mr.focused).length
   const waiting = data.reviewing.filter((mr) => mr.verdict.code === 'needs-review').length
-  $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · ${focused} focused · updated ${relative(data.fetchedAt)}`
+  $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · ${focused} focused · updated ${relative(data.fetchedAt)}${data.refreshing ? ' · refreshing' : ''}`
   $('mrs-error').hidden = !data.error
   $('mrs-error').textContent = data.error ? `Could not refresh from ${data.host}: ${data.error}` : ''
   $('mrs-empty').hidden = all.length > 0 || Boolean(data.error)
@@ -2885,7 +3145,7 @@ async function loadMrs(force = false) {
     }
   } finally {
     state.mrs.loading = false
-    state.mrs.at = Date.now()
+    state.mrs.at = state.mrs.data?.refreshing ? Date.now() - 55_000 : Date.now()
     renderMrsLoading()
   }
 }
@@ -3481,7 +3741,7 @@ function renderSkillsPage() {
   hideTip()
   const data = state.skills.data
   if (!data) return
-  const { scope, temp, days, query, open } = state.skills
+  const { scope, temp, days, sort, query, open } = state.skills
   const now = Date.now()
   const all = data.skills
   const summary = summarize(all, days, now)
@@ -3508,7 +3768,7 @@ function renderSkillsPage() {
     pills.append(b)
   }
 
-  const rows = visibleSkills(all, { scope, temp, query, days, now })
+  const rows = visibleSkills(all, { scope, temp, query, days, sort, now })
   $('skills-status').textContent = `${rows.length} of ${all.length} skills${data.indexed?.running ? ` · indexing ${data.indexed.done}/${data.indexed.total} sessions` : ''} · uses counted from Skill tool calls and slash commands in the main conversation`
   $('skills-empty').hidden = rows.length > 0
   const body = $('skills-rows')
@@ -3553,6 +3813,7 @@ function renderSkillsPage() {
   }
   document.querySelectorAll('#skills-scope button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scope === scope)))
   document.querySelectorAll('#skills-days button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.days) === days)))
+  document.querySelectorAll('#skills-sort button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sort === sort)))
 }
 
 const pathTab = () => ROUTES[location.pathname.replace(/(.)\/+$/, '$1')] ?? 'all'
@@ -3657,6 +3918,7 @@ async function refresh() {
     }
     if (prunePending()) renderFocus()
     pollChanges()
+    pollAgents()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'loops' && Date.now() - state.loops.at > 5_000) loadLoops()
@@ -3821,6 +4083,9 @@ document.querySelectorAll('#skills-scope button').forEach((b) => {
 })
 document.querySelectorAll('#skills-days button').forEach((b) => {
   b.onclick = () => { state.skills.days = Number(b.dataset.days); remember('board.skillsDays', String(state.skills.days)); renderSkillsPage() }
+})
+document.querySelectorAll('#skills-sort button').forEach((b) => {
+  b.onclick = () => { state.skills.sort = b.dataset.sort; remember('board.skillsSort', state.skills.sort); renderSkillsPage() }
 })
 $('skills-q').oninput = () => { state.skills.query = $('skills-q').value; renderSkillsPage() }
 $('cards').addEventListener('focusin', (event) => {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { groupOf, groupCards, pickSelected, neighbour, shortAge, flatten, sortCards, sortKey, SORTS, moveWithin } from '../public/sidebar.js'
+import { groupOf, cardTitle, visibleGroups, groupSummary, groupCards, pickSelected, neighbour, shortAge, flatten, sortCards, sortKey, SORTS, moveWithin } from '../public/sidebar.js'
 
 const card = (id, over = {}) => ({ id, title: id, project: 'web', cwd: `/w/${id}`, active: false, ...over })
 
@@ -102,4 +102,69 @@ test('moves onto itself, unknown ids or another group change nothing', () => {
   assert.equal(moveWithin(order, 'x', 'a', true), order)
   assert.equal(moveWithin(order, 'a', 'x', true), order)
   assert.equal(moveWithin(order, 'a', 'c', true, (x, y) => x === y), order)
+})
+
+test('babysit sessions get their own group between Needs you and Working', () => {
+  const babysit = { url: 'https://gitlab.example.com/t/r/-/merge_requests/1', state: 'watching' }
+  assert.equal(groupOf(card('b', { babysit })), 'babysit')
+  assert.equal(groupOf(card('b', { babysit, active: true })), 'babysit')
+  assert.equal(groupOf(card('b', { babysit, run: { state: 'running' } })), 'babysit')
+  assert.equal(groupOf(card('b', { babysit, live: { attention: { kind: 'question' } } })), 'need')
+  const groups = groupCards([card('i1'), card('w1', { active: true }), card('b1', { babysit }), card('n1', { live: { attention: { kind: 'question' } } })])
+  assert.deepEqual(groups.map((g) => [g.key, g.label]), [['need', 'Needs you'], ['babysit', 'Babysit'], ['working', 'Working'], ['idle', 'Idle']])
+  assert.deepEqual(groups[1].cards.map((c) => c.id), ['b1'])
+})
+
+test('a babysit session is titled by its merge request number, other sessions keep their title', () => {
+  const babysit = { url: 'https://gitlab.example.com/t/r/-/merge_requests/3481', state: 'watching' }
+  assert.equal(cardTitle(card('b', { title: '/csb-babysit https://gitlab.example.com/t/r/-/merge_requests/3481', babysit })), 'Babysit !3481')
+  assert.equal(cardTitle(card('x', { title: 'Fix checkout' })), 'Fix checkout')
+  assert.equal(cardTitle(card('y', { title: 'Odd', babysit: { url: 'nope', state: 'watching' } })), 'Odd')
+})
+
+const babysitCards = () => [card('b1', { babysit: { url: 'u', state: 'watching' } }), card('b2', { babysit: { url: 'u', state: 'watching' } }), card('i1')]
+
+test('a collapsed babysit group hides its cards but keeps the header and the total', () => {
+  const [babysit, idle] = visibleGroups(groupCards(babysitCards()), new Set(['babysit']), 'i1')
+  assert.deepEqual([babysit.key, babysit.collapsed, babysit.total, babysit.cards.length], ['babysit', true, 2, 0])
+  assert.deepEqual(idle.cards.map((c) => c.id), ['i1'])
+})
+
+test('the selected card stays visible in a collapsed group', () => {
+  const [babysit] = visibleGroups(groupCards(babysitCards()), new Set(['babysit']), 'b2')
+  assert.deepEqual(babysit.cards.map((c) => c.id), ['b2'])
+})
+
+test('only the babysit group can collapse, and a filter shows every match', () => {
+  const groups = groupCards([...babysitCards(), card('w1', { active: true })])
+  const collapsed = visibleGroups(groups, new Set(['babysit', 'working', 'idle']), null)
+  assert.deepEqual(collapsed.map((g) => [g.key, g.collapsed]), [['babysit', true], ['working', false], ['idle', false]])
+  const filtering = visibleGroups(groups, new Set(['babysit']), null, true)
+  assert.deepEqual(filtering.map((g) => g.cards.length), [2, 1, 1])
+})
+
+test('stepping skips cards hidden in a collapsed group', () => {
+  const groups = visibleGroups(groupCards(babysitCards()), new Set(['babysit']), 'i1')
+  assert.equal(neighbour(groups, 'i1', -1), 'i1')
+})
+
+test('the babysit summary counts running and idle sessions and finds the earliest scheduled check', () => {
+  const babysit = { url: 'u', state: 'watching' }
+  const cards = [
+    card('a', { babysit, active: true, schedules: [{ at: 5000 }] }),
+    card('b', { babysit, run: { state: 'running' } }),
+    card('c', { babysit, schedules: [{ at: 3000 }, { at: 9000 }] }),
+    card('d', { babysit }),
+  ]
+  assert.deepEqual(groupSummary(cards), { running: 2, idle: 2, nextAt: 3000 })
+  assert.deepEqual(groupSummary([card('x', { babysit })]), { running: 0, idle: 1, nextAt: null })
+})
+
+test('a collapsed group still summarises all of its sessions', () => {
+  const babysit = { url: 'u', state: 'watching' }
+  const groups = groupCards([card('a', { babysit, active: true }), card('b', { babysit, schedules: [{ at: 7000 }] })])
+  const [group] = visibleGroups(groups, new Set(['babysit']), null)
+  assert.equal(group.cards.length, 0)
+  assert.deepEqual(group.summary, { running: 1, idle: 1, nextAt: 7000 })
+  assert.equal(visibleGroups(groupCards([card('i')]), new Set(), null)[0].summary, null)
 })

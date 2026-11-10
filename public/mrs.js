@@ -1,5 +1,5 @@
 import { warmthOf } from './warmth.js'
-import { ago } from './loops.js'
+import { ago, spanLabel } from './loops.js'
 
 export const FILTERS = {
   all: () => true,
@@ -43,12 +43,11 @@ export function tempCounts(all, now = Date.now()) {
   return counts
 }
 
-export const fixOffered = (mr) => !mr.mergedAt && Boolean(mr.sessions?.[0])
+export const fixOffered = (mr) => !mr.mergedAt && Boolean(mr.folder)
 
-export function fixOutcome(result, queued, sessionTitle) {
-  if (!result.ok) return { label: 'Retry', title: result.data?.error ?? 'Could not send', disabled: false, record: false }
-  if (queued) return { label: 'Queued', title: `Waiting in the session queue of ${sessionTitle}`, disabled: true, record: false }
-  return { label: 'Sent', title: `Sent to ${sessionTitle}`, disabled: true, record: true }
+export function startOutcome(result) {
+  if (!result.ok) return { label: 'Retry', title: result.data?.error ?? 'Could not start a session', disabled: false, record: false }
+  return { label: 'Started', title: 'Started in a new session, now in your Focus list', disabled: true, record: true }
 }
 
 export function mrWarmthTip(mr, warmth, now = Date.now()) {
@@ -58,3 +57,42 @@ export function mrWarmthTip(mr, warmth, now = Date.now()) {
     rows: [['Last activity', ago(mr.updatedAt, now)], ['Warm', 'Hot under 1h, Warm under 1 day'], ['Cool', 'Cooling under 7 days, Cold after']],
   }
 }
+
+export const BABYSIT_STALL_MS = 30 * 60_000
+const BABYSIT_ACTIVE = new Set(['starting', 'watching', 'fixing', 'in-review'])
+
+const BABYSIT_VIEWS = {
+  starting: { label: 'Babysit starting', tone: 'info' },
+  watching: { label: 'Watching CI', tone: 'info' },
+  fixing: { label: 'Fixing CI', tone: 'warn' },
+  'in-review': { label: 'Waiting for approval', tone: 'info' },
+  'ready-to-merge': { label: 'Marked ready to merge', tone: 'good' },
+  'needs-you': { label: 'Needs you', tone: 'bad' },
+  stopped: { label: 'Babysit stopped', tone: 'dim' },
+  merged: { label: 'Merged', tone: 'good' },
+}
+
+export function babysitView(entry, now = Date.now()) {
+  if (!entry) return null
+  const view = BABYSIT_VIEWS[entry.state] ?? { label: entry.state, tone: 'dim' }
+  const stalled = BABYSIT_ACTIVE.has(entry.state) && now - entry.at > BABYSIT_STALL_MS
+  const attempts = entry.state === 'fixing' && entry.attempts ? ` (${entry.attempts}/3)` : ''
+  return {
+    label: stalled ? 'Babysit stalled' : `${view.label}${attempts}`,
+    tone: stalled ? 'warn' : view.tone,
+    stalled,
+    active: BABYSIT_ACTIVE.has(entry.state) && !stalled,
+    note: stalled ? `No update for ${spanLabel(now - entry.at)}. ${entry.note}`.trim() : entry.note,
+  }
+}
+
+export const babysitOffered = (mr, now = Date.now()) =>
+  mr.role === 'authored' && fixOffered(mr) && !babysitView(mr.babysit, now)?.active && mr.babysit?.state !== 'merged'
+
+export const folderName = (mr) => mr.folder?.split('/').filter(Boolean).pop() ?? ''
+
+export const babysitFocusId = (mr) => (mr.mergedAt ? null : mr.babysit?.sessionId ?? null)
+
+export const babysitStoppable = (mr) => !mr.mergedAt && BABYSIT_ACTIVE.has(mr.babysit?.state)
+
+export const deployOffered = (mr) => mr.role === 'authored' && Boolean(mr.mergedAt) && Boolean(mr.folder)

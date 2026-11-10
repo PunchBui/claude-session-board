@@ -137,6 +137,17 @@ test('visible skills filter by scope, temperature and text and order by uses in 
   assert.deepEqual(skillCounts(list, NOW), { warm: 1, cool: 1, unused: 2 })
 })
 
+test('sorting by last used puts the most recent first and never-used skills last', () => {
+  const list = [
+    stat({ name: 'heavy', days: { '2026-11-06': 9 }, uses: 9, lastUsedAt: NOW - 3 * DAY }),
+    stat({ name: 'fresh', days: { '2026-11-07': 1 }, uses: 1, lastUsedAt: NOW - HOUR }),
+    stat({ name: 'stale', uses: 4, lastUsedAt: NOW - 60 * DAY }),
+    stat({ name: 'never' }),
+  ]
+  assert.deepEqual(visibleSkills(list, { sort: 'uses', now: NOW }).map((s) => s.name), ['heavy', 'fresh', 'stale', 'never'])
+  assert.deepEqual(visibleSkills(list, { sort: 'recent', now: NOW }).map((s) => s.name), ['fresh', 'heavy', 'stale', 'never'])
+})
+
 test('the summary counts used and never-used skills and names the top one', () => {
   const list = [
     stat({ name: 'busy', days: { '2026-11-06': 5 }, uses: 5, lastUsedAt: NOW }),
