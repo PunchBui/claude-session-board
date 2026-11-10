@@ -20,6 +20,17 @@ Leave the worktree in place when you finish; the next check reuses it.
 
 Every run re-reads the MR from GitLab and decides from what it sees, so it is safe to run repeatedly. Do not keep state of your own beyond the board entry.
 
+## 0. How every turn ends
+
+Every turn ends in exactly one of these, and nothing else:
+
+1. A final state posted to the board (`ready-to-merge`, `needs-you` or `stopped`).
+2. A live state (`starting`, `watching`, `fixing`, `in-review`) **and** the next check scheduled with the board (**5. Wait**). Post the status and schedule the check in the same step, as the last thing you do.
+
+Never end a turn on a live state without a scheduled check: nothing else will wake this session, and the board will show a babysit that is doing nothing. This holds for the turn that follows a user reply too. After you resume from a `needs-you` because the user answered, finish what they asked and then schedule the next check as usual.
+
+If your closing message asks the user a question or needs a decision from them, the state is `needs-you`, not `watching`. Post `needs-you` with the question in the note and do not schedule a check. When they answer, continue from there.
+
 ## 1. Report status to the board
 
 The board shows the status on the MR row. POST it at every step, including each poll (it doubles as a heartbeat; the board shows "stalled" after 30 minutes of silence):

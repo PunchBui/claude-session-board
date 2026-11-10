@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, needsKick, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
 
 const URL_1 = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const URL_2 = 'https://gitlab.example.com/t/r/-/merge_requests/2'
@@ -106,4 +106,27 @@ test('a stopped babysit ignores later updates from a check that was already runn
   assert.equal(late, store)
   assert.equal(late[URL_1].state, 'stopped')
   assert.equal(recordBabysit(store, URL_1, { state: 'starting', sessionId: SESSION }, 40)[URL_1].state, 'starting')
+})
+
+const idleCtx = (over = {}) => ({ now: 100 * 60_000, running: false, scheduled: false, queued: false, kickedAt: 0, ...over })
+const live = (over = {}) => ({ state: 'watching', sessionId: SESSION, at: 100 * 60_000 - KICK_GRACE_MS - 1, ...over })
+
+test('a live babysit with nothing running, scheduled or queued is kicked after a short grace', () => {
+  assert.equal(needsKick(live(), idleCtx()), true)
+  assert.equal(needsKick(live({ state: 'in-review' }), idleCtx()), true)
+  assert.equal(needsKick(live({ at: 100 * 60_000 - KICK_GRACE_MS + 1 }), idleCtx()), false)
+})
+
+test('a babysit that has a run, a schedule or a queued check is left alone', () => {
+  assert.equal(needsKick(live(), idleCtx({ running: true })), false)
+  assert.equal(needsKick(live(), idleCtx({ scheduled: true })), false)
+  assert.equal(needsKick(live(), idleCtx({ queued: true })), false)
+})
+
+test('final states, missing sessions and recently kicked babysits are not kicked', () => {
+  for (const state of ['needs-you', 'stopped', 'ready-to-merge']) assert.equal(needsKick(live({ state }), idleCtx()), false)
+  assert.equal(needsKick(live({ sessionId: null }), idleCtx()), false)
+  assert.equal(needsKick(undefined, idleCtx()), false)
+  assert.equal(needsKick(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS + 1 })), false)
+  assert.equal(needsKick(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS - 1 })), true)
 })

@@ -29,7 +29,7 @@ import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions } from './lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
@@ -377,6 +377,30 @@ async function fireDueSchedules() {
   }
   await persistSchedules()
   pump()
+}
+
+const babysitKicked = new Map()
+
+async function kickIdleBabysits() {
+  const store = await readMrBabysit()
+  const now = Date.now()
+  let kicked = false
+  for (const [url, entry] of Object.entries(store)) {
+    const sid = entry.sessionId
+    const idle = needsKick(entry, {
+      now,
+      running: manager.runFor(sid)?.state === 'running',
+      scheduled: schedules.some((item) => item.id === sid && isBabysitPrompt(item.prompt)),
+      queued: Boolean(queues.get(sid)?.items.some((item) => isBabysitPrompt(item.prompt))),
+      kickedAt: babysitKicked.get(sid) ?? 0,
+    })
+    if (!idle || !(await findRaw(sid))) continue
+    if (await enqueue(sid, `/csb-babysit ${url}`)) {
+      babysitKicked.set(sid, now)
+      kicked = true
+    }
+  }
+  if (kicked) pump()
 }
 
 // Starts one new board-only session for a routine and puts it in Focus.
@@ -1041,6 +1065,7 @@ pruneUploads()
 setInterval(tick, 2000)
 warmIndex()
 setInterval(warmIndex, 60_000)
+setInterval(() => kickIdleBabysits().catch((error) => console.error(`babysit watchdog: ${describeError(error)}`)), 60_000)
 
 async function login(req, res) {
   const who = String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? '').split(',')[0].trim().slice(0, 64)
