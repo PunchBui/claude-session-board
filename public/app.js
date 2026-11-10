@@ -4,7 +4,7 @@ import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
-import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered } from './mrs.js'
+import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
@@ -1107,7 +1107,21 @@ function renderSchedules(c) {
     remove.append(icon('x', { size: 14 }))
     remove.title = 'Cancel schedule'
     remove.onclick = () => postJson('/api/schedule/remove', { sid: item.sid }).then(resync)
-    row.append(icon('clock', { size: 15 }), el('span', 'when', `${dateTime(item.at)}${repeat}`), el('span', 't', item.prompt), remove)
+    const run = el('button')
+    run.append(icon('play', { size: 14 }))
+    run.title = item.repeat === 'none' ? 'Run now' : 'Run now (the schedule stays)'
+    run.setAttribute('aria-label', 'Run now')
+    run.onclick = async () => {
+      run.disabled = true
+      const { ok, data } = await postJson('/api/schedule/run', { sid: item.sid })
+      if (!ok) {
+        run.disabled = false
+        run.title = data.error ?? 'Could not run it now'
+        return
+      }
+      resync()
+    }
+    row.append(icon('clock', { size: 15 }), el('span', 'when', `${dateTime(item.at)}${repeat}`), el('span', 't', item.prompt), run, remove)
     wrap.append(row)
   }
   return wrap
@@ -2763,13 +2777,6 @@ const MR_FIXES = {
     prompt: (mr) => `${mr.url} has ${mr.unresolved} unresolved review thread${mr.unresolved === 1 ? '' : 's'}. Work on branch ${mr.source}: if this folder is on another branch, do not switch it, use a git worktree for ${mr.source} instead. Read each unresolved thread with glab, make the requested change or reply where no change is needed, run the tests, push, and resolve each thread you have addressed.`,
     title: (mr) => `Start a new session in ${folderName(mr)} to address the unresolved threads`,
   },
-  deploy: {
-    key: (mr) => mr.mergedAt,
-    prompt: (mr) => `${mr.url} was merged into ${mr.target}. Check whether it has deployed. Use glab only and change nothing: find the merge commit and the pipeline that ran on ${mr.target} for it, list its jobs, and for every deploy or environment job say its status (running, success, failed, or a manual job waiting) and whether the change is live there. If a pipeline or deploy job failed, read the failed job log and say why. If a manual deploy job is waiting, tell me which one and do not trigger it. Do not switch branches in this folder.`,
-    title: (mr) => `Start a new session in ${folderName(mr)} to check the deployment of this merged MR`,
-    label: 'Check deploy',
-    sent: 'Deploy check sent',
-  },
 }
 
 function readFixSent() {
@@ -2941,6 +2948,54 @@ function mrBabysit(mr) {
   return box.childNodes.length ? box : el('span', 'dim', '—')
 }
 
+function setMrDeploy(url, deploy) {
+  const data = state.mrs.data
+  state.mrs.data = { ...data, merged: (data.merged ?? []).map((item) => (item.url === url ? { ...item, deploy } : item)) }
+  updateMrRow(url)
+}
+
+async function startDeployCheck(mr, button) {
+  if (button.disabled) return
+  button.disabled = true
+  button.textContent = 'Starting…'
+  const result = await startMrSession(mr, `/csb-check-deploy ${mr.url}`)
+  showFixOutcome(button, startOutcome(result))
+  if (!result.ok) return
+  const saved = await postJson('/api/mrs/deploy', { url: mr.url, state: 'checking', sessionId: result.data.id })
+  if (saved.ok) setMrDeploy(mr.url, saved.data.deploy)
+}
+
+function mrDeploy(mr) {
+  const box = el('div', 'mr-deploy')
+  const view = deployView(mr.deploy)
+  const sessionId = deployFocusId(mr)
+  if (view) {
+    const status = el('div', 'mr-babysit-status')
+    if (view.active) {
+      const spinner = el('span', 'spinner')
+      spinner.title = 'Deploy check is running'
+      status.append(spinner)
+    }
+    const chip = el('span', `mr-badge ${view.tone}`, view.label)
+    chip.title = `${view.note ? `${view.note}\n` : ''}Checked ${dateTime(view.checkedAt)}`
+    status.append(chip)
+    if (sessionId) status.append(focusButton(sessionId, 'Go to the deploy check session in Focus'))
+    box.append(status)
+    if (view.note) {
+      const note = el('div', 'dim mr-babysit-note', view.note)
+      note.title = view.note
+      box.append(note)
+    }
+  }
+  if (deployOffered(mr)) {
+    const button = el('button', 'btn mr-fix', mr.deploy ? 'Check again' : 'Check deploy')
+    button.title = `Start a new session in ${folderName(mr)} to ${mr.deploy ? 'check the deployment again' : 'check the deployment of this merged MR'}`
+    button.onclick = () => startDeployCheck(mr, button)
+    box.append(button)
+  }
+  return box.childNodes.length ? box : null
+}
+
 function mrVerdict(mr) {
   const box = el('span', 'mr-verdict')
   box.append(el('span', `mr-badge ${mr.verdict.tone}`, mr.verdict.code === 'waiting' ? `${mr.verdict.label} (${shortSpan(Date.now() - mr.updatedAt)} ago)` : mr.verdict.label))
@@ -2950,7 +3005,10 @@ function mrVerdict(mr) {
     button.onclick = () => addMrLabel(mr, action, button)
     box.append(button)
   }
-  if (deployOffered(mr)) box.append(mrFixControl(mr, 'deploy'))
+  if (mr.role === 'authored' && mr.mergedAt) {
+    const deploy = mrDeploy(mr)
+    if (deploy) box.append(deploy)
+  }
   if (mr.role === 'authored' && mr.conflicts && mr.verdict.code !== 'merged') {
     if (mr.verdict.code !== 'conflicts') box.append(el('span', 'mr-badge bad', 'Has conflicts'))
     if (fixOffered(mr)) box.append(mrFixControl(mr, 'conflicts'))
@@ -3073,6 +3131,17 @@ function buildMrRow(mr) {
   return tr
 }
 
+const clockSeconds = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+
+function paintMrsStatus() {
+  const { data, statusBase, loading, at } = state.mrs
+  if (!data || !statusBase) return
+  const line = refreshStatus({ fetchedAt: data.fetchedAt, at, loading, autoOff: Number($('interval').value) === 0 }, Date.now(), clockSeconds)
+  $('mrs-status').textContent = `${statusBase} · ${line}`
+}
+
+setInterval(() => { if (state.tab === 'mrs') paintMrsStatus() }, 1000)
+
 function renderMrsSummary(all, rows) {
   const data = state.mrs.data
   const { filter, temp } = state.mrs
@@ -3080,7 +3149,8 @@ function renderMrsSummary(all, rows) {
   const counts = tempCounts(open)
   const focused = open.filter((mr) => mr.focused).length
   const waiting = data.reviewing.filter((mr) => mr.verdict.code === 'needs-review').length
-  $('mrs-status').textContent = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · ${focused} focused · updated ${relative(data.fetchedAt)}${data.refreshing ? ' · refreshing' : ''}`
+  state.mrs.statusBase = `${data.host} · ${data.authored.length} yours · ${data.reviewing.length} to review (${waiting} waiting on you) · ${data.actionable} need action · ${focused} focused`
+  paintMrsStatus()
   $('mrs-error').hidden = !data.error
   $('mrs-error').textContent = data.error ? `Could not refresh from ${data.host}: ${data.error}` : ''
   $('mrs-empty').hidden = all.length > 0 || Boolean(data.error)
@@ -4012,6 +4082,9 @@ $('tab-search').onclick = (event) => { event.preventDefault(); navigate('/search
 $('tab-usage').onclick = (event) => { event.preventDefault(); navigate('/usage') }
 $('tab-skills').onclick = (event) => { event.preventDefault(); navigate('/skills') }
 $('tab-schedule').onclick = (event) => { event.preventDefault(); navigate('/schedule') }
+$('tab-loops').onclick = (event) => { event.preventDefault(); navigate('/loops') }
+$('tab-background').onclick = (event) => { event.preventDefault(); navigate('/background') }
+$('tab-mrs').onclick = (event) => { event.preventDefault(); navigate('/mrs') }
 window.onpopstate = applyRoute
 $('q').oninput = () => { renderRows(); writeFilters() }
 $('archived').onchange = () => { renderSummary(); renderRows(); writeFilters(); if (isMobile()) renderFocus() }

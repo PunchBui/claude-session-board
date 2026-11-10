@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, BABYSIT_STALL_MS } from '../public/mrs.js'
+import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, deployView, deployFocusId, refreshStatus, MRS_POLL_MS, DEPLOY_STALL_MS, BABYSIT_STALL_MS } from '../public/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -186,4 +186,54 @@ test('the deploy check is offered on your own merged MRs that have a folder', ()
   assert.equal(deployOffered(mr(1, { ...merged, role: 'reviewing' })), false)
   assert.equal(deployOffered(mr(1, { folder: merged.folder })), false)
   assert.equal(deployOffered(mr(1, { mergedAt: NOW })), false)
+})
+
+const check = (over = {}) => ({ state: 'live', note: 'prod deployed', sessionId: 'd', at: NOW - HOUR, ...over })
+const mergedMr = (over = {}) => mr(1, { mergedAt: NOW, folder: '/Users/me/repos/app', ...over })
+
+test('deploy view names each result with a tone and keeps the note', () => {
+  assert.deepEqual(['checking', 'live', 'deploying', 'waiting', 'failed', 'unknown'].map((state) => deployView(check({ state, at: NOW - 60_000 }), NOW).label),
+    ['Checking deploy', 'Deployed', 'Deploying', 'Deploy waiting', 'Deploy failed', 'Deploy unknown'])
+  assert.deepEqual(['live', 'waiting', 'failed', 'unknown'].map((state) => deployView(check({ state }), NOW).tone), ['good', 'warn', 'bad', 'dim'])
+  assert.equal(deployView(check(), NOW).note, 'prod deployed')
+  assert.equal(deployView(undefined, NOW), null)
+})
+
+test('only a fresh check is active, and a check that never reported shows as stalled', () => {
+  assert.equal(deployView(check({ state: 'checking', at: NOW - 60_000 }), NOW).active, true)
+  const stalled = deployView(check({ state: 'checking', at: NOW - DEPLOY_STALL_MS - 1 }), NOW)
+  assert.deepEqual([stalled.label, stalled.tone, stalled.active, stalled.stalled], ['Check stalled', 'warn', false, true])
+  assert.equal(deployView(check({ state: 'live', at: NOW - 3 * DAY }), NOW).stalled, false)
+  assert.equal(deployView(check({ state: 'live' }), NOW).active, false)
+})
+
+test('Check deploy can be pressed again after a result, a stall or a failure, but not while a check runs', () => {
+  assert.equal(deployOffered(mergedMr(), NOW), true)
+  assert.equal(deployOffered(mergedMr({ deploy: check() }), NOW), true)
+  assert.equal(deployOffered(mergedMr({ deploy: check({ state: 'failed' }) }), NOW), true)
+  assert.equal(deployOffered(mergedMr({ deploy: check({ state: 'checking', at: NOW - DEPLOY_STALL_MS - 1 }) }), NOW), true)
+  assert.equal(deployOffered(mergedMr({ deploy: check({ state: 'checking', at: NOW - 60_000 }) }), NOW), false)
+})
+
+test('the deploy session is the one that ran the check', () => {
+  assert.equal(deployFocusId(mergedMr({ deploy: check() })), 'd')
+  assert.equal(deployFocusId(mergedMr()), null)
+})
+
+const fmt = (ms) => `t${ms}`
+
+test('the refresh line shows when the list was fetched and when the next refresh is due', () => {
+  const line = refreshStatus({ fetchedAt: NOW - 12_000, at: NOW - 12_000, loading: false, autoOff: false }, NOW, fmt)
+  assert.equal(line, `updated t${NOW - 12_000} (12s ago) · next refresh in 48s`)
+})
+
+test('the refresh line says refreshing while a load is running and due once the time has passed', () => {
+  assert.match(refreshStatus({ fetchedAt: NOW - 70_000, at: NOW - 70_000, loading: true, autoOff: false }, NOW, fmt), /\(1m ago\) · refreshing now$/)
+  assert.match(refreshStatus({ fetchedAt: NOW - 70_000, at: NOW - 70_000, loading: false, autoOff: false }, NOW, fmt), /next refresh due$/)
+  assert.match(refreshStatus({ fetchedAt: NOW - MRS_POLL_MS, at: NOW - MRS_POLL_MS, loading: false, autoOff: false }, NOW, fmt), /next refresh due$/)
+})
+
+test('the refresh line says automatic refresh is off when the page interval is off', () => {
+  assert.match(refreshStatus({ fetchedAt: NOW - 5_000, at: NOW - 5_000, loading: false, autoOff: true }, NOW, fmt), /\(5s ago\) · auto refresh off$/)
+  assert.match(refreshStatus({ fetchedAt: NOW - 5_000, at: NOW - 5_000, loading: true, autoOff: true }, NOW, fmt), /refreshing now$/)
 })

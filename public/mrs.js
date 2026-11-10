@@ -95,4 +95,42 @@ export const babysitFocusId = (mr) => (mr.mergedAt ? null : mr.babysit?.sessionI
 
 export const babysitStoppable = (mr) => !mr.mergedAt && BABYSIT_ACTIVE.has(mr.babysit?.state)
 
-export const deployOffered = (mr) => mr.role === 'authored' && Boolean(mr.mergedAt) && Boolean(mr.folder)
+export const DEPLOY_STALL_MS = 15 * 60_000
+
+const DEPLOY_VIEWS = {
+  checking: { label: 'Checking deploy', tone: 'info' },
+  live: { label: 'Deployed', tone: 'good' },
+  deploying: { label: 'Deploying', tone: 'info' },
+  waiting: { label: 'Deploy waiting', tone: 'warn' },
+  failed: { label: 'Deploy failed', tone: 'bad' },
+  unknown: { label: 'Deploy unknown', tone: 'dim' },
+}
+
+export function deployView(entry, now = Date.now()) {
+  if (!entry) return null
+  const view = DEPLOY_VIEWS[entry.state] ?? { label: entry.state, tone: 'dim' }
+  const stalled = entry.state === 'checking' && now - entry.at > DEPLOY_STALL_MS
+  return {
+    label: stalled ? 'Check stalled' : view.label,
+    tone: stalled ? 'warn' : view.tone,
+    active: entry.state === 'checking' && !stalled,
+    stalled,
+    note: stalled ? `No result for ${spanLabel(now - entry.at)}. ${entry.note}`.trim() : entry.note,
+    checkedAt: entry.at,
+  }
+}
+
+export const deployOffered = (mr, now = Date.now()) =>
+  mr.role === 'authored' && Boolean(mr.mergedAt) && Boolean(mr.folder) && !deployView(mr.deploy, now)?.active
+
+export const deployFocusId = (mr) => mr.deploy?.sessionId ?? null
+
+export const MRS_POLL_MS = 60_000
+
+export function refreshStatus({ fetchedAt, at, loading, autoOff }, now, format) {
+  const updated = `updated ${format(fetchedAt)} (${spanLabel(now - fetchedAt)} ago)`
+  if (loading) return `${updated} · refreshing now`
+  if (autoOff) return `${updated} · auto refresh off`
+  const remaining = at + MRS_POLL_MS - now
+  return `${updated} · ${remaining > 0 ? `next refresh in ${spanLabel(remaining)}` : 'next refresh due'}`
+}

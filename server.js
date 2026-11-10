@@ -30,6 +30,7 @@ import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
 import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
+import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
@@ -52,6 +53,7 @@ const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
 const MR_CACHE_FILE = join(DATA_DIR, 'mr-cache.json')
 const MR_BABYSIT_FILE = join(DATA_DIR, 'mr-babysit.json')
+const MR_DEPLOY_FILE = join(DATA_DIR, 'mr-deploy.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const ROUTINE_FILE = join(DATA_DIR, 'routines.json')
@@ -299,6 +301,11 @@ async function readMrPings() {
 
 async function readMrBabysit() {
   const parsed = await readJson(MR_BABYSIT_FILE, {})
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+}
+
+async function readMrDeploy() {
+  const parsed = await readJson(MR_DEPLOY_FILE, {})
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
 }
 
@@ -785,6 +792,13 @@ const postRoutes = {
     }
     return json(res, 200, { ok: true, babysit: store[body.url] })
   },
+  async '/api/mrs/deploy'(body, res) {
+    const badSession = body.sessionId !== undefined && !SESSION_ID.test(body.sessionId)
+    if (!isMrUrl(body.url) || !isDeployState(body.state) || badSession) return json(res, 400, { error: 'bad request' })
+    const store = recordDeploy(await readMrDeploy(), body.url, body, Date.now())
+    await writeJson(MR_DEPLOY_FILE, store)
+    return json(res, 200, { ok: true, deploy: store[body.url] })
+  },
   async '/api/mrs/ping'(body, res) {
     if (!isMrUrl(body.url) || typeof body.reviewer !== 'string') return json(res, 400, { error: 'bad request' })
     const data = await mergeRequests()
@@ -890,6 +904,17 @@ const postRoutes = {
     await persistSchedules()
     return json(res, 201, { schedules: schedulesFor(body.id) })
   },
+  async '/api/schedule/run'(body, res) {
+    const item = schedules.find((entry) => entry.sid === body.sid)
+    if (!item) return json(res, 404, { error: 'schedule not found' })
+    if (!(await enqueue(item.id, item.prompt))) return json(res, 409, { error: `queue is full (${MAX_QUEUE})` })
+    if (item.repeat === 'none') {
+      schedules = schedules.filter((entry) => entry !== item)
+      await persistSchedules()
+    }
+    pump()
+    return json(res, 200, { schedules: schedulesFor(item.id) })
+  },
   async '/api/schedule/remove'(body, res) {
     const before = schedules.length
     schedules = schedules.filter((item) => item.sid !== body.sid)
@@ -990,7 +1015,7 @@ const getRoutes = {
     const withLinks = withSessions(data, linked)
     const folders = await settleWithin(mrFolders(withLinks, linked), FOLDER_WAIT_MS)
     const shown = folders ? withFolders(withLinks, folders) : { ...withLinks, refreshing: true }
-    return json(res, 200, withBabysit(withPings(withFocus(shown, next.urls), await readMrPings()), await readMrBabysit()))
+    return json(res, 200, withDeploy(withBabysit(withPings(withFocus(shown, next.urls), await readMrPings()), await readMrBabysit()), await readMrDeploy()))
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())
