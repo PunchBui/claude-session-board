@@ -1,4 +1,4 @@
-export const PATH_PATTERN = /(?<![\w:/.~-])(?:~|\/(?:Users|tmp|private|var\/folders|Volumes))\/[^\s<>"'`]+/
+export const PATH_PATTERN = /(?<![\w:/.~-])(?:~|\/(?:Users|home|tmp|private|var|Volumes|Applications|Library|System|opt|usr|etc|mnt|srv|cores|Network))\/[^\s<>"'`]+/
 
 const WHOLE_PATH = new RegExp(`^(?:${PATH_PATTERN.source})$`)
 const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i

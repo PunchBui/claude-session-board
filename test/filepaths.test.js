@@ -11,10 +11,13 @@ test('finds home, tmp and Volumes paths in prose', () => {
 })
 
 test('ignores routes, urls and words that only look like paths', () => {
-  assert.equal(found('GET /api/upload and /usr/bin/node'), null)
+  assert.equal(found('GET /api/upload and /api/file?path=x'), null)
   assert.equal(found('open https://example.com/Users/dkunweeroj/a.png'), null)
   assert.equal(found('and/tmp/x and cost ~5 or ~/'), null)
-  assert.equal(found('/var/log/system.log'), null)
+})
+
+test('finds system and application paths too', () => {
+  assert.deepEqual(found('run /usr/bin/node or open /Applications/Safari.app and /var/log/system.log'), ['/usr/bin/node', '/Applications/Safari.app', '/var/log/system.log'])
 })
 
 test('a path in brackets or parentheses is still found', () => {

@@ -760,7 +760,7 @@ const reply = (res, { status, body }) => json(res, status, body)
 const postRoutes = {
   async '/api/reveal'(body, res) {
     const found = await resolveLocal(body.path)
-    if (!found) return json(res, 404, { error: 'That file is gone or outside your home folder.' })
+    if (!found) return json(res, 404, { error: 'That file or folder no longer exists.' })
     execFile('open', ['-R', found.path], () => {})
     return json(res, 200, { ok: true })
   },

@@ -8,18 +8,25 @@ import { resolveLocal, expandHome, imageType } from '../lib/localfile.js'
 async function sandbox() {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'localfile-')))
   const home = join(base, 'home')
-  const outside = join(base, 'outside')
+  const elsewhere = join(base, 'elsewhere')
   await mkdir(join(home, 'Desktop'), { recursive: true })
-  await mkdir(outside)
+  await mkdir(elsewhere)
   await writeFile(join(home, 'Desktop', 'shot.gif'), 'gif')
-  await writeFile(join(outside, 'secret.png'), 'png')
-  return { base, home, outside, options: { roots: [home], home } }
+  await writeFile(join(elsewhere, 'other.png'), 'png')
+  return { base, home, elsewhere, options: { home } }
 }
 
-test('resolves a file inside an allowed root', async () => {
+test('resolves a file under the home folder', async () => {
   const { base, home, options } = await sandbox()
   const found = await resolveLocal(join(home, 'Desktop', 'shot.gif'), options)
   assert.deepEqual(found, { path: join(home, 'Desktop', 'shot.gif'), directory: false, size: 3 })
+  await rm(base, { recursive: true })
+})
+
+test('resolves a file anywhere on disk', async () => {
+  const { base, elsewhere, options } = await sandbox()
+  const found = await resolveLocal(join(elsewhere, 'other.png'), options)
+  assert.equal(found.path, join(elsewhere, 'other.png'))
   await rm(base, { recursive: true })
 })
 
@@ -39,22 +46,11 @@ test('reports a folder as a directory', async () => {
   await rm(base, { recursive: true })
 })
 
-test('refuses files outside every root', async () => {
-  const { base, outside, options } = await sandbox()
-  assert.equal(await resolveLocal(join(outside, 'secret.png'), options), null)
-  await rm(base, { recursive: true })
-})
-
-test('refuses a symlink that points outside the root', async () => {
-  const { base, home, outside, options } = await sandbox()
-  await symlink(join(outside, 'secret.png'), join(home, 'link.png'))
-  assert.equal(await resolveLocal(join(home, 'link.png'), options), null)
-  await rm(base, { recursive: true })
-})
-
-test('refuses dot-dot segments that climb out of the root', async () => {
-  const { base, home, options } = await sandbox()
-  assert.equal(await resolveLocal(join(home, 'Desktop', '..', '..', 'outside', 'secret.png'), options), null)
+test('follows a symlink to the real file', async () => {
+  const { base, home, elsewhere, options } = await sandbox()
+  await symlink(join(elsewhere, 'other.png'), join(home, 'link.png'))
+  const found = await resolveLocal(join(home, 'link.png'), options)
+  assert.equal(found.path, join(elsewhere, 'other.png'))
   await rm(base, { recursive: true })
 })
 
