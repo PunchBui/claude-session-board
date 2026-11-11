@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRoutineInput, isDue, afterFire, parseRoutinesFile, applyEdit } from '../lib/routines.js'
+import { parseRoutineInput, isDue, afterFire, recordRun, parseRoutinesFile, applyEdit, MAX_HISTORY } from '../lib/routines.js'
 
 const NOW = Date.parse('2026-11-09T08:00:00')
 const validPrompt = (p) => typeof p === 'string' && p.trim().length > 0
@@ -86,4 +86,31 @@ test('an edit changes the settings, keeps the history and turns a finished one-o
   assert.equal(next.runs, 1)
   assert.equal(next.lastSessionId, 'local_board-z')
   assert.equal(next.createdAt, done.createdAt)
+})
+
+test('every run is kept in history, newest first, including failed starts', () => {
+  const { routine } = parse()
+  const one = afterFire(routine, { sessionId: 'local_board-1' }, routine.at)
+  const two = afterFire(one, { error: 'Too many board sessions.' }, one.at)
+  const three = recordRun(two, { sessionId: 'local_board-3' }, two.at + 1000)
+  assert.deepEqual(three.history.map((run) => run.sessionId), ['local_board-3', null, 'local_board-1'])
+  assert.equal(three.history[1].error, 'Too many board sessions.')
+  assert.equal(three.runs, 2)
+})
+
+test('history is capped and survives an edit', () => {
+  let { routine } = parse()
+  for (let i = 0; i < MAX_HISTORY + 5; i++) routine = recordRun(routine, { sessionId: `local_board-${i}` }, NOW + i)
+  assert.equal(routine.history.length, MAX_HISTORY)
+  assert.equal(routine.history[0].sessionId, `local_board-${MAX_HISTORY + 4}`)
+  const { routine: edited } = parse({ prompt: 'Changed' })
+  assert.equal(applyEdit(routine, edited).history.length, MAX_HISTORY)
+})
+
+test('a routine saved before history existed gets its last run as the first entry', () => {
+  const { routine } = parse()
+  const { history, ...old } = { ...routine, lastSessionId: 'local_board-old', lastFiredAt: NOW, runs: 4 }
+  const [loaded] = parseRoutinesFile({ items: [old] })
+  assert.deepEqual(loaded.history, [{ at: NOW, sessionId: 'local_board-old', error: null }])
+  assert.deepEqual(parseRoutinesFile({ items: [{ ...old, lastSessionId: null, lastFiredAt: null }] })[0].history, [])
 })

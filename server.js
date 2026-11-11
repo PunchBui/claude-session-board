@@ -9,7 +9,7 @@ import { createScanStore } from './lib/scan.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
 import { REPEATS, nextAfter } from './lib/schedule.js'
-import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, applyEdit } from './lib/routines.js'
+import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, recordRun, applyEdit } from './lib/routines.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { createLimitsReader } from './lib/limits.js'
@@ -958,7 +958,7 @@ const postRoutes = {
     const routine = routines.find((r) => r.rid === body.rid)
     if (!routine) return json(res, 404, { error: 'not found' })
     const outcome = await startRoutineSession(routine)
-    routines = routines.map((r) => (r.rid === routine.rid ? { ...r, lastFiredAt: Date.now(), lastSessionId: outcome.sessionId ?? r.lastSessionId, lastError: outcome.error ?? null, runs: r.runs + (outcome.sessionId ? 1 : 0) } : r))
+    routines = routines.map((r) => (r.rid === routine.rid ? recordRun(r, outcome, Date.now()) : r))
     await persistRoutines()
     if (outcome.error) return json(res, 409, { error: outcome.error, routines })
     return json(res, 202, { routines, sessionId: outcome.sessionId })

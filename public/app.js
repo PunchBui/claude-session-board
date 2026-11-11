@@ -3224,7 +3224,7 @@ async function loadMrs(force = false) {
 
 const REPEAT_LABELS = { none: 'Once', daily: 'Every day', weekdays: 'Weekdays', weekly: 'Every week' }
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const sched = { fields: {}, note: null }
+const sched = { fields: {}, note: null, history: new Set() }
 
 // Same project picker as New chat: known projects, then "Other folder…" opens the Finder picker.
 function fillScheduleFolders() {
@@ -3528,6 +3528,26 @@ async function scheduleAction(path, body) {
   renderSchedulePage()
 }
 
+function scheduleHistory(r) {
+  const list = el('div', 'rt-history')
+  for (const run of r.history) {
+    const when = new Date(run.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+    if (run.sessionId) {
+      const row = el('a', 'rt-run')
+      row.href = `/focus?card=${encodeURIComponent(run.sessionId)}`
+      row.title = 'Open this run in Focus'
+      row.onclick = (event) => { event.preventDefault(); openInFocus(run.sessionId) }
+      row.append(el('span', undefined, when), el('span', 'dim', relative(run.at)), icon('arrow-up-right', { size: 12 }))
+      list.append(row)
+    } else {
+      const row = el('div', 'rt-run failed')
+      row.append(el('span', undefined, when), el('span', 'err', run.error ?? 'Could not start the session.'))
+      list.append(row)
+    }
+  }
+  return list
+}
+
 function renderSchedulePage() {
   const data = state.schedule.data
   if (!data) return
@@ -3549,12 +3569,20 @@ function renderSchedulePage() {
       const link = el('a', undefined, `Last run ${relative(r.lastFiredAt)}`)
       link.href = `/focus?card=${encodeURIComponent(r.lastSessionId)}`
       link.title = 'Open the session from the last run'
-      link.onclick = (event) => { event.preventDefault(); state.selected = r.lastSessionId; remember('board.selected', state.selected); navigate(`/focus?card=${encodeURIComponent(r.lastSessionId)}`) }
+      link.onclick = (event) => { event.preventDefault(); openInFocus(r.lastSessionId) }
       meta.append(link)
     }
     if (r.runs) meta.append(el('span', undefined, `${r.runs} run${r.runs === 1 ? '' : 's'}`))
     if (r.lastError) meta.append(el('span', 'err', r.lastError))
     main.append(el('div', 'rt-title', r.name), meta)
+    if (r.history?.length) {
+      const open = sched.history.has(r.rid)
+      const toggleHistory = el('button', 'rt-history-toggle', `${open ? 'Hide' : 'Show'} run history (${r.history.length})`)
+      toggleHistory.setAttribute('aria-expanded', String(open))
+      toggleHistory.onclick = () => { if (open) sched.history.delete(r.rid); else sched.history.add(r.rid); renderSchedulePage() }
+      main.append(toggleHistory)
+      if (open) main.append(scheduleHistory(r))
+    }
     const actions = el('div', 'rt-actions')
     const run = el('button', 'btn', 'Run now')
     run.title = 'Start a session with this prompt right now'
