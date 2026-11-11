@@ -1700,8 +1700,10 @@ function renderCard(c) {
   const meta = el('div', 'meta-line')
   meta.append(projectChip(c), el('span', 'path', home(c.cwd)))
   const turns = c.source === 'board' ? null : `${c.completedTurns} ${c.completedTurns === 1 ? 'turn' : 'turns'}`
-  for (const t of [c.source === 'board' && 'board only', c.model?.replace(/^claude-/, ''), c.effort && `${c.effort} effort`, c.permissionMode, turns]) {
-    if (t) meta.append(el('span', 'dotted', t))
+  const tags = [c.source === 'board' && 'board only', c.model ? c.model.replace(/^claude-/, '') : defaultChip(c, 'model'), c.effort ? `${c.effort} effort` : defaultChip(c, 'effort'), c.permissionMode, turns]
+  for (const t of tags) {
+    if (t instanceof Node) meta.append(t)
+    else if (t) meta.append(el('span', 'dotted', t))
   }
   titleBox.append(el('div', 'title', c.title), meta)
   const live = el('span', 'live')
@@ -2245,16 +2247,21 @@ function syncDraftFolder() {
 // model and effort `claude` would use from its settings files, and the board's permission mode.
 const defaultsByFolder = new Map()
 let defaultsFor = null
-async function showNewDefaults(folder) {
-  defaultsFor = folder
+async function defaultsOf(folder) {
   const key = folder || ''
   if (!defaultsByFolder.has(key)) {
-    const found = await getJson(`/api/new-defaults?folder=${encodeURIComponent(folder || '')}`).catch(() => null)
-    if (!found) return
+    const found = await getJson(`/api/new-defaults?folder=${encodeURIComponent(key)}`).catch(() => null)
+    if (!found) return null
     defaultsByFolder.set(key, found)
   }
+  return defaultsByFolder.get(key)
+}
+
+async function showNewDefaults(folder) {
+  defaultsFor = folder
+  if (!(await defaultsOf(folder))) return
   if (defaultsFor !== folder || !draft) return
-  const found = defaultsByFolder.get(key)
+  const found = defaultsByFolder.get(folder || '')
   for (const [name, label, choices] of NEW_OPTIONS) {
     if (name === 'chrome') continue
     const first = draft.optSelects[name].options[0]
@@ -2263,6 +2270,21 @@ async function showNewDefaults(folder) {
     const base = name === 'permissionMode' ? 'Board default' : 'Default'
     first.textContent = shown ? `${base} (${shown})` : `${base} (account setting)`
   }
+}
+
+const defaultChipText = (name, value) => (name === 'effort' ? `${value} effort` : value.replace(/^claude-/, ''))
+
+function defaultChip(c, name) {
+  const chip = el('span', 'dotted default-chip')
+  const apply = (found) => {
+    const value = found?.[name]
+    chip.textContent = value ? `${defaultChipText(name, value)} (default)` : `default ${name}`
+    chip.title = value ? `This session did not pick a ${name}, so it uses ${value} from the Claude settings files.` : `This session did not pick a ${name}, so it uses the account's default.`
+  }
+  const known = defaultsByFolder.get(c.cwd || '')
+  apply(known)
+  if (!known) defaultsOf(c.cwd).then((found) => { if (found) apply(found) })
+  return chip
 }
 
 function buildDraft() {
@@ -4256,6 +4278,26 @@ async function refreshLimits() {
   } catch { box.hidden = true }
 }
 
+function setupNavBar() {
+  const bar = $('nav-bar')
+  const back = $('nav-back')
+  const forward = $('nav-forward')
+  back.replaceChildren(icon('chevron-left', { size: 16 }))
+  forward.replaceChildren(icon('chevron-right', { size: 16 }))
+  back.onclick = () => history.back()
+  forward.onclick = () => history.forward()
+  $('side-collapse').replaceChildren(icon('panel-left', { size: 16 }))
+  bar.prepend($('side-collapse'))
+  const sync = () => {
+    if (!window.navigation) return
+    back.disabled = !navigation.canGoBack
+    forward.disabled = !navigation.canGoForward
+  }
+  window.navigation?.addEventListener('currententrychange', sync)
+  sync()
+  bar.hidden = false
+}
+
 const REPO_STATES = {
   synced: { icon: 'check-circle', text: 'Up to date with origin' },
   behind: { icon: 'arrow-down', text: 'Origin has updates to pull' },
@@ -4336,7 +4378,10 @@ for (const [name, shape] of Object.entries({ all: 'list', focus: 'star', loops: 
   tab.title = tab.querySelector('.tab-label').textContent
 }
 // Electron shell (hidden title bar): the sidebar head keeps clear of the window buttons and drags the window.
-if (/Electron/.test(navigator.userAgent)) document.documentElement.classList.add('electron')
+if (/Electron/.test(navigator.userAgent)) {
+  document.documentElement.classList.add('electron')
+  setupNavBar()
+}
 $('menu-btn').replaceChildren(icon('menu', { size: 22 }))
 $('drawer-close').replaceChildren(icon('x', { size: 20 }))
 $('drawer-brand').replaceChildren(icon('asterisk', { size: 20, strokeWidth: 2.4 }), text('Sessions'))

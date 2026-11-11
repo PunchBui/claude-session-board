@@ -588,6 +588,11 @@
   .head-actions { display: flex; gap: 8px; align-items: flex-start; }
   .icon-only { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); background: var(--surface); border-radius: 9px; color: var(--muted); }
   .icon-only:hover { color: var(--text); border-color: var(--faint); }
+  .nav-bar { position: fixed; z-index: 40; top: 10px; left: 82px; display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; app-region: no-drag; }
+  .nav-bar[hidden] { display: none; }
+  .nav-bar button, .nav-bar #side-collapse { display: inline-grid; place-items: center; width: 26px; height: 26px; margin: 0; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+  .nav-bar button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+  .nav-bar button:disabled { opacity: .35; cursor: default; }
   #repo-status[hidden] { display: none; }
   #repo-status:disabled { cursor: progress; }
   #repo-status .spinner { width: 14px; height: 14px; border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; }
@@ -1007,6 +1012,11 @@
     /* Windows without a native title bar: keep clear of the window buttons and give the window a handle */
     html.electron .drawer-head { padding-top: 46px; -webkit-app-region: drag; app-region: drag; }
     html.electron .drawer-head :is(button, .live), html.electron .notif-panel { -webkit-app-region: no-drag; app-region: no-drag; }
+    html.electron body.side-collapsed { --side-w: 84px; --top-inset: 40px; padding-top: var(--top-inset); }
+    html.electron body.side-collapsed .topbar { top: var(--top-inset); }
+    html.electron body.side-collapsed .drawer { top: var(--top-inset); }
+    html.electron body.side-collapsed .drawer-head { padding-top: 14px; }
+    html.electron body.side-collapsed::before { left: 0; height: var(--top-inset); }
     html.electron body::before { content: ''; position: fixed; z-index: 4; top: 0; left: var(--side-w); right: 0; height: 12px; -webkit-app-region: drag; app-region: drag; }
   }
   @media (min-width: 721px) and (display-mode: window-controls-overlay) {
