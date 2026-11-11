@@ -10,6 +10,7 @@ import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { splitAttachments, visibleText } from './attachments.js'
+import { PATH_PATTERN, isPath, isImagePath, stripLocation, fileUrl } from './filepaths.js'
 import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
@@ -663,7 +664,9 @@ function renderRows() {
   }
 }
 
-const LINK_PATTERN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(\S+?\)|https?:\/\/[^\s<>"'`]+)/g
+const URL_PATTERN = /https?:\/\/[^\s<>"'`]+/
+const LINK_PATTERN = new RegExp(`(${[/`[^`\n]+`/, /\*\*[^*\n]+\*\*/, /\[[^\]\n]+\]\(\S+?\)/, URL_PATTERN, PATH_PATTERN].map((re) => re.source).join('|')})`, 'g')
+const PLAIN_PATTERN = new RegExp(`(${[URL_PATTERN, PATH_PATTERN].map((re) => re.source).join('|')})`, 'g')
 const SAFE_PROTOCOLS = new Set(['http:', 'https:'])
 
 function safeUrl(value) {
@@ -696,13 +699,52 @@ function linkNode(href, label) {
   return a
 }
 
+async function revealFile(path) {
+  const result = await postJson('/api/reveal', { path })
+  if (!result.ok) toast({ id: 'reveal-file', title: 'Could not open in Finder', kind: 'failed', message: result.data?.error ?? 'Could not open the file.' })
+}
+
+function fileNode(path, label, { preview = true } = {}) {
+  const target = stripLocation(path)
+  const image = isImagePath(target)
+  const wrap = el('span', 'filelink')
+  const a = el('a', 'chat-link')
+  a.href = image ? fileUrl(target) : '#'
+  a.title = 'Reveal in Finder'
+  a.onclick = (event) => {
+    event.preventDefault()
+    revealFile(target)
+  }
+  if (typeof label === 'string') a.append(text(label))
+  else a.append(label)
+  wrap.append(a)
+  if (image && preview) {
+    const frame = el('span', 'filepreview')
+    const open = el('a')
+    open.href = fileUrl(target)
+    open.target = '_blank'
+    open.rel = 'noopener noreferrer'
+    open.title = 'Open full size'
+    const img = document.createElement('img')
+    img.src = fileUrl(target)
+    img.alt = target.split('/').pop()
+    img.loading = 'lazy'
+    img.onerror = () => frame.remove()
+    open.append(img)
+    frame.append(open)
+    wrap.append(frame)
+  }
+  return wrap
+}
+
 function inline(parent, value) {
   value.split(LINK_PATTERN).forEach((part) => {
     if (!part) return
     if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) {
-      const code = el('code', undefined, part.slice(1, -1))
-      const href = /^https?:\/\/\S+$/.test(part.slice(1, -1)) ? safeUrl(part.slice(1, -1)) : null
-      parent.append(href ? linkNode(href, code) : code)
+      const inner = part.slice(1, -1)
+      const code = el('code', undefined, inner)
+      const href = /^https?:\/\/\S+$/.test(inner) ? safeUrl(inner) : null
+      parent.append(href ? linkNode(href, code) : isPath(inner) ? fileNode(inner, code) : code)
     } else if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) {
       const strong = el('strong')
       inline(strong, part.slice(2, -2))
@@ -710,13 +752,17 @@ function inline(parent, value) {
     } else if (part.startsWith('[') && /\]\(\S+\)$/.test(part)) {
       const split = part.lastIndexOf('](')
       const label = part.slice(1, split)
-      const href = safeUrl(part.slice(split + 2, -1))
-      parent.append(href ? linkNode(href, label) : text(part))
+      const target = part.slice(split + 2, -1)
+      const href = safeUrl(target)
+      parent.append(href ? linkNode(href, label) : isPath(target) ? fileNode(target, label) : text(part))
     } else if (/^https?:\/\//.test(part)) {
       const [url, tail] = splitTrailing(part)
       const href = safeUrl(url)
       if (href) parent.append(linkNode(href, url), text(tail))
       else parent.append(text(part))
+    } else if (isPath(splitTrailing(part)[0])) {
+      const [path, tail] = splitTrailing(part)
+      parent.append(fileNode(path, path), text(tail))
     } else {
       parent.append(text(part))
     }
@@ -724,13 +770,16 @@ function inline(parent, value) {
 }
 
 function linkifyPlain(parent, value) {
-  value.split(/(https?:\/\/[^\s<>"'`]+)/g).forEach((part) => {
+  value.split(PLAIN_PATTERN).forEach((part) => {
     if (!part) return
     if (/^https?:\/\//.test(part)) {
       const [url, tail] = splitTrailing(part)
       const href = safeUrl(url)
       if (href) parent.append(linkNode(href, url), text(tail))
       else parent.append(text(part))
+    } else if (isPath(splitTrailing(part)[0])) {
+      const [path, tail] = splitTrailing(part)
+      parent.append(fileNode(path, path, { preview: false }), text(tail))
     } else {
       parent.append(text(part))
     }

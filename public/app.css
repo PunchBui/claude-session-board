@@ -603,6 +603,9 @@
   .body a.chat-link { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
   .body a.chat-link:hover { text-decoration-thickness: 2px; }
   .body a.chat-link code { color: inherit; }
+  .body .filepreview { display: block; width: fit-content; max-width: min(100%, 420px); margin: 6px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .body .filepreview a { display: block; line-height: 0; }
+  .body .filepreview img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; }
 
   .body .md-h { font-weight: 650; line-height: 1.35; margin: 14px 0 6px; white-space: normal; }
   .body .md-h1 { font-size: 1.3em; } .body .md-h2 { font-size: 1.18em; } .body .md-h3 { font-size: 1.07em; } .body .md-h4 { font-size: 1em; color: var(--muted); }

@@ -1,5 +1,5 @@
-const CACHE = 'board-shell-v37'
-const SHELL = ['/', '/app.css', '/app.js', '/alerts.js', '/autofocus.js', '/warmth.js', '/skills.js', '/mrs.js', '/loops.js', '/tip.js', '/drafts.js', '/history.js', '/icons.js', '/mobile.js', '/richtext.js', '/favicon.svg', '/icon-192.png', '/icon-512.png']
+const CACHE = 'board-shell-v38'
+const SHELL = ['/', '/app.css', '/app.js', '/alerts.js', '/autofocus.js', '/warmth.js', '/skills.js', '/mrs.js', '/loops.js', '/tip.js', '/drafts.js', '/history.js', '/icons.js', '/mobile.js', '/richtext.js', '/filepaths.js', '/favicon.svg', '/icon-192.png', '/icon-512.png']
 const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage', '/skills', '/schedule'])
 
 self.addEventListener('install', (event) => {

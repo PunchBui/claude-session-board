@@ -34,6 +34,7 @@ import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
 import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
+import { resolveLocal, imageType, MAX_IMAGE_BYTES } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
@@ -757,6 +758,12 @@ const pump = manager.pump
 const reply = (res, { status, body }) => json(res, status, body)
 
 const postRoutes = {
+  async '/api/reveal'(body, res) {
+    const found = await resolveLocal(body.path)
+    if (!found) return json(res, 404, { error: 'That file is gone or outside your home folder.' })
+    execFile('open', ['-R', found.path], () => {})
+    return json(res, 200, { ok: true })
+  },
   async '/api/repo/push'(body, res) {
     const result = await commitAndPushRepo()
     if (!result.ok) return json(res, result.status, { error: result.error })
@@ -1008,6 +1015,13 @@ const postRoutes = {
 }
 
 const getRoutes = {
+  async '/api/file'(url, res) {
+    const found = await resolveLocal(url.searchParams.get('path'))
+    const type = found && !found.directory && found.size <= MAX_IMAGE_BYTES ? imageType(found.path) : null
+    if (!type) return send(res, 404, 'not found', 'text/plain')
+    res.writeHead(200, { 'content-type': type, 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' })
+    return res.end(await readFile(found.path))
+  },
   async '/api/health'(url, res) {
     return json(res, 200, {
       ok: true,
