@@ -704,6 +704,30 @@ async function revealFile(path) {
   if (!result.ok) toast({ id: 'reveal-file', title: 'Could not open in Finder', kind: 'failed', message: result.data?.error ?? 'Could not open the file.' })
 }
 
+function openLightbox(path) {
+  const box = el('dialog', 'lightbox')
+  const bar = el('div', 'lightbox-bar')
+  const reveal = el('button', 'btn', 'Reveal in Finder')
+  reveal.type = 'button'
+  reveal.onclick = () => revealFile(path)
+  const close = el('button', 'icon-btn')
+  close.type = 'button'
+  close.title = 'Close (Esc)'
+  close.append(icon('x', { size: 16 }))
+  close.onclick = () => box.close()
+  bar.append(el('span', 'lightbox-name', path), reveal, close)
+  const img = document.createElement('img')
+  img.src = fileUrl(path)
+  img.alt = path.split('/').pop()
+  box.append(bar, img)
+  box.onclick = (event) => {
+    if (event.target === box || event.target === img) box.close()
+  }
+  box.onclose = () => box.remove()
+  document.body.append(box)
+  box.showModal()
+}
+
 function fileNode(path, label, { preview = true } = {}) {
   const target = stripLocation(path)
   const image = isImagePath(target)
@@ -722,9 +746,11 @@ function fileNode(path, label, { preview = true } = {}) {
     const frame = el('span', 'filepreview')
     const open = el('a')
     open.href = fileUrl(target)
-    open.target = '_blank'
-    open.rel = 'noopener noreferrer'
     open.title = 'Open full size'
+    open.onclick = (event) => {
+      event.preventDefault()
+      openLightbox(target)
+    }
     const img = document.createElement('img')
     img.src = fileUrl(target)
     img.alt = target.split('/').pop()
@@ -4304,6 +4330,7 @@ $('cards').addEventListener('focusin', (event) => {
 })
 
 document.addEventListener('keydown', (event) => {
+  if (document.querySelector('dialog.lightbox')) return
   if (event.key === 'Escape' && state.historyOpen) { setHistoryOpen(false); return }
   if (state.tab !== 'focus' || $('broadcast').open) return
   const typing = event.target.closest?.('input, textarea, select, [contenteditable]')
