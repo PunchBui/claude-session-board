@@ -261,13 +261,17 @@
   .loop-badge.stalled { color: var(--caution); background: color-mix(in srgb, var(--caution) 16%, transparent); }
   .loop-badge.ended { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
   #view-mrs th:first-child { width: 44px; }
-  #view-mrs table { min-width: 1500px; }
+  #view-mrs table { min-width: 1540px; }
   #view-mrs th:nth-child(2) { width: 26%; min-width: 280px; }
-  #view-mrs th:nth-child(3) { min-width: 120px; }
-  #view-mrs th:nth-child(4) { width: 235px; }
+  #view-mrs th:nth-child(3) { width: 80px; }
+  #view-mrs th:nth-child(4) { width: 170px; }
   #view-mrs th:nth-child(5) { width: 220px; }
+  #view-mrs th:nth-child(6) { width: 100px; }
   #view-mrs th:nth-child(7) { width: 190px; }
-  #view-mrs th:last-child { width: 200px; }
+  #view-mrs th:nth-child(8) { width: 100px; }
+  #view-mrs th:nth-child(9) { width: 90px; }
+  #view-mrs th:nth-child(10) { width: 100px; }
+  #view-mrs th:last-child { width: 140px; }
   .mr-title { overflow-wrap: anywhere; }
   .mr-link { color: var(--text); text-decoration: none; }
   .mr-link:hover { color: var(--accent); }
@@ -278,7 +282,7 @@
   .mr-badge.good { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
   .mr-badge.dim { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
   .mr-project { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
-  .mr-verdict { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mr-verdict { display: flex; max-width: 100%; align-items: center; gap: 8px; flex-wrap: wrap; }
   .mr-add-ready { padding: 1px 10px; font-size: 12px; }
   .mr-add-ready:disabled { opacity: .45; cursor: default; }
   .mr-babysit { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
@@ -287,6 +291,7 @@
   .mr-babysit-status .mr-badge { white-space: nowrap; }
   .mr-babysit-note { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-babysit-start { padding: 1px 10px; font-size: 12px; }
+  .mr-deploy .mr-babysit-note { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   .mr-deploy { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; flex-basis: 100%; }
   .mr-babysit-stop { padding: 1px 10px; font-size: 12px; }
   .mr-babysit-stop:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
@@ -583,6 +588,13 @@
   .head-actions { display: flex; gap: 8px; align-items: flex-start; }
   .icon-only { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); background: var(--surface); border-radius: 9px; color: var(--muted); }
   .icon-only:hover { color: var(--text); border-color: var(--faint); }
+  #repo-status[hidden] { display: none; }
+  #repo-status:disabled { cursor: progress; }
+  #repo-status .spinner { width: 14px; height: 14px; border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; }
+  #repo-status[data-state=synced] { color: var(--ok); }
+  #repo-status[data-state=behind] { color: var(--info); border-color: var(--info); }
+  #repo-status[data-state=ahead] { color: var(--caution); border-color: var(--caution); }
+  #repo-status[data-state=diverged] { color: var(--danger); border-color: var(--danger); }
   .body a.chat-link { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
   .body a.chat-link:hover { text-decoration-thickness: 2px; }
   .body a.chat-link code { color: inherit; }
@@ -965,13 +977,15 @@
     .drawer .side-top { padding: 8px 10px 6px; }
     .drawer .side-foot { border-top: 0; padding: 4px 14px 8px; }
     @media (max-height: 820px) { .drawer .side-foot { display: none; } }
-    .drawer-foot { flex: none; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px 12px; }
+    .drawer-foot { flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 10px 12px; }
     .drawer-foot .limits { flex: 1 1 100%; gap: 12px; }
     .drawer-foot .limit { flex: 1; min-width: 0; }
     .drawer-foot .icon-btn, .drawer-foot .toggle { font-size: 12.5px; }
-    .drawer-foot .icon-btn { padding: 4px 10px; }
+    .drawer-foot .icon-btn { padding: 4px 8px; }
+    .drawer-foot .toggle { gap: 4px; }
+    #repo-status { width: 28px; height: 28px; }
     .drawer-foot .toggle select { padding-block: 3px; font-size: 12.5px; }
-    #side-collapse { display: inline-grid; margin-left: auto; width: 30px; height: 30px; }
+    #side-collapse { display: inline-grid; margin-left: auto; width: 28px; height: 28px; }
     #view-focus:not([hidden]) { height: calc(100dvh - var(--top-inset, 0px) - 28px); }
 
     /* Collapsed: an icon rail (pages, bell, expand) so wide tables get the room */

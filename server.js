@@ -13,6 +13,8 @@ import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, r
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { createLimitsReader } from './lib/limits.js'
+import { createRepoStatusReader } from './lib/repostatus.js'
+import { createRepoPusher } from './lib/repopush.js'
 import { listCommands } from './lib/commands.js'
 import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
@@ -739,6 +741,11 @@ const pump = manager.pump
 const reply = (res, { status, body }) => json(res, status, body)
 
 const postRoutes = {
+  async '/api/repo/push'(body, res) {
+    const result = await commitAndPushRepo()
+    if (!result.ok) return json(res, result.status, { error: result.error })
+    return json(res, 200, { committed: result.committed, status: await readRepoStatus({ force: true }) })
+  },
   async '/api/pick-folder'(body, res) {
     try {
       return json(res, 200, await pickFolder())
@@ -1079,6 +1086,9 @@ const getRoutes = {
   async '/api/limits'(url, res) {
     return json(res, 200, await readLimits())
   },
+  async '/api/repo-status'(url, res) {
+    return json(res, 200, await readRepoStatus({ force: url.searchParams.has('force') }))
+  },
   async '/api/usage'(url, res) {
     const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 120)
     return json(res, 200, aggregateUsage(await indexedEntries(), days))
@@ -1086,6 +1096,9 @@ const getRoutes = {
 }
 
 const readLimits = createLimitsReader()
+const REPO_DIR = fileURLToPath(new URL('./', import.meta.url))
+const readRepoStatus = createRepoStatusReader({ cwd: REPO_DIR })
+const commitAndPushRepo = createRepoPusher({ cwd: REPO_DIR })
 
 installCrashGuard()
 await loadStores()

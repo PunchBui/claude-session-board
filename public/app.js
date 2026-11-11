@@ -4256,6 +4256,68 @@ async function refreshLimits() {
   } catch { box.hidden = true }
 }
 
+const REPO_STATES = {
+  synced: { icon: 'check-circle', text: 'Up to date with origin' },
+  behind: { icon: 'arrow-down', text: 'Origin has updates to pull' },
+  ahead: { icon: 'arrow-up', text: 'Local changes to commit and push' },
+  diverged: { icon: 'arrow-up-down', text: 'Origin has updates and local has changes to push' },
+}
+
+function repoStatusTitle(data) {
+  const view = REPO_STATES[data.state]
+  const counts = [data.behind ? `${data.behind} to pull` : '', data.ahead ? `${data.ahead} to push` : ''].filter(Boolean).join(', ')
+  return [
+    `${view.text}${counts ? ` (${counts})` : ''}`,
+    `${data.branch} → ${data.upstream}`,
+    data.dirtyCount ? `${data.dirtyCount} uncommitted file${data.dirtyCount === 1 ? '' : 's'}` : '',
+    data.fetched ? '' : 'Could not reach origin, showing the last fetched state',
+    data.state === 'ahead' ? 'Click to commit and push' : 'Click to check again',
+  ].filter(Boolean).join('\n')
+}
+
+function showRepoStatus(button, data) {
+  if (!data.available) { button.hidden = true; return }
+  button.dataset.state = data.state
+  button.title = repoStatusTitle(data)
+  button.setAttribute('aria-label', button.title.split('\n')[0])
+  button.replaceChildren(icon(REPO_STATES[data.state].icon, { size: 16 }))
+  button.hidden = false
+}
+
+async function withRepoSpinner(task) {
+  const button = $('repo-status')
+  if (button.disabled) return
+  const wasShown = !button.hidden
+  if (wasShown) {
+    button.disabled = true
+    button.setAttribute('aria-busy', 'true')
+    button.replaceChildren(el('span', 'spinner'))
+  }
+  try {
+    await task(button)
+  } catch { button.hidden = true } finally {
+    button.disabled = false
+    button.removeAttribute('aria-busy')
+  }
+}
+
+const refreshRepoStatus = (force = false) => withRepoSpinner(async (button) => {
+  showRepoStatus(button, await signedOut(await fetch(`/api/repo-status${force ? '?force=1' : ''}`)).json())
+})
+
+const commitAndPushRepo = () => withRepoSpinner(async (button) => {
+  const result = await postJson('/api/repo/push', {})
+  if (result.ok) {
+    showRepoStatus(button, result.data.status)
+    toast({ id: 'repo-push', title: 'Pushed to origin', kind: 'finished', message: result.data.committed ? `Committed “${result.data.committed}” and pushed.` : 'Pushed the local commits.' })
+    return
+  }
+  toast({ id: 'repo-push', title: 'Could not push', kind: 'failed', message: result.data.error ?? 'Could not push' })
+  showRepoStatus(button, await signedOut(await fetch('/api/repo-status?force=1')).json())
+})
+
+$('repo-status').onclick = () => ($('repo-status').dataset.state === 'ahead' ? commitAndPushRepo() : refreshRepoStatus(true))
+
 const topbar = document.querySelector('.topbar')
 if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--topbar-h', `${topbar.offsetHeight}px`)).observe(topbar)
 if (location.hash === '#focus') history.replaceState({}, '', '/focus')
@@ -4289,4 +4351,6 @@ checkServer()
 setInterval(checkServer, 3000)
 refreshLimits()
 setInterval(refreshLimits, 60_000)
+refreshRepoStatus()
+setInterval(refreshRepoStatus, 60_000)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
