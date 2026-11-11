@@ -820,6 +820,10 @@ const postRoutes = {
     await writeJson(FOCUS_FILE, { ids: next })
     return json(res, 200, { ids: next })
   },
+  async '/api/focus/clear'(body, res) {
+    await writeJson(FOCUS_FILE, { ids: [] })
+    return json(res, 200, { ids: [] })
+  },
   async '/api/focus/order'(body, res) {
     if (!Array.isArray(body.ids) || body.ids.length > 500 || !body.ids.every((id) => SESSION_ID.test(id ?? ''))) return json(res, 400, { error: 'bad request' })
     const ids = reorderFocus(await readFocus(), body.ids)

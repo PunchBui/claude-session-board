@@ -85,7 +85,7 @@
   @media (prefers-reduced-motion: reduce) { .badge.bg-running { animation: none; } }
   .draft-chip { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--caution); background: color-mix(in srgb, var(--caution) 16%, transparent); vertical-align: 1px; }
   .badge { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; font-weight: 600; padding: 0 6px; margin-left: 6px; }
-  .spacer { flex: 1; }
+  .spacer { flex: 1; min-width: 0; }
   .field { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; outline: none; }
   .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
   select.field { -webkit-appearance: none; appearance: none; cursor: pointer; padding-right: 34px; text-overflow: ellipsis; white-space: nowrap; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2373726c' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 16px; }
@@ -682,11 +682,11 @@
   .skill-session .row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .skill-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; max-height: 340px; overflow: auto; }
 
-  /* Focus: session sidebar + one big chat */
+  /* Focus: one big chat; the session list lives in the sidebar */
   main:has(#view-focus:not([hidden])) { max-width: none; padding: 12px 16px 16px; }
   #view-focus:not([hidden]) { display: flex; flex-direction: column; height: calc(100dvh - var(--topbar-h, 61px) - 28px); min-height: 520px; }
   #view-focus .toolbar { margin-bottom: 10px; flex: none; }
-  .split { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; }
+  .split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
   .side { display: flex; flex-direction: column; min-height: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
   .side-top { padding: 10px 10px 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
   .side-top .btn { justify-content: center; padding: 7px 12px; font-size: 13.5px; }
@@ -759,14 +759,6 @@
   .stage .changes { padding: 24px; }
   .stage .dock { padding: 6px 24px 16px; }
   .stage .queue { margin-bottom: 8px; }
-
-  @media (max-width: 900px) {
-    #view-focus:not([hidden]) { height: auto; }
-    .split { display: flex; flex-direction: column; }
-    .side { max-height: 240px; flex: none; }
-    .stage .card { height: calc(100dvh - var(--topbar-h, 61px) - 40px); min-height: 480px; }
-    .side-foot { display: none; }
-  }
 
   .btn.primary[aria-pressed=true] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
   .new-hello { display: flex; flex-direction: column; gap: 6px; }
@@ -911,8 +903,96 @@
     #view-all tr.temp-group td { display: block; }
   }
 
-  /* ===== Phone redesign: chat first, everything else in a hamburger drawer ===== */
-  .menu-btn, .m-title, .scrim, .drawer, .more-btn { display: none; }
+  /* ===== Sidebar: page menu, Focus list and global controls.
+     Always open on desktop (menu on top), a hamburger drawer on phones (sessions on top). ===== */
+  .menu-btn, .m-title, .scrim, .more-btn { display: none; }
+  .drawer { display: flex; flex-direction: column; position: fixed; z-index: 31; top: 0; bottom: 0; left: 0; background: var(--bg); border-right: 1px solid var(--line); }
+  .drawer-head { position: relative; flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px 16px; }
+  .drawer-brand { display: inline-flex; align-items: center; gap: 8px; font: 500 18px/1 var(--serif); }
+  .drawer-brand .icon { color: var(--accent); flex: none; }
+  .drawer-head-slot { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .drawer-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+  .drawer .side { max-height: none; background: none; border: 0; border-radius: 0; box-shadow: none; overflow: visible; }
+  .drawer .side-top { border-bottom: 0; }
+  .drawer .tabs { display: flex; flex-direction: column; background: none; border-radius: 0; overflow: visible; max-width: none; flex: none; order: 0; gap: 2px; }
+  .drawer .tabs a { display: flex; align-items: center; gap: 10px; border-radius: 10px; }
+  .drawer .tabs a .icon { flex: none; }
+  .drawer .tabs a .tab-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer .tabs a .badge { margin-left: auto; }
+  .drawer .tabs a[aria-selected=true] { background: var(--surface-2); box-shadow: none; }
+  .drawer-foot { display: flex; border-top: 1px solid var(--line); }
+  .all-tools { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .focus-head, #side-collapse { display: none; }
+
+  /* Desktop: no top bar, the sidebar is the chrome */
+  @media (min-width: 721px) {
+    body { --side-w: 300px; padding-left: var(--side-w); }
+    .topbar { display: none; }
+    .drawer { width: var(--side-w); z-index: 20; background: color-mix(in srgb, var(--surface-2) 40%, var(--bg)); }
+    #drawer-close { display: none; }
+    .drawer-head { padding: 14px 12px 8px 18px; }
+    .drawer-head-slot > #history { margin-left: auto; width: 32px; height: 32px; }
+    .drawer .notif-panel { top: calc(100% - 2px); left: 12px; right: auto; }
+    .drawer-body { display: flex; flex-direction: column; }
+    .drawer-nav { flex: none; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+    .drawer .tabs { padding: 2px 8px 0; gap: 1px; }
+    .drawer .tabs a { padding: 4px 10px; border-radius: 8px; font-size: 13.5px; }
+    .drawer .tabs a:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); color: var(--text); }
+    .drawer .tabs a[aria-selected=true] { background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
+    #drawer-side { flex: 1 1 auto; min-height: 300px; display: flex; flex-direction: column; }
+    .focus-head { flex: none; display: flex; align-items: center; gap: 4px; padding: 10px 10px 0 18px; }
+    .focus-head-title { flex: 1; font: 500 16px/1.2 var(--serif); letter-spacing: -.01em; }
+    .focus-tools { display: inline-flex; gap: 2px; }
+    .focus-head { position: relative; }
+    .focus-tools > button { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; background: none; border-radius: 8px; color: var(--muted); }
+    .focus-tools > button:hover { background: var(--surface-2); color: var(--text); }
+    .focus-tools > #new-chat { background: var(--accent); color: var(--accent-ink); }
+    .focus-tools > #new-chat:hover { background: var(--accent); color: var(--accent-ink); filter: brightness(1.08); }
+    .focus-tools > #side-sort-btn.on { color: var(--accent); border-color: transparent; }
+    .focus-tools .lbl { display: none; }
+    .focus-tools .sort-menu { top: calc(100% + 2px); right: 10px; }
+    .drawer .side-top, .hint-filter { display: none; }
+    .drawer .side-list { padding-top: 4px; }
+    .drawer .side { flex: 1; min-height: 0; }
+    .drawer .side-top { padding: 8px 10px 6px; }
+    .drawer .side-foot { border-top: 0; padding: 4px 14px 8px; }
+    @media (max-height: 820px) { .drawer .side-foot { display: none; } }
+    .drawer-foot { flex: none; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px 12px; }
+    .drawer-foot .limits { flex: 1 1 100%; gap: 12px; }
+    .drawer-foot .limit { flex: 1; min-width: 0; }
+    .drawer-foot .icon-btn, .drawer-foot .toggle { font-size: 12.5px; }
+    .drawer-foot .icon-btn { padding: 4px 10px; }
+    .drawer-foot .toggle select { padding-block: 3px; font-size: 12.5px; }
+    #side-collapse { display: inline-grid; margin-left: auto; width: 30px; height: 30px; }
+    #view-focus:not([hidden]) { height: calc(100dvh - var(--top-inset, 0px) - 28px); }
+
+    /* Collapsed: an icon rail (pages, bell, expand) so wide tables get the room */
+    body.side-collapsed { --side-w: 56px; }
+    body.side-collapsed .drawer-head { flex-direction: column; gap: 10px; padding: 14px 0 8px; }
+    body.side-collapsed .drawer-brand { font-size: 0; gap: 0; }
+    body.side-collapsed .drawer-head-slot { flex: none; flex-direction: column; gap: 10px; }
+    body.side-collapsed .drawer-head-slot > #history { margin-left: 0; }
+    body.side-collapsed .live { padding: 5px; }
+    body.side-collapsed .live-text, body.side-collapsed .tab-label, body.side-collapsed #drawer-side, body.side-collapsed .drawer-foot > :not(#side-collapse) { display: none; }
+    body.side-collapsed .drawer .notif-panel { top: 8px; left: calc(100% + 6px); }
+    body.side-collapsed .drawer-nav { flex: 1; border-bottom: 0; }
+    body.side-collapsed .drawer .tabs { padding: 2px 8px; gap: 2px; }
+    body.side-collapsed .drawer .tabs a { position: relative; justify-content: center; padding: 9px 0; }
+    body.side-collapsed .drawer .tabs a .badge { position: absolute; top: 1px; right: 0; margin: 0; padding: 0 4px; font-size: 9.5px; line-height: 14px; }
+    body.side-collapsed .drawer-foot { justify-content: center; border-top: 0; }
+    body.side-collapsed #side-collapse { margin: 0; }
+
+    /* Windows without a native title bar: keep clear of the window buttons and give the window a handle */
+    html.electron .drawer-head { padding-top: 46px; -webkit-app-region: drag; app-region: drag; }
+    html.electron .drawer-head :is(button, .live), html.electron .notif-panel { -webkit-app-region: no-drag; app-region: no-drag; }
+    html.electron body::before { content: ''; position: fixed; z-index: 4; top: 0; left: var(--side-w); right: 0; height: 12px; -webkit-app-region: drag; app-region: drag; }
+  }
+  @media (min-width: 721px) and (display-mode: window-controls-overlay) {
+    body { --top-inset: env(titlebar-area-height, 40px); padding-top: var(--top-inset); }
+    body::before { content: ''; position: fixed; z-index: 4; top: 0; left: var(--side-w); right: 0; height: var(--top-inset); -webkit-app-region: drag; app-region: drag; }
+    .drawer-head { padding-top: calc(env(titlebar-area-height, 40px) + 6px); -webkit-app-region: drag; app-region: drag; }
+    .drawer-head :is(button, .live), .notif-panel { -webkit-app-region: no-drag; app-region: no-drag; }
+  }
 
   @media (max-width: 720px) {
     /* Header: menu · title · live · bell */
@@ -958,17 +1038,13 @@
     /* Drawer */
     .scrim { display: block; position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, .42); opacity: 0; pointer-events: none; transition: opacity .2s; }
     .scrim.open { opacity: 1; pointer-events: auto; }
-    .drawer { display: flex; flex-direction: column; position: fixed; z-index: 31; top: 0; bottom: 0; left: 0; width: min(88vw, 360px); background: var(--bg); border-right: 1px solid var(--line); box-shadow: 8px 0 30px rgba(0, 0, 0, .18); transform: translateX(-102%); transition: transform .22s ease; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); visibility: hidden; }
+    .drawer { width: min(88vw, 360px); box-shadow: 8px 0 30px rgba(0, 0, 0, .18); transform: translateX(-102%); transition: transform .22s ease; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); visibility: hidden; }
     .drawer.open { transform: none; visibility: visible; }
     body.drawer-open { overflow: hidden; }
-    .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 6px 16px; }
-    .drawer-brand { display: inline-flex; align-items: center; gap: 8px; font: 500 18px/1 var(--serif); }
-    .drawer-brand .icon { color: var(--accent); }
-    .drawer-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 12px; }
+    .drawer-body { padding-bottom: 12px; }
 
     /* The Focus sidebar, flattened into the drawer */
-    .drawer .side { max-height: none; background: none; border: 0; border-radius: 0; box-shadow: none; overflow: visible; }
-    .drawer .side-top { border-bottom: 0; padding: 6px 12px 8px; flex-direction: column; }
+    .drawer .side-top { padding: 6px 12px 8px; flex-direction: column; }
     .drawer .side-top .btn { width: 100%; min-height: 44px; }
     .drawer .side-list { max-height: 46dvh; overflow-y: auto; padding: 0 8px 8px; }
     .drawer .side-foot { display: none; }
@@ -977,18 +1053,18 @@
 
     /* Pages: the former tabs */
     .drawer-nav { margin-top: 4px; border-top: 1px solid var(--line); }
-    .drawer .tabs { display: flex; flex-direction: column; background: none; padding: 8px 8px 4px; border-radius: 0; overflow: visible; max-width: none; flex: none; order: 0; gap: 2px; }
-    .drawer .tabs a { display: flex; align-items: center; justify-content: space-between; padding: 12px; border-radius: 10px; font-size: 15px; min-height: 44px; }
-    .drawer .tabs a[aria-selected=true] { background: var(--surface-2); box-shadow: none; }
+    .drawer .tabs { padding: 8px 8px 4px; }
+    .drawer .tabs a { padding: 12px; font-size: 15px; min-height: 44px; }
 
     /* Controls that used to crowd the header */
-    .drawer-foot { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px 8px; border-top: 1px solid var(--line); margin-top: 4px; }
+    .drawer-foot { flex-direction: column; gap: 12px; padding: 12px 16px 8px; margin-top: 4px; }
     .drawer-foot .limits { order: -1; width: 100%; flex: none; }
     .drawer-foot .icon-btn, .drawer-foot .btn { width: 100%; justify-content: center; min-height: 44px; }
     .drawer-foot .toggle { display: flex; justify-content: space-between; align-items: center; min-height: 36px; }
     .drawer-foot .toggle select { min-width: 90px; }
     .drawer-foot .toggle:has(#archived) { flex-direction: row-reverse; justify-content: flex-end; gap: 10px; }
-    #view-all > #q { width: 100%; margin-bottom: 10px; }
+    .all-tools { margin-bottom: 10px; }
+    .all-tools #q { width: 100%; }
   }
 
   /* iOS-safe chat scrolling: pin the Focus view between header and bottom, let only .chat scroll */

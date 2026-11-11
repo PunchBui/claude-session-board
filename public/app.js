@@ -1885,6 +1885,8 @@ function selectedCard(groups = sideGroups()) {
 }
 
 function selectCard(id) {
+  // The sidebar is on every page: picking a session from another page opens it on Focus.
+  if (state.tab !== 'focus') return void goToCard(id)
   if (state.selected === id && !state.draft) return
   state.draft = false
   state.selected = id
@@ -2165,7 +2167,7 @@ function renderFocus() {
     syncDraftAttachments()
   } else draft?.node.remove()
   if (window.scrollY !== pageTop || window.scrollX !== pageLeft) window.scrollTo(pageLeft, pageTop)
-  renderSide(shownGroups(groups, current?.id), state.draft ? null : current)
+  renderSide(shownGroups(groups, current?.id), state.draft || state.tab !== 'focus' ? null : current)
   const none = state.loaded && state.cards.length === 0 && !state.draft
   stage.hidden = none
   $('focus-empty').hidden = !none
@@ -4102,6 +4104,15 @@ window.addEventListener('storage', (event) => {
 $('search-project').onchange = runSearch
 $('search-q').oninput = () => { clearTimeout(state.search.timer); state.search.timer = setTimeout(runSearch, 250) }
 $('new-chat').onclick = openNewChat
+$('focus-clear').onclick = async () => {
+  if (!state.focusIds?.length) return
+  if (!confirm(`Remove all ${state.focusIds.length} sessions from Focus? The sessions themselves are kept.`)) return
+  const { ok, data } = await postJson('/api/focus/clear', {})
+  if (ok) {
+    state.focusIds = data.ids
+    await resync()
+  }
+}
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()
 $('broadcast-send').onclick = sendBroadcast
@@ -4178,7 +4189,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (typing || event.metaKey || event.ctrlKey || event.altKey) return
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); stepSelected(event.key === 'ArrowDown' ? 1 : -1) }
-  else if (event.key === '/') { event.preventDefault(); $('side-q').focus() }
+  else if (event.key === '/' && $('side-q').offsetParent) { event.preventDefault(); $('side-q').focus() }
 })
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { state.unseen = 0; updateTitle() }
@@ -4224,9 +4235,18 @@ $('history').append(icon('bell', { size: 18 }))
 state.history = readHistory()
 renderHistoryBadge()
 renderAlertsButton()
-$('new-chat').replaceChildren(icon('plus', { size: 16 }), text('New chat'))
-$('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), text('Broadcast'))
-$('brand-mark').replaceChildren(icon('asterisk', { size: 22, strokeWidth: 2.4 }))
+$('new-chat').replaceChildren(icon('plus', { size: 16 }), el('span', 'lbl', 'New chat'))
+$('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), el('span', 'lbl', 'Broadcast'))
+$('focus-clear').replaceChildren(icon('list-x', { size: 16 }), el('span', 'lbl', 'Clean all'))
+$('side-collapse').replaceChildren(icon('panel-left', { size: 18 }))
+// Page menu: an icon per page, so the collapsed sidebar can show icons alone.
+for (const [name, shape] of Object.entries({ all: 'list', focus: 'star', loops: 'repeat', background: 'terminal', mrs: 'git-pull-request', search: 'search', usage: 'bar-chart', skills: 'zap', schedule: 'calendar' })) {
+  const tab = $(`tab-${name}`)
+  tab.prepend(icon(shape, { size: 16 }))
+  tab.title = tab.querySelector('.tab-label').textContent
+}
+// Electron shell (hidden title bar): the sidebar head keeps clear of the window buttons and drags the window.
+if (/Electron/.test(navigator.userAgent)) document.documentElement.classList.add('electron')
 $('menu-btn').replaceChildren(icon('menu', { size: 22 }))
 $('drawer-close').replaceChildren(icon('x', { size: 20 }))
 $('drawer-brand').replaceChildren(icon('asterisk', { size: 20, strokeWidth: 2.4 }), text('Sessions'))

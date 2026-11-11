@@ -37,6 +37,13 @@ const SHAPES = {
   'volume-x': [['polygon', { points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' }], ['path', { d: 'm22 9-6 6' }], ['path', { d: 'm16 9 6 6' }]],
   terminal: [['polyline', { points: '4 17 10 11 4 5' }], ['line', { x1: 12, x2: 20, y1: 19, y2: 19 }]],
   'arrow-down': [['path', { d: 'M12 5v14' }], ['path', { d: 'm19 12-7 7-7-7' }]],
+  list: [['path', { d: 'M3 12h.01' }], ['path', { d: 'M3 18h.01' }], ['path', { d: 'M3 6h.01' }], ['path', { d: 'M8 12h13' }], ['path', { d: 'M8 18h13' }], ['path', { d: 'M8 6h13' }]],
+  'list-x': [['path', { d: 'M11 12H3' }], ['path', { d: 'M16 6H3' }], ['path', { d: 'M16 18H3' }], ['path', { d: 'm19 10-4 4' }], ['path', { d: 'm15 10 4 4' }]],
+  'git-pull-request': [['circle', { cx: 18, cy: 18, r: 3 }], ['circle', { cx: 6, cy: 6, r: 3 }], ['path', { d: 'M13 6h3a2 2 0 0 1 2 2v7' }], ['line', { x1: 6, x2: 6, y1: 9, y2: 21 }]],
+  search: [['circle', { cx: 11, cy: 11, r: 8 }], ['path', { d: 'm21 21-4.3-4.3' }]],
+  'bar-chart': [['path', { d: 'M12 20V10' }], ['path', { d: 'M18 20V4' }], ['path', { d: 'M6 20v-4' }]],
+  calendar: [['rect', { x: 3, y: 4, width: 18, height: 18, rx: 2 }], ['path', { d: 'M16 2v4' }], ['path', { d: 'M8 2v4' }], ['path', { d: 'M3 10h18' }]],
+  'panel-left': [['rect', { x: 3, y: 3, width: 18, height: 18, rx: 2 }], ['path', { d: 'M9 3v18' }]],
   asterisk: [['path', { d: 'M12 3v18' }], ['path', { d: 'm4.2 7.5 15.6 9' }], ['path', { d: 'm4.2 16.5 15.6-9' }]],
 }
 

@@ -19,36 +19,16 @@
 <header class="topbar">
   <button id="menu-btn" class="icon-only menu-btn" type="button" aria-label="Menu" aria-controls="drawer" aria-expanded="false"></button>
   <div class="m-title" id="m-title" aria-live="polite"></div>
-  <div class="brand"><span class="mark" id="brand-mark"></span>Sessions<span class="live" id="live" data-state="checking" role="status"><span class="live-dot"></span><span class="live-text">Checking</span></span></div>
-  <nav class="tabs" role="tablist">
-    <a role="tab" id="tab-all" href="/" aria-selected="true">All sessions</a>
-    <a role="tab" id="tab-focus" href="/focus" aria-selected="false">Focus<span class="badge" id="focus-count" hidden></span></a>
-    <a role="tab" id="tab-loops" href="/loops" aria-selected="false">Loops<span class="badge" id="loops-count" hidden></span></a>
-    <a role="tab" id="tab-background" href="/background" aria-selected="false">Background<span class="badge" id="background-count" hidden></span></a>
-    <a role="tab" id="tab-mrs" href="/mrs" aria-selected="false">Merge requests<span class="badge" id="mrs-count" hidden></span></a>
-    <a role="tab" id="tab-search" href="/search" aria-selected="false">Search</a>
-    <a role="tab" id="tab-usage" href="/usage" aria-selected="false">Usage</a>
-    <a role="tab" id="tab-skills" href="/skills" aria-selected="false">Skills</a>
-    <a role="tab" id="tab-schedule" href="/schedule" aria-selected="false">Schedule</a>
-  </nav>
-  <div class="spacer"></div>
-  <input id="q" class="field" type="search" placeholder="Filter sessions">
-  <label class="toggle"><input id="archived" type="checkbox"> Archived</label>
-  <button id="alerts" class="icon-btn" aria-pressed="false" title="Notify when a focused session finishes, asks a question or needs approval">Alerts</button>
-  <label class="toggle">Refresh
-    <select id="interval" class="field">
-      <option value="0">off</option>
-      <option value="3000" selected>3s</option>
-      <option value="10000">10s</option>
-      <option value="60000">60s</option>
-    </select>
-  </label>
-  <div class="limits" id="limits" hidden></div>
+  <div class="brand"><span class="live" id="live" data-state="checking" role="status"><span class="live-dot"></span><span class="live-text">Checking</span></span></div>
   <button id="history" class="icon-only history-btn" aria-haspopup="dialog" aria-expanded="false" title="Notification history"><span class="bell-badge" id="history-count" hidden></span></button>
   <div class="notif-panel" id="notif-panel" role="dialog" aria-label="Notification history" hidden></div>
 </header>
 <main>
   <section id="view-all">
+    <div class="all-tools">
+      <input id="q" class="field" type="search" placeholder="Filter sessions">
+      <label class="toggle"><input id="archived" type="checkbox"> Archived</label>
+    </div>
     <div class="pills" id="summary"></div>
     <div class="sheet">
       <div class="scroll-x">
@@ -62,20 +42,9 @@
     </div>
   </section>
   <section id="view-focus" hidden>
-    <div class="toolbar">
-      <h2>Focus</h2>
-      <div class="right">
-        <button id="broadcast-open" class="icon-btn" title="Queue one prompt on several sessions">Broadcast</button>
-      </div>
-    </div>
     <div class="split" id="split">
-      <aside class="side" aria-label="Focused sessions">
-        <div class="side-top"><button id="new-chat" class="btn primary" title="Start a new Claude Code session"></button><div class="side-filter"><input id="side-q" class="field" type="search" placeholder="Filter focused sessions" aria-label="Filter focused sessions"><button id="side-sort-btn" class="icon-only" aria-haspopup="menu" aria-expanded="false"></button><div class="sort-menu" id="side-sort-menu" role="menu" hidden></div></div></div>
-        <div class="side-list" id="side-list" role="listbox" aria-label="Focused sessions"></div>
-        <div class="side-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> switch</span><span><kbd>/</kbd> filter</span></div>
-      </aside>
       <section class="stage" id="cards"></section>
-      <div class="empty" id="focus-empty" hidden>Nothing in focus yet.<br>Star a session on the All sessions tab to pin it here,<br>or start one with New chat.</div>
+      <div class="empty" id="focus-empty" hidden>Nothing in focus yet.<br>Star a session on the All sessions page to pin it here,<br>or start one with New chat.</div>
     </div>
   </section>
   <section id="view-loops" hidden>
@@ -238,11 +207,44 @@
 </main>
 <div class="scrim" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-label="Menu" aria-hidden="true">
-  <div class="drawer-head"><span class="drawer-brand" id="drawer-brand"></span><button id="drawer-close" class="icon-only" type="button" aria-label="Close menu"></button></div>
-  <div class="drawer-body">
-    <div id="drawer-side"></div>
-    <nav id="drawer-nav" class="drawer-nav" aria-label="Pages"></nav>
-    <div id="drawer-foot" class="drawer-foot"></div>
+  <div class="drawer-head"><span class="drawer-brand" id="drawer-brand"></span><span class="drawer-head-slot" id="drawer-head-slot"></span><button id="drawer-close" class="icon-only" type="button" aria-label="Close menu"></button></div>
+  <div class="drawer-body" id="drawer-body">
+    <div id="drawer-side">
+      <div class="focus-head"><span class="focus-head-title">Focus</span><span class="focus-tools" id="focus-tools"></span></div>
+      <aside class="side" aria-label="Focused sessions">
+        <div class="side-top"><button id="new-chat" class="btn primary" title="Start a new Claude Code session"></button><div class="side-filter"><input id="side-q" class="field" type="search" placeholder="Filter focused sessions" aria-label="Filter focused sessions"><button id="side-sort-btn" class="icon-only" aria-haspopup="menu" aria-expanded="false"></button><div class="sort-menu" id="side-sort-menu" role="menu" hidden></div></div></div>
+        <div class="side-list" id="side-list" role="listbox" aria-label="Focused sessions"></div>
+        <div class="side-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> switch</span><span class="hint-filter"><kbd>/</kbd> filter</span></div>
+      </aside>
+    </div>
+    <div id="drawer-nav" class="drawer-nav">
+      <nav class="tabs" role="tablist" aria-label="Pages">
+        <a role="tab" id="tab-all" href="/" aria-selected="true"><span class="tab-label">All sessions</span></a>
+        <a role="tab" id="tab-focus" href="/focus" aria-selected="false"><span class="tab-label">Focus</span><span class="badge" id="focus-count" hidden></span></a>
+        <a role="tab" id="tab-loops" href="/loops" aria-selected="false"><span class="tab-label">Loops</span><span class="badge" id="loops-count" hidden></span></a>
+        <a role="tab" id="tab-background" href="/background" aria-selected="false"><span class="tab-label">Background</span><span class="badge" id="background-count" hidden></span></a>
+        <a role="tab" id="tab-mrs" href="/mrs" aria-selected="false"><span class="tab-label">Merge requests</span><span class="badge" id="mrs-count" hidden></span></a>
+        <a role="tab" id="tab-search" href="/search" aria-selected="false"><span class="tab-label">Search</span></a>
+        <a role="tab" id="tab-usage" href="/usage" aria-selected="false"><span class="tab-label">Usage</span></a>
+        <a role="tab" id="tab-skills" href="/skills" aria-selected="false"><span class="tab-label">Skills</span></a>
+        <a role="tab" id="tab-schedule" href="/schedule" aria-selected="false"><span class="tab-label">Schedule</span></a>
+      </nav>
+    </div>
+    <div id="drawer-foot" class="drawer-foot">
+      <div class="limits" id="limits" hidden></div>
+      <button id="broadcast-open" class="icon-btn" title="Queue one prompt on several sessions"></button>
+      <button id="focus-clear" class="icon-btn" title="Remove every session from Focus (the sessions themselves are kept)"></button>
+      <button id="alerts" class="icon-btn" aria-pressed="false" title="Notify when a focused session finishes, asks a question or needs approval">Alerts</button>
+      <label class="toggle">Refresh
+        <select id="interval" class="field">
+          <option value="0">off</option>
+          <option value="3000" selected>3s</option>
+          <option value="10000">10s</option>
+          <option value="60000">60s</option>
+        </select>
+      </label>
+      <button id="side-collapse" class="icon-only" type="button" aria-pressed="false" title="Collapse sidebar" aria-label="Collapse sidebar"></button>
+    </div>
   </div>
 </aside>
 <div class="toasts" id="toasts"></div>
