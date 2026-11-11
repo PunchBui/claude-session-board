@@ -922,6 +922,8 @@ function autosize(box) {
 
 async function submitPrompt(id, box) {
   const typed = box.value.trim()
+  const fresh = FRESH_COMMAND.exec(typed)
+  if (fresh) return startFreshChat(id, box, fresh[1])
   const files = attachmentsOf(id)
   if (!typed && !files.length) return
   const prompt = withAttachments(id, typed)
@@ -2397,6 +2399,31 @@ function clearDraftAttachments() {
   for (const file of attachmentsOf(NEW_KEY)) if (file.preview) URL.revokeObjectURL(file.preview)
   state.attachments.delete(NEW_KEY)
   syncDraftAttachments()
+}
+
+const FRESH_COMMAND = /^\/(?:clear|reset|new)\b\s*([\s\S]*)$/i
+
+function startFreshChat(id, box, firstPrompt) {
+  const card = state.cards.find((c) => c.id === id)
+  box.value = ''
+  state.drafts.delete(id)
+  autosize(box)
+  openNewChat()
+  if (!draft) return
+  if (card?.cwd) {
+    addPickedFolder(card.cwd)
+    state.lastFolder = card.cwd
+    syncDraftFolder()
+  }
+  for (const key of ['model', 'effort', 'permissionMode']) {
+    const select = draft.optSelects[key]
+    const value = card?.[key]
+    if (value && [...select.options].some((option) => option.value === value)) select.value = value
+  }
+  draft.text.value = firstPrompt.trim()
+  autosize(draft.text)
+  draft.text.focus()
+  setDraftNote(`A fresh session in ${card?.cwd ? home(card.cwd) : 'a folder you choose'}. Write its first prompt.`)
 }
 
 function openNewChat() {

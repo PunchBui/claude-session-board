@@ -668,6 +668,32 @@ test('desktop sessions never get board model or effort flags', async (t) => {
   assert.ok(!child.args.includes('--effort'))
 })
 
+test('a /model or /effort sent earlier in the session is passed on every later run', async (t) => {
+  const h = harness(t, { sessions: [{ sessionId: SID, cliSessionId: CLI, model: 'claude-opus-5', effort: 'high' }] })
+  h.scan = { ...h.scan, state: { ...h.scan.state, settings: { model: 'sonnet', effort: 'low' } } }
+  await start(h)
+  const [child] = h.spawned
+  assert.equal(child.args[child.args.indexOf('--model') + 1], 'sonnet')
+  assert.equal(child.args[child.args.indexOf('--effort') + 1], 'low')
+  child.emit('close', 0, null)
+  await until(() => h.manager.runFor(SID).state !== 'running')
+  h.queue(SID, 'next')
+  await h.manager.pump()
+  const queued = h.spawned.at(-1)
+  assert.notEqual(queued, child)
+  assert.equal(queued.args[queued.args.indexOf('--model') + 1], 'sonnet')
+})
+
+test('/model default overrides the model a board session was started with', async (t) => {
+  const entry = newBoardSession({ cwd: tmpdir(), prompt: 'first', permissionMode: 'bypassPermissions', model: 'opus', effort: 'high' })
+  const h = harness(t, { sessions: [boardRaw(entry, { run: null })] })
+  h.scan = { ...h.scan, state: { ...h.scan.state, settings: { model: null } } }
+  await start(h, entry.sessionId)
+  const [child] = h.spawned
+  assert.ok(!child.args.includes('--model'))
+  assert.equal(child.args[child.args.indexOf('--effort') + 1], 'high')
+})
+
 test('Chrome is only passed to board sessions that were started with it', async (t) => {
   const h = harness(t)
   await h.manager.requestNewSession({ folder: h.dir, prompt: 'plain' })

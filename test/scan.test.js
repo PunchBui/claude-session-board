@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { newScanState, absorbLine, absorbBuffer, localDay } from '../lib/scan.js'
+import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle } from '../lib/scan.js'
 import { usageOf, liveOf } from '../lib/live.js'
 
 const line = (value) => JSON.stringify(value)
@@ -103,4 +103,27 @@ test('empty local command output adds nothing', () => {
   const state = newScanState()
   absorbLine(state, line({ type: 'system', subtype: 'local_command', timestamp: '2026-10-27T08:00:09.000Z', content: '<local-command-stdout></local-command-stdout>' }))
   assert.equal(state.chat.length, 0)
+})
+
+test('takes the session title from the transcript, preferring a rename over the AI title', () => {
+  const state = newScanState()
+  assert.equal(transcriptTitle(state), null)
+  absorbLine(state, JSON.stringify({ type: 'ai-title', aiTitle: 'Generated name', sessionId: 's' }))
+  assert.equal(transcriptTitle(state), 'Generated name')
+  absorbLine(state, JSON.stringify({ type: 'custom-title', customTitle: 'First name', sessionId: 's' }))
+  absorbLine(state, JSON.stringify({ type: 'custom-title', customTitle: 'Renamed', sessionId: 's' }))
+  absorbLine(state, JSON.stringify({ type: 'custom-title', customTitle: '  ', sessionId: 's' }))
+  assert.equal(transcriptTitle(state), 'Renamed')
+  assert.equal(state.messages.length, 0)
+})
+
+test('a local command output ends the turn, so the run is not stalled and the card is not thinking', () => {
+  const state = newScanState()
+  absorbLine(state, line({ type: 'user', timestamp: '2026-11-11T10:00:00Z', message: { role: 'user', content: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>' } }))
+  assert.equal(state.lastKind, 'user')
+  absorbLine(state, line({ type: 'system', subtype: 'local_command', timestamp: '2026-11-11T10:00:01Z', content: '<local-command-stdout>Current model: Opus</local-command-stdout>', commandRun: { command: 'model', args: '' } }))
+  assert.equal(state.lastKind, 'command')
+  assert.equal(state.lastStop, 'end_turn')
+  const live = liveOf(state, { nowMs: Date.parse('2026-11-11T10:05:00Z'), mtimeMs: Date.parse('2026-11-11T10:00:01Z'), running: false })
+  assert.equal(live.working, false)
 })

@@ -127,12 +127,13 @@ The Schedule tab (`/schedule`) holds routines: a project folder, a prompt, a tim
 
 ## Slash commands
 
-Typing `/` in a card's prompt box opens an autocomplete list of the commands that work in headless runs: your project commands (`<session folder>/.claude/commands`), your user commands (`~/.claude/commands`), skills, enabled plugin commands and skills, and the built-ins `/compact`, `/context`, `/cost` and `/model`. Arrow keys move, Tab or Enter completes, Esc closes.
+Typing `/` in a card's prompt box opens an autocomplete list of every command a headless run accepts in that session's folder. The board asks Claude Code itself for the list (a short `claude -p --no-session-persistence` run that sends only `/model`, so it never calls the model; it does run your SessionStart hooks) and caches it per folder for 10 minutes. Descriptions come from your project commands (`<session folder>/.claude/commands`), user commands (`~/.claude/commands`), skills and enabled plugins. If the probe fails, the list falls back to those files plus `/compact`, `/context`, `/cost` and `/model`. Arrow keys move, Tab or Enter completes, Esc closes.
 
-- Custom commands and skills run as normal turns.
-- Output from `/context`, `/cost` and `/model` is shown in the chat as a command panel.
-- `/clear`, `/reset` and `/new` are refused, because headless mode answers them by starting a new session and the board would lose track of the old one.
-- Interactive-only commands such as `/help`, `/status` and `/config` are not available in headless mode.
+- Custom commands, skills, plugin and MCP prompts run as normal turns.
+- Output from built-ins such as `/context`, `/usage`, `/mcp` and `/model` is shown in the chat as a command panel.
+- `/model <name>` and `/effort <level>` only last one headless run, so the board reads the last accepted change from the transcript and passes it as `--model` / `--effort` on every later prompt, queued item and schedule for that session. `/model default` and `/effort auto` go back to the default.
+- `/clear`, `/new` and `/reset` open a New chat in the same folder with the same model, effort and permission mode, and any text after the command as its first prompt. They are refused in the queue, broadcasts and schedules.
+- Commands that need the terminal UI, such as `/help`, `/status`, `/permissions` or `/resume`, answer that they are not available here.
 
 ## Alerts
 

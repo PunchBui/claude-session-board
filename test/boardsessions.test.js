@@ -75,6 +75,11 @@ test('a board raw session looks like a desktop one plus the board markers', () =
   assert.equal(boardRaw(entry(), { run: null }).lastActivityAt, 1000)
 })
 
+test('a board session shows the transcript title once Claude names it', () => {
+  assert.equal(boardRaw(entry(), { run: null }).title, 'hello')
+  assert.equal(boardRaw(entry(), { run: null, title: 'Named by Claude' }).title, 'Named by Claude')
+})
+
 test('the store persists entries atomically and reloads them', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'board-store-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))

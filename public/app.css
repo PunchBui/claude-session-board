@@ -671,6 +671,7 @@
   .slash-hint { color: var(--faint); font: 12px/1.4 var(--mono); }
   .slash-src { margin-left: auto; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; }
   .slash-src.project { color: var(--accent); border-color: var(--accent); }
+  .slash-src.board { color: var(--accent); border-color: var(--accent); border-style: dashed; }
   .slash-desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; overflow-wrap: anywhere; }
   .msg.command { align-self: stretch; }
   .cmd-output { width: 100%; max-width: var(--col, 820px); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }

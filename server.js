@@ -5,7 +5,8 @@ import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/pro
 import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createScanStore } from './lib/scan.js'
+import { createScanStore, transcriptTitle } from './lib/scan.js'
+import { shownSettings } from './lib/sessionsettings.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
 import { REPEATS, nextAfter } from './lib/schedule.js'
@@ -15,7 +16,7 @@ import { aggregateUsage } from './lib/usage.js'
 import { createLimitsReader } from './lib/limits.js'
 import { createRepoStatusReader } from './lib/repostatus.js'
 import { createRepoPusher } from './lib/repopush.js'
-import { listCommands } from './lib/commands.js'
+import { listCommands, probeSlashCommands } from './lib/commands.js'
 import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
@@ -191,7 +192,8 @@ async function boardRaws() {
     boardStore.all().map(async (entry) => {
       const path = await findTranscript(entry.cliSessionId)
       const info = path ? await stat(path).catch(() => null) : null
-      return boardRaw(entry, { lastActivityAt: info?.mtimeMs, run: manager.runFor(entry.sessionId) })
+      const state = info ? await scanStore.scan(path, info.size).catch(() => null) : null
+      return boardRaw(entry, { lastActivityAt: info?.mtimeMs, run: manager.runFor(entry.sessionId), title: transcriptTitle(state) })
     })
   )
 }
@@ -244,6 +246,7 @@ async function buildCard(raw) {
   const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS || Boolean(live?.working)
   return {
     ...base,
+    ...shownSettings(raw, scanned?.state.settings),
     touchedAt,
     lastPromptAt: promptAtOf(scanned?.state),
     active,
@@ -702,11 +705,24 @@ async function pruneUploads() {
 }
 
 const commandCache = new Map()
+const probeCache = new Map()
+const PROBE_TTL_MS = 10 * 60_000
+
+function probedFor(cwd) {
+  const hit = probeCache.get(cwd)
+  if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.names
+  const names = probeSlashCommands({ bin: CLAUDE_BIN, cwd: cwd ?? homedir(), env: spawnEnv }).then((found) => {
+    if (!found) probeCache.delete(cwd)
+    return found
+  })
+  probeCache.set(cwd, { at: Date.now(), names })
+  return names
+}
 
 async function commandsFor(cwd) {
   const hit = commandCache.get(cwd)
   if (hit && Date.now() - hit.at < 30_000) return hit.items
-  const items = await listCommands({ cwd, home: CLAUDE_HOME })
+  const items = await listCommands({ cwd, home: CLAUDE_HOME, probed: await probedFor(cwd) })
   commandCache.set(cwd, { at: Date.now(), items })
   return items
 }
