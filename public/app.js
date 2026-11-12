@@ -13,6 +13,7 @@ import { splitAttachments, visibleText } from './attachments.js'
 import { PATH_PATTERN, isPath, isImagePath, stripLocation, fileUrl } from './filepaths.js'
 import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
+import { initLinkMenu } from './linkmenu.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
@@ -734,6 +735,7 @@ function fileNode(path, label, { preview = true } = {}) {
   const wrap = el('span', 'filelink')
   const a = el('a', 'chat-link')
   a.href = image ? fileUrl(target) : '#'
+  a.dataset.copy = target
   a.title = 'Reveal in Finder'
   a.onclick = (event) => {
     event.preventDefault()
@@ -746,6 +748,7 @@ function fileNode(path, label, { preview = true } = {}) {
     const frame = el('span', 'filepreview')
     const open = el('a')
     open.href = fileUrl(target)
+    open.dataset.copy = target
     open.title = 'Open full size'
     open.onclick = (event) => {
       event.preventDefault()
@@ -4490,6 +4493,9 @@ $('drawer-close').replaceChildren(icon('x', { size: 20 }))
 $('drawer-brand').replaceChildren(icon('asterisk', { size: 20, strokeWidth: 2.4 }), text('Sessions'))
 loadSnippets()
 initMobile({ onChange: () => { state.signature = ''; applyRoute() } })
+initLinkMenu((ok, target) => toast(ok
+  ? { id: 'copy-link', title: target.label === 'Copy path' ? 'Path copied' : 'Link copied', kind: 'finished', message: target.value }
+  : { id: 'copy-link', title: 'Could not copy', kind: 'failed', message: 'The browser blocked clipboard access.' }))
 // On a phone the app opens on Focus, not the All sessions table.
 if (isMobile() && location.pathname === '/' && !location.search) history.replaceState({}, '', '/focus')
 applyRoute()

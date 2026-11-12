@@ -241,6 +241,9 @@
   .bg-event { display: flex; gap: 10px; }
   .bg-event .dim { color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
   .tip { position: fixed; z-index: 90; max-width: min(340px, calc(100vw - 16px)); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 12px; line-height: 1.45; pointer-events: none; }
+  .linkmenu { position: fixed; z-index: 95; min-width: 140px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; }
+  .linkmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit; font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+  .linkmenu button:hover, .linkmenu button:focus-visible { background: var(--surface-2); outline: none; }
   .tip b { display: block; font-size: 13px; font-weight: 650; text-transform: capitalize; }
   .tip p { margin: 3px 0 0; color: var(--muted); }
   .tip dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); }
