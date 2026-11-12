@@ -33,7 +33,7 @@ class FakeChild extends EventEmitter {
   }
 }
 
-function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSessionId: CLI }], exitOn = [] } = {}) {
+function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSessionId: CLI }], exitOn = [], titler = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'runs-test-'))
   const h = {
     dir,
@@ -49,6 +49,7 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     alive: new Map(),
     spawnError: false,
     board: [],
+    retitled: [],
     boardFull: false,
     runsFile: join(dir, 'runs.json'),
   }
@@ -77,7 +78,11 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     adoptPollMs: 10,
     desktopPollMs: 10,
     homeDir: dir,
-    boardStore: { add: async (entry) => { if (h.boardFull) return false; h.board.push(entry); return true } },
+    boardStore: {
+      add: async (entry) => { if (h.boardFull) return false; h.board.push(entry); return true },
+      retitle: async (id, title) => { h.retitled.push([id, title]); return true },
+    },
+    suggestTitle: titler,
     scanSession: async () => h.scan,
     hasTranscript: async () => h.transcript,
     buildCard: async (raw) => h.card(raw),
@@ -566,6 +571,48 @@ test('a new board session is recorded and its first run uses --session-id, not -
   assert.equal(h.manager.runFor(result.body.id).state, 'running')
   await until(async () => (await h.saved())[result.body.id])
   assert.equal((await h.saved())[result.body.id].cliSessionId, h.board[0].cliSessionId)
+})
+
+test('a board session is renamed from its first prompt once the first run finishes', async (t) => {
+  const prompts = []
+  const h = harness(t, { titler: async (prompt) => { prompts.push(prompt); return 'Build the thing' } })
+  const result = await h.manager.requestNewSession({ folder: h.dir, prompt: '  build the thing  ' })
+  assert.deepEqual(h.retitled, [])
+  h.spawned[0].emit('close', 0, null)
+  await until(() => h.retitled.length)
+  assert.deepEqual(h.retitled, [[result.body.id, 'Build the thing']])
+  assert.deepEqual(prompts, ['build the thing'])
+})
+
+test('a board session keeps its first-prompt title when the run fails, the titler fails or returns nothing', async (t) => {
+  const failed = harness(t, { titler: async () => 'Never used' })
+  await failed.manager.requestNewSession({ folder: failed.dir, prompt: 'build the thing' })
+  failed.spawned[0].emit('close', 1, null)
+  await sleep(40)
+  assert.deepEqual(failed.retitled, [])
+
+  const broken = harness(t, { titler: async () => { throw new Error('claude is down') } })
+  await broken.manager.requestNewSession({ folder: broken.dir, prompt: 'build the thing' })
+  broken.spawned[0].emit('close', 0, null)
+  await until(() => broken.logs.length)
+  assert.match(broken.logs[0], /claude is down/)
+  assert.deepEqual(broken.retitled, [])
+
+  const empty = harness(t, { titler: async () => null })
+  await empty.manager.requestNewSession({ folder: empty.dir, prompt: 'build the thing' })
+  empty.spawned[0].emit('close', 0, null)
+  await sleep(40)
+  assert.deepEqual(empty.retitled, [])
+})
+
+test('follow-up prompts on a board session never ask for a new title', async (t) => {
+  const asked = []
+  const entry = newBoardSession({ cwd: '/tmp', prompt: 'hi', permissionMode: 'bypassPermissions' })
+  const h = harness(t, { sessions: [boardRaw(entry, { run: null })], titler: async (prompt) => { asked.push(prompt); return 'Nope' } })
+  await start(h, entry.sessionId, 'second prompt')
+  h.spawned[0].emit('close', 0, null)
+  await sleep(40)
+  assert.deepEqual(asked, [])
 })
 
 test('a new board session rejects a missing prompt, a relative or missing folder, and blocked commands', async (t) => {

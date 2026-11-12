@@ -39,6 +39,7 @@ import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, s
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
 import { createBoardStore, boardRaw } from './lib/boardsessions.js'
+import { createTitler } from './lib/autotitle.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
@@ -745,6 +746,7 @@ const manager = createRunManager({
   adoptPollMs: ADOPT_POLL_MS,
   homeDir: homedir(),
   boardStore,
+  suggestTitle: createTitler({ bin: CLAUDE_BIN, env: spawnEnv }),
   scanSession,
   hasTranscript,
   buildCard,
