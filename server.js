@@ -32,7 +32,7 @@ import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, settleMerged, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
 import { resolveLocal, imageType, MAX_IMAGE_BYTES } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
@@ -395,8 +395,13 @@ async function fireDueSchedules() {
 const babysitKicked = new Map()
 
 async function kickIdleBabysits() {
-  const store = await readMrBabysit()
   const now = Date.now()
+  const saved = await readMrBabysit()
+  const store = settleMerged(saved, (await mergeRequests()).merged ?? [], now)
+  if (store !== saved) {
+    await writeJson(MR_BABYSIT_FILE, store)
+    babysitBySession = babysitSessions(store)
+  }
   let kicked = false
   for (const [url, entry] of Object.entries(store)) {
     const sid = entry.sessionId

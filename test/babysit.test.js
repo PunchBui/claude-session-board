@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, needsKick, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, needsKick, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, settleMerged, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
 
 const URL_1 = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const URL_2 = 'https://gitlab.example.com/t/r/-/merge_requests/2'
@@ -129,4 +129,23 @@ test('final states, missing sessions and recently kicked babysits are not kicked
   assert.equal(needsKick(undefined, idleCtx()), false)
   assert.equal(needsKick(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS + 1 })), false)
   assert.equal(needsKick(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS - 1 })), true)
+})
+
+test('a live babysit whose merge request merged is stopped as merged', () => {
+  const store = recordBabysit({}, URL_1, { state: 'watching', note: 'Approved; pipeline running', sessionId: SESSION }, 10)
+  const settled = settleMerged(store, [mr(URL_1, { mergedAt: 9 })], 500)
+  assert.equal(settled[URL_1].state, 'stopped')
+  assert.equal(settled[URL_1].note, 'Merged')
+  assert.equal(settled[URL_1].sessionId, SESSION)
+  assert.equal(needsKick(settled[URL_1], idleCtx()), false)
+})
+
+test('settling leaves open, final and unrelated entries alone and is idempotent', () => {
+  let store = recordBabysit({}, URL_1, { state: 'watching', sessionId: SESSION }, 10)
+  store = recordBabysit(store, URL_2, { state: 'ready-to-merge' }, 20)
+  assert.equal(settleMerged(store, [mr(URL_1, { mergedAt: null })], 500), store)
+  assert.equal(settleMerged(store, [mr(URL_2, { mergedAt: 9 })], 500), store)
+  assert.equal(settleMerged(store, [], 500), store)
+  const once = settleMerged(store, [mr(URL_1, { mergedAt: 9 })], 500)
+  assert.equal(settleMerged(once, [mr(URL_1, { mergedAt: 9 })], 600), once)
 })
