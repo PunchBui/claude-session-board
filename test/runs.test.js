@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,6 +61,10 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
       const child = new FakeChild(h.spawnError ? undefined : nextPid++)
       Object.assign(child, { bin, args, options, input: options.input })
       h.spawned.push(child)
+      if (options.outFile) {
+        mkdirSync(join(options.outFile, '..'), { recursive: true })
+        writeFileSync(options.outFile, '')
+      }
       if (h.spawnError) process.nextTick(() => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })))
       return child
     },
@@ -748,4 +752,56 @@ test('Chrome is only passed to board sessions that were started with it', async 
   assert.equal(h.spawned[0].args.includes('--chrome'), false)
   assert.equal(h.spawned[1].args.includes('--chrome'), true)
   assert.equal(h.board[1].chrome, true)
+})
+
+const askLine = (id = 'r1') => `${JSON.stringify({ type: 'control_request', request_id: id, request: { subtype: 'elicitation', mcp_server_name: 'supabase', message: 'Apply?', mode: 'form', requested_schema: { type: 'object', properties: { confirm: { type: 'boolean' } } } } })}\n`
+
+test('a run speaks stream-json and waits for a person to answer an MCP confirmation', async (t) => {
+  const h = harness(t)
+  await start(h)
+  const child = h.spawned[0]
+  const writes = []
+  child.write = (line) => writes.push(line)
+  assert.ok(child.args.includes('stream-json'))
+  assert.ok(child.options.outFile.endsWith(`${SID}.out.jsonl`))
+  const run = h.manager.runFor(SID)
+  appendFileSync(child.options.outFile, askLine())
+  await until(() => run.pending.length === 1)
+  assert.equal(h.manager.publicRun(SID).pending[0].server, 'supabase')
+  assert.equal(typeof h.manager.publicRun(SID).reply, 'undefined')
+  const refused = h.manager.answerPrompt(SID, { requestId: 'r1', action: 'maybe' })
+  assert.equal(refused.status, 400)
+  const answered = h.manager.answerPrompt(SID, { requestId: 'r1', action: 'accept', content: { confirm: true } })
+  assert.equal(answered.status, 200)
+  assert.equal(run.pending.length, 0)
+  assert.deepEqual(JSON.parse(writes[0]).response.response, { action: 'accept', content: { confirm: true } })
+  assert.equal(h.manager.answerPrompt(SID, { requestId: 'r1', action: 'accept' }).status, 404)
+})
+
+test('a permission prompt is denied at once and a finished turn closes the run input', async (t) => {
+  const h = harness(t)
+  await start(h)
+  const child = h.spawned[0]
+  const writes = []
+  child.write = (line) => writes.push(line)
+  child.finish = () => writes.push('FINISH')
+  const perm = { type: 'control_request', request_id: 'p1', request: { subtype: 'can_use_tool', tool_name: 'Bash' } }
+  appendFileSync(child.options.outFile, `${JSON.stringify(perm)}\n${JSON.stringify({ type: 'result' })}\n`)
+  await until(() => writes.includes('FINISH'))
+  assert.equal(JSON.parse(writes[0]).response.response.behavior, 'deny')
+  assert.equal(h.manager.runFor(SID).pending.length, 0)
+})
+
+test('questions are dropped when the run ends and cannot be answered afterwards', async (t) => {
+  const h = harness(t)
+  await start(h)
+  const child = h.spawned[0]
+  child.write = () => {}
+  const run = h.manager.runFor(SID)
+  appendFileSync(child.options.outFile, askLine())
+  await until(() => run.pending.length === 1)
+  child.emit('close', 0, null)
+  await until(settled(run))
+  assert.deepEqual(run.pending, [])
+  assert.equal(h.manager.answerPrompt(SID, { requestId: 'r1', action: 'accept' }).status, 404)
 })

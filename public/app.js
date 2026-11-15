@@ -10,7 +10,7 @@ import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { splitAttachments, visibleText } from './attachments.js'
-import { PATH_PATTERN, isPath, isImagePath, stripLocation, fileUrl } from './filepaths.js'
+import { PATH_PATTERN, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtml, stripLocation, fileUrl } from './filepaths.js'
 import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
@@ -43,6 +43,7 @@ const state = {
   historyNew: new Set(),
   drafts: new DraftStore((() => { try { return localStorage } catch { return null } })()),
   notes: new Map(),
+  asks: new Map(),
   ui: new Map(),
   changes: new Map(),
   agents: new Map(),
@@ -706,6 +707,7 @@ async function revealFile(path) {
 }
 
 function openLightbox(path) {
+  if (!isMobile()) return openImagePane(path)
   const box = el('dialog', 'lightbox')
   const bar = el('div', 'lightbox-bar')
   const reveal = el('button', 'btn', 'Reveal in Finder')
@@ -729,21 +731,358 @@ function openLightbox(path) {
   box.showModal()
 }
 
+let chatBase = ''
+
+const HTML_LAYOUT_WIDTH = 1200
+
+const PREVIEW_MIN = 360
+let closePreviewPane = null
+
+// Desktop: like the Claude desktop app's preview, a file opens in a pane docked beside the chat. The content gets
+// the pane's own width and reflows as the divider is dragged. Phones keep the full-screen viewers.
+function openPreviewPane(path, src, content, { reload = null, extra = [] } = {}) {
+  closePreviewPane?.()
+  const pane = el('aside', 'preview-pane')
+  const bar = el('div', 'preview-bar')
+  const button = (shape, title) => {
+    const b = el('button', 'icon-btn')
+    b.type = 'button'
+    b.title = title
+    b.append(icon(shape, { size: 16 }))
+    return b
+  }
+  const name = el('span', 'preview-name', path.split('/').pop())
+  name.title = path
+  const tab = el('a', 'icon-btn')
+  tab.href = src
+  tab.target = '_blank'
+  tab.rel = 'noopener'
+  tab.title = 'Open in a new tab'
+  tab.append(icon('arrow-up-right', { size: 16 }))
+  const close = button('x', 'Close preview')
+  if (reload) {
+    const again = button('repeat', 'Reload')
+    again.onclick = reload
+    bar.append(again)
+  }
+  bar.append(name, ...extra, tab, close)
+
+  const setWidth = (px) => {
+    const max = Math.max(PREVIEW_MIN, window.innerWidth - 420)
+    const w = Math.round(Math.min(max, Math.max(PREVIEW_MIN, px)))
+    document.body.style.setProperty('--preview-w', `${w}px`)
+    return w
+  }
+  setWidth(Number(localStorage.getItem('board.previewW')) || window.innerWidth * 0.45)
+  const grip = el('div', 'preview-grip')
+  grip.title = 'Drag to resize'
+  grip.addEventListener('pointerdown', (event) => {
+    event.preventDefault()
+    grip.setPointerCapture(event.pointerId)
+    pane.classList.add('resizing')
+    const move = (e) => remember('board.previewW', setWidth(window.innerWidth - e.clientX))
+    const stop = () => {
+      pane.classList.remove('resizing')
+      grip.removeEventListener('pointermove', move)
+    }
+    grip.addEventListener('pointermove', move)
+    grip.addEventListener('pointerup', stop, { once: true })
+    grip.addEventListener('pointercancel', stop, { once: true })
+  })
+  const onResize = () => setWidth(parseFloat(document.body.style.getPropertyValue('--preview-w')))
+  window.addEventListener('resize', onResize)
+
+  closePreviewPane = () => {
+    window.removeEventListener('resize', onResize)
+    document.body.classList.remove('preview-open')
+    pane.remove()
+    closePreviewPane = null
+  }
+  close.onclick = () => closePreviewPane()
+  pane.append(grip, bar, content)
+  document.body.append(pane)
+  document.body.classList.add('preview-open')
+}
+
+function openHtmlViewer(path, base = '') {
+  if (isMobile()) return openHtmlCanvas(path, base)
+  const src = fileUrl(path, base)
+  const frame = document.createElement('iframe')
+  frame.title = path.split('/').pop()
+  frame.setAttribute('sandbox', 'allow-scripts allow-popups')
+  frame.src = src
+  openPreviewPane(path, src, frame, { reload: () => { frame.src = src } })
+}
+
+function openImagePane(path) {
+  const src = fileUrl(path)
+  const holder = el('div', 'preview-image')
+  const img = document.createElement('img')
+  img.src = src
+  img.alt = path.split('/').pop()
+  holder.append(img)
+  const reveal = el('button', 'btn', 'Reveal in Finder')
+  reveal.type = 'button'
+  reveal.onclick = () => revealFile(path)
+  openPreviewPane(path, src, holder, { extra: [reveal] })
+}
+
+function openPdfPane(path) {
+  const src = fileUrl(path)
+  const frame = document.createElement('iframe')
+  frame.title = path.split('/').pop()
+  frame.src = src
+  const save = el('a', 'btn', 'Download')
+  save.href = `${src}&download=1`
+  save.download = frame.title
+  openPreviewPane(path, src, frame, { reload: () => { frame.src = src }, extra: [save] })
+}
+
+// Excalidraw-style canvas: the page keeps one fixed desktop layout; the board pans and zooms it with transforms.
+function openHtmlCanvas(path, base = '') {
+  const box = el('dialog', 'lightbox html-viewer')
+  const bar = el('div', 'lightbox-bar')
+  const tab = el('a', 'btn', 'New tab')
+  tab.href = fileUrl(path, base)
+  tab.target = '_blank'
+  tab.rel = 'noopener'
+  const close = el('button', 'icon-btn')
+  close.type = 'button'
+  close.title = 'Close (Esc)'
+  close.append(icon('x', { size: 16 }))
+  close.onclick = () => box.close()
+  const frame = document.createElement('iframe')
+  frame.src = `${fileUrl(path, base)}&viewer=1`
+  frame.setAttribute('sandbox', 'allow-scripts allow-popups')
+  frame.style.width = `${HTML_LAYOUT_WIDTH}px`
+  frame.style.height = '2000px'
+  const holder = el('div', 'html-holder')
+  holder.append(frame)
+
+  let s = 0.3, x = 0, y = 0, pageH = 2000
+  let fitted = true
+  const label = el('button', 'btn zoom-label')
+  label.type = 'button'
+  label.title = 'Fit to width'
+  const render = () => {
+    frame.style.transform = `translate(${x}px, ${y}px) scale(${s})`
+    label.textContent = `${Math.round(s * 100)}%`
+  }
+  const clampPan = () => {
+    const w = holder.clientWidth, h = holder.clientHeight
+    const cw = HTML_LAYOUT_WIDTH * s, ch = pageH * s
+    x = cw <= w ? (w - cw) / 2 : Math.min(0, Math.max(w - cw, x))
+    y = ch <= h ? 0 : Math.min(0, Math.max(h - ch, y))
+  }
+  const zoomAt = (factor, cx, cy) => {
+    const next = Math.min(6, Math.max(0.1, s * factor))
+    const k = next / s
+    x = cx - (cx - x) * k
+    y = cy - (cy - y) * k
+    s = next
+    fitted = false
+    clampPan()
+    render()
+  }
+  const fit = () => {
+    s = Math.min(1, holder.clientWidth / HTML_LAYOUT_WIDTH)
+    x = 0
+    y = 0
+    fitted = true
+    clampPan()
+    render()
+  }
+  const center = () => [holder.clientWidth / 2, holder.clientHeight / 2]
+  label.onclick = fit
+  const out = el('button', 'btn', '−')
+  out.type = 'button'
+  out.onclick = () => zoomAt(1 / 1.3, ...center())
+  const inn = el('button', 'btn', '+')
+  inn.type = 'button'
+  inn.onclick = () => zoomAt(1.3, ...center())
+
+  // pointer gestures: one finger pans, two fingers pinch around their midpoint, double-tap toggles fit / 2.5x fit
+  const pointers = new Map()
+  let last = null
+  let lastTap = 0
+  const local = (event) => {
+    const r = holder.getBoundingClientRect()
+    return [event.clientX - r.left, event.clientY - r.top]
+  }
+  const pinchState = () => {
+    const [a, b] = [...pointers.values()]
+    return { cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2, d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1 }
+  }
+  holder.addEventListener('pointerdown', (event) => {
+    holder.setPointerCapture(event.pointerId)
+    pointers.set(event.pointerId, local(event))
+    last = pointers.size === 2 ? pinchState() : null
+    if (pointers.size === 1) {
+      const now = Date.now()
+      if (now - lastTap < 300) {
+        const [cx, cy] = local(event)
+        if (fitted) zoomAt(2.5, cx, cy)
+        else fit()
+        lastTap = 0
+      } else lastTap = now
+    }
+  })
+  holder.addEventListener('pointermove', (event) => {
+    if (!pointers.has(event.pointerId)) return
+    const before = pointers.get(event.pointerId)
+    const now = local(event)
+    pointers.set(event.pointerId, now)
+    if (pointers.size === 1) {
+      x += now[0] - before[0]
+      y += now[1] - before[1]
+      fitted = false
+      clampPan()
+      render()
+    } else if (pointers.size === 2 && last) {
+      const cur = pinchState()
+      x += cur.cx - last.cx
+      y += cur.cy - last.cy
+      zoomAt(cur.d / last.d, cur.cx, cur.cy)
+      last = cur
+    }
+  })
+  const lift = (event) => {
+    pointers.delete(event.pointerId)
+    last = pointers.size === 2 ? pinchState() : null
+  }
+  holder.addEventListener('pointerup', lift)
+  holder.addEventListener('pointercancel', lift)
+  holder.addEventListener('wheel', (event) => {
+    event.preventDefault()
+    const [cx, cy] = local(event)
+    if (event.ctrlKey || event.metaKey) zoomAt(Math.exp(-event.deltaY * 0.01), cx, cy)
+    else { x -= event.deltaX; y -= event.deltaY; fitted = false; clampPan(); render() }
+  }, { passive: false })
+
+  const onMessage = (event) => {
+    const size = event.source === frame.contentWindow ? event.data?.htmlViewerSize : null
+    if (!size || !(size.h > 0)) return
+    pageH = Math.min(size.h, 60000)
+    frame.style.height = `${pageH}px`
+    clampPan()
+    render()
+  }
+  window.addEventListener('message', onMessage)
+  bar.append(el('span', 'lightbox-name', path.split('/').pop()), out, label, inn, tab, close)
+  box.append(bar, holder)
+  box.onclose = () => {
+    window.removeEventListener('message', onMessage)
+    box.remove()
+  }
+  document.body.append(box)
+  box.showModal()
+  fit()
+}
+
+const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`
+
+// A PDF opened by navigating away strands a bookmarked (no URL bar) phone web app with no way back,
+// so it opens in a full-screen dialog with its own Close button. The file is fetched here first so
+// the wait shows real progress instead of a black page, then handed to the browser's PDF viewer.
+function openPdfViewer(path) {
+  if (!isMobile()) return openPdfPane(path)
+  const box = el('dialog', 'lightbox html-viewer pdf-viewer')
+  const bar = el('div', 'lightbox-bar')
+  const save = el('a', 'btn', 'Download')
+  save.hidden = true
+  const close = el('button', 'icon-btn')
+  close.type = 'button'
+  close.title = 'Close (Esc)'
+  close.append(icon('x', { size: 16 }))
+  close.onclick = () => box.close()
+  const name = path.split('/').pop()
+  const holder = el('div', 'pdf-holder')
+  const loading = el('div', 'pdf-loading')
+  const label = el('div', 'pdf-label', 'Loading PDF…')
+  const track = el('div', 'pdf-track')
+  const fill = el('div', 'pdf-fill')
+  track.append(fill)
+  const spin = el('span', 'spinner')
+  loading.append(spin, label, track)
+  holder.append(loading)
+  bar.append(el('span', 'lightbox-name', name), save, close)
+  box.append(bar, holder)
+
+  const controller = new AbortController()
+  let objectUrl = null
+  box.onclose = () => {
+    controller.abort()
+    if (objectUrl) URL.revokeObjectURL(objectUrl)
+    box.remove()
+  }
+  const fail = (message) => {
+    spin.remove()
+    track.remove()
+    label.textContent = message
+    const retry = el('button', 'btn', 'Try again')
+    retry.type = 'button'
+    retry.onclick = () => { box.close(); openPdfViewer(path) }
+    loading.append(retry)
+  }
+  const load = async () => {
+    const res = await fetch(fileUrl(path), { signal: controller.signal })
+    if (!res.ok) return fail('Could not load this PDF.')
+    const total = Number(res.headers.get('content-length')) || 0
+    const chunks = []
+    let got = 0
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      got += value.length
+      label.textContent = total ? `Loading PDF… ${mb(got)} of ${mb(total)}` : `Loading PDF… ${mb(got)}`
+      if (total) fill.style.width = `${Math.min(100, (got / total) * 100)}%`
+    }
+    objectUrl = URL.createObjectURL(new Blob(chunks, { type: 'application/pdf' }))
+    save.href = objectUrl
+    save.download = name
+    save.hidden = false
+    const frame = document.createElement('iframe')
+    frame.title = name
+    frame.src = objectUrl
+    frame.onload = () => loading.remove()
+    holder.append(frame)
+    // Safari can skip the load event for PDFs; never leave the spinner up over a ready document.
+    setTimeout(() => loading.remove(), 1500)
+  }
+  load().catch((error) => { if (error?.name !== 'AbortError') fail('Could not load this PDF. Check the connection.') })
+  document.body.append(box)
+  box.showModal()
+}
+
 function fileNode(path, label, { preview = true } = {}) {
   const target = stripLocation(path)
   const image = isImagePath(target)
+  const html = isHtmlPath(target)
+  const pdf = isPdfPath(target)
+  const base = chatBase
   const wrap = el('span', 'filelink')
   const a = el('a', 'chat-link')
-  a.href = image ? fileUrl(target) : '#'
+  a.href = image || html || pdf ? fileUrl(target, base) : '#'
   a.dataset.copy = target
-  a.title = 'Reveal in Finder'
+  a.title = html ? 'Open page' : pdf ? 'Open PDF' : 'Reveal in Finder'
   a.onclick = (event) => {
     event.preventDefault()
-    revealFile(target)
+    if (pdf) openPdfViewer(target)
+    else if (html) openHtmlViewer(target, base)
+    else revealFile(target)
   }
   if (typeof label === 'string') a.append(text(label))
   else a.append(label)
   wrap.append(a)
+  if (pdf) {
+    const save = el('a', 'chat-link pdf-save', ' ⬇ Download')
+    save.href = `${fileUrl(target)}&download=1`
+    save.download = target.split('/').pop()
+    save.title = 'Download PDF'
+    wrap.append(save)
+  }
   if (image && preview) {
     const frame = el('span', 'filepreview')
     const open = el('a')
@@ -773,7 +1112,7 @@ function inline(parent, value) {
       const inner = part.slice(1, -1)
       const code = el('code', undefined, inner)
       const href = /^https?:\/\/\S+$/.test(inner) ? safeUrl(inner) : null
-      parent.append(href ? linkNode(href, code) : isPath(inner) ? fileNode(inner, code) : code)
+      parent.append(href ? linkNode(href, code) : isPath(inner) || (chatBase && isRelativeHtml(inner)) ? fileNode(inner, code) : code)
     } else if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) {
       const strong = el('strong')
       inline(strong, part.slice(2, -2))
@@ -783,7 +1122,7 @@ function inline(parent, value) {
       const label = part.slice(1, split)
       const target = part.slice(split + 2, -1)
       const href = safeUrl(target)
-      parent.append(href ? linkNode(href, label) : isPath(target) ? fileNode(target, label) : text(part))
+      parent.append(href ? linkNode(href, label) : isPath(target) || (chatBase && isRelativeHtml(target)) ? fileNode(target, label) : text(part))
     } else if (/^https?:\/\//.test(part)) {
       const [url, tail] = splitTrailing(part)
       const href = safeUrl(url)
@@ -1390,7 +1729,9 @@ function renderComposer(c) {
   } else if (running) {
     note.textContent = c.run.stopRequested
       ? 'Stopping the board run…'
-      : `Board run in progress (${c.run.mode}) · started ${relative(c.run.startedAt)}.${c.source === 'board' ? '' : ' Do not type in the desktop app until it finishes or you press Stop.'}`
+      : c.run.pending?.length
+        ? 'Waiting for your answer above. The run continues as soon as you reply.'
+        : `Board run in progress (${c.run.mode}) · started ${relative(c.run.startedAt)}.${c.source === 'board' ? '' : ' Do not type in the desktop app until it finishes or you press Stop.'}`
     note.classList.add('running')
   } else if (c.run?.state === 'done' && c.run.handoff?.ready) {
     note.textContent = 'Handoff written. A new chat should be open in the desktop app: press Enter there to start it. '
@@ -1417,7 +1758,7 @@ function renderComposer(c) {
     note.textContent = 'Busy in the desktop app. New prompts are queued until it is idle.'
   }
 
-  for (const part of [renderSchedules(c), renderQueue(c)]) if (part) dock.append(part)
+  for (const part of [renderAsks(c), renderSchedules(c), renderQueue(c)]) if (part) dock.append(part)
   if (ui.popover === 'snippets') dock.append(renderSnippetPopover(c, box))
   if (ui.popover === 'schedule') dock.append(renderSchedulePopover(c, box))
   const attachments = renderAttachments(c)
@@ -1426,6 +1767,86 @@ function renderComposer(c) {
   syncSlash(c.id, dock, box)
   requestAnimationFrame(() => autosize(box))
   return dock
+}
+
+// A running board session can stop and ask: an MCP server (e.g. Supabase before a migration) wants a yes/no,
+// which a one-shot `claude -p` run could only cancel. The answer goes back to the waiting run.
+function renderAsks(c) {
+  const asks = c.run?.state === 'running' ? c.run.pending ?? [] : []
+  if (!asks.length) return null
+  const wrap = el('div', 'asks')
+  for (const ask of asks) {
+    const key = `${c.id}:${ask.id}`
+    const values = state.asks.get(key) ?? {}
+    state.asks.set(key, values)
+    const card = el('form', 'ask')
+    card.append(el('div', 'ask-server', `${ask.server || 'A tool'} asks${ask.title ? ` · ${ask.title}` : ''}`), el('div', 'ask-message', ask.message))
+    if (ask.url) {
+      const link = el('a', undefined, ask.url)
+      link.href = ask.url
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      card.append(link)
+    }
+    const inputs = []
+    for (const field of ask.fields) {
+      const row = el('label', 'ask-field')
+      row.append(el('span', undefined, `${field.title}${field.required ? ' *' : ''}`))
+      let input
+      if (field.type === 'boolean') {
+        input = el('input')
+        input.type = 'checkbox'
+        input.checked = values[field.name] ?? field.default === true
+        values[field.name] ??= input.checked
+        input.onchange = () => { values[field.name] = input.checked }
+      } else if (field.type === 'choice' || field.type === 'multi') {
+        input = el('select')
+        input.multiple = field.type === 'multi'
+        for (const option of field.options ?? []) {
+          const node = el('option', undefined, option.label)
+          node.value = option.value
+          node.selected = [].concat(values[field.name] ?? field.default ?? []).includes(option.value)
+          input.append(node)
+        }
+        input.onchange = () => { values[field.name] = field.type === 'multi' ? [...input.selectedOptions].map((o) => o.value) : input.value }
+        if (field.type === 'choice' && values[field.name] === undefined) values[field.name] = input.value
+      } else {
+        input = el('input')
+        input.type = field.type === 'string' ? 'text' : 'number'
+        input.value = values[field.name] ?? field.default ?? ''
+        input.oninput = () => { values[field.name] = input.value }
+      }
+      if (field.description) row.title = field.description
+      row.append(input)
+      inputs.push(input)
+      card.append(row)
+    }
+    const status = el('span', 'ask-status')
+    const buttons = []
+    const answer = async (action) => {
+      for (const b of buttons) b.disabled = true
+      const result = await postJson('/api/prompt/answer', { id: c.id, requestId: ask.id, action, content: values })
+      if (result.ok) state.asks.delete(key)
+      else {
+        status.textContent = result.data.error ?? 'Could not send the answer'
+        for (const b of buttons) b.disabled = false
+      }
+      if (result.ok || result.data.error?.includes('no longer')) await resync()
+    }
+    const bar = el('div', 'ask-bar')
+    for (const [action, label, cls] of ask.mode === 'url' ? [['accept', 'Done', 'primary'], ['cancel', 'Cancel', '']] : [['accept', 'Approve', 'primary'], ['decline', 'Decline', '']]) {
+      const button = el('button', `btn ${cls}`.trim(), label)
+      button.type = 'button'
+      button.onclick = () => answer(action)
+      buttons.push(button)
+      bar.append(button)
+    }
+    bar.append(status)
+    card.append(bar)
+    card.onsubmit = (event) => event.preventDefault()
+    wrap.append(card)
+  }
+  return wrap
 }
 
 function handoffLinkFor(c) {
@@ -1538,6 +1959,7 @@ function renderWorking(c) {
 }
 
 function renderChat(c) {
+  chatBase = c.cwd ?? ''
   const wrap = el('div', 'chat-wrap')
   const chat = el('div', 'chat')
   const inner = el('div', 'chat-inner')

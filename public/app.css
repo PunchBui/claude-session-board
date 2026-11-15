@@ -217,8 +217,8 @@
   .card.ctx-danger { border-color: var(--danger); }
 
   .card-head { padding: 14px 24px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-  .head-row { display: flex; align-items: flex-start; gap: 10px; }
-  .head-title { flex: 1; min-width: 0; }
+  .head-row { display: flex; flex-wrap: wrap; row-gap: 8px; align-items: flex-start; gap: 8px 10px; }
+  .head-title { flex: 1 1 240px; min-width: 0; }
   .title { font: 500 19px/1.3 var(--serif); letter-spacing: -.01em; overflow-wrap: anywhere; }
   .meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
   .meta-line .dotted::before { content: '·'; margin-right: 10px; color: var(--faint); }
@@ -399,6 +399,16 @@
   .queue-head .btn { padding: 1px 10px; font-size: 12px; }
   .send.wide { width: auto; padding: 0 16px; font-size: 13px; font-weight: 600; line-height: 1; white-space: nowrap; }
   .send.stop-side { background: var(--surface-2); color: var(--text); font-size: 12px; }
+  .asks { max-width: var(--col, 820px); margin: 0 auto 8px; display: grid; gap: 8px; }
+  .ask { border: 1px solid var(--caution); background: var(--surface); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; font-size: 13px; }
+  .ask-server { font-size: 12px; font-weight: 600; color: var(--caution); }
+  .ask-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ask a { overflow-wrap: anywhere; }
+  .ask-field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+  .ask-field input[type=checkbox] { justify-self: start; }
+  .ask-field input:not([type=checkbox]), .ask-field select { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .ask-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ask-status { font-size: 12px; color: var(--danger); }
   .run-note { max-width: var(--col, 820px); margin: 8px auto 0; padding: 0 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
   .run-note.error { color: var(--danger); }
   .run-note.running { color: var(--info); }
@@ -529,6 +539,30 @@
   .lightbox-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
   .lightbox-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
   .lightbox img { display: block; max-width: 100%; max-height: calc(100vh - 100px); min-height: 0; margin: 0 auto; object-fit: contain; cursor: zoom-out; }
+  dialog.html-viewer { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; background: var(--bg, #222); }
+  dialog.html-viewer .lightbox-bar { padding-top: calc(10px + env(safe-area-inset-top)); padding-left: calc(12px + env(safe-area-inset-left)); padding-right: calc(12px + env(safe-area-inset-right)); flex: none; }
+  dialog.html-viewer .lightbox-bar .btn { min-width: 40px; padding-left: 10px; padding-right: 10px; }
+  /* Desktop HTML preview: docked beside the chat, the page gets the pane's real width and scrolls itself */
+  .preview-pane { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: var(--preview-w, 45vw); display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--line); -webkit-app-region: no-drag; app-region: no-drag; }
+  .preview-bar { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .preview-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 10px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 12.5px; }
+  .preview-pane iframe { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+  .preview-image { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px; overflow: auto; }
+  .preview-image img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+  .preview-bar .btn { padding: 4px 10px; font-size: 12.5px; white-space: nowrap; }
+  .preview-grip { position: absolute; z-index: 1; top: 0; bottom: 0; left: -4px; width: 8px; cursor: col-resize; touch-action: none; }
+  .preview-grip:hover, .preview-pane.resizing .preview-grip { background: color-mix(in srgb, var(--accent, #3b82f6) 45%, transparent); }
+  .preview-pane.resizing iframe { pointer-events: none; }
+  @media (min-width: 721px) { body.preview-open { padding-right: var(--preview-w, 45vw); } }
+  @media (max-width: 720px) { .preview-pane { width: 100%; padding-top: env(safe-area-inset-top); } .preview-grip { display: none; } }
+  .pdf-holder { flex: 1; min-height: 0; position: relative; background: #e9e6dc; padding-bottom: env(safe-area-inset-bottom); }
+  .pdf-holder iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+  .pdf-loading { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: var(--surface); color: var(--text); font-size: 14px; padding: 24px; text-align: center; }
+  .pdf-loading .spinner { width: 28px; height: 28px; border-width: 3px; }
+  .pdf-track { width: min(280px, 70%); height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+  .pdf-fill { width: 0; height: 100%; background: var(--accent); transition: width .15s linear; }
+  .html-holder { flex: 1; min-height: 0; position: relative; overflow: hidden; background: #e9e6dc; touch-action: none; user-select: none; -webkit-user-select: none; padding-bottom: env(safe-area-inset-bottom); }
+  .html-holder iframe { position: absolute; top: 0; left: 0; border: 0; background: #fff; transform-origin: 0 0; pointer-events: none; }
   dialog h3 { margin: 0 0 12px; font: 500 20px/1.3 var(--serif); }
   dialog textarea { width: 100%; min-height: 110px; resize: vertical; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: 10px 12px; line-height: 1.5; }
   dialog .targets { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; max-height: 220px; overflow: auto; }

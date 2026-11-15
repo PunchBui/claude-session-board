@@ -2,9 +2,14 @@ export const PATH_PATTERN = /(?<![\w:/.~-])(?:~|\/(?:Users|home|tmp|private|var|
 
 const WHOLE_PATH = new RegExp(`^(?:${PATH_PATTERN.source})$`)
 const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i
+const HTML_PATH = /\.html?$/i
+const PDF_PATH = /\.pdf$/i
 const LOCATION_SUFFIX = /:\d+(?::\d+)?$/
 
 export const isPath = (value) => WHOLE_PATH.test(value)
 export const isImagePath = (value) => IMAGE_PATH.test(value)
+export const isHtmlPath = (value) => HTML_PATH.test(value)
+export const isPdfPath = (value) => PDF_PATH.test(value)
 export const stripLocation = (value) => value.replace(LOCATION_SUFFIX, '')
-export const fileUrl = (path) => `/api/file?path=${encodeURIComponent(path)}`
+export const isRelativeHtml = (value) => /^(?![/~]|[a-z][a-z0-9+.-]*:)[^\s<>"'`]+\.html?$/i.test(value) && !value.includes('..')
+export const fileUrl = (path, base) => `/api/file?path=${encodeURIComponent(path)}${base && !/^[/~]/.test(path) ? `&base=${encodeURIComponent(base)}` : ''}`

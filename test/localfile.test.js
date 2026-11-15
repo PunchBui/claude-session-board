@@ -74,3 +74,29 @@ test('only common raster images get an image type', () => {
   assert.equal(imageType('/a/b.html'), null)
   assert.equal(imageType('/a/b'), null)
 })
+
+import { withSizeReporter, SIZE_SCRIPT, isPdfFile, contentDisposition, parseRange } from '../lib/localfile.js'
+test('withSizeReporter injects the size reporter before the last </body>, or appends it', () => {
+  assert.equal(withSizeReporter('<body>x</body>'), `<body>x${SIZE_SCRIPT}</body>`)
+  assert.equal(withSizeReporter('<p>x</p>'), `<p>x</p>${SIZE_SCRIPT}`)
+})
+
+test('pdf files are recognised and get a safe content-disposition, Thai names included', () => {
+  assert.equal(isPdfFile('/a/b.PDF'), true)
+  assert.equal(isPdfFile('/a/b.pdf.png'), false)
+  assert.equal(contentDisposition('/a/guide.pdf', false), "inline; filename*=UTF-8''guide.pdf")
+  assert.equal(contentDisposition('/a/คู่มือ (1).pdf', true), "attachment; filename*=UTF-8''%E0%B8%84%E0%B8%B9%E0%B9%88%E0%B8%A1%E0%B8%B7%E0%B8%AD%20%281%29.pdf")
+  assert.ok(!contentDisposition('/a/x"\r\ny.pdf', false).includes('\n'))
+})
+
+test('byte ranges: open-ended, bounded, suffix, clamped, and unsatisfiable', () => {
+  assert.deepEqual(parseRange('bytes=0-99', 1000), { start: 0, end: 99 })
+  assert.deepEqual(parseRange('bytes=900-', 1000), { start: 900, end: 999 })
+  assert.deepEqual(parseRange('bytes=-100', 1000), { start: 900, end: 999 })
+  assert.deepEqual(parseRange('bytes=0-5000', 1000), { start: 0, end: 999 })
+  assert.equal(parseRange('bytes=1000-', 1000), 'unsatisfiable')
+  assert.equal(parseRange('bytes=5-2', 1000), 'unsatisfiable')
+  assert.equal(parseRange(undefined, 1000), null)
+  assert.equal(parseRange('bytes=0-1,5-6', 1000), null)
+  assert.equal(parseRange('items=0-1', 1000), null)
+})

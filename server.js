@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { createReadStream } from 'node:fs'
 import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename, resolve, sep } from 'node:path'
@@ -34,7 +35,7 @@ import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
 import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, settleMerged, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
-import { resolveLocal, imageType, MAX_IMAGE_BYTES } from './lib/localfile.js'
+import { resolveLocal, imageType, isHtmlFile, isPdfFile, contentDisposition, parseRange, withSizeReporter, MAX_IMAGE_BYTES, MAX_HTML_BYTES, MAX_PDF_BYTES } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
@@ -882,6 +883,9 @@ const postRoutes = {
   async '/api/prompt/stop'(body, res) {
     return reply(res, manager.stopPrompt(body.id))
   },
+  async '/api/prompt/answer'(body, res) {
+    return reply(res, manager.answerPrompt(String(body.id ?? ''), body))
+  },
   async '/api/queue'(body, res) {
     if (isBlocked(body.prompt)) return json(res, 400, { error: BLOCKED_MESSAGE })
     if (!validPrompt(body.prompt)) return json(res, 400, { error: 'bad request' })
@@ -1022,8 +1026,32 @@ const postRoutes = {
 }
 
 const getRoutes = {
-  async '/api/file'(url, res) {
-    const found = await resolveLocal(url.searchParams.get('path'))
+  async '/api/file'(url, res, req) {
+    const rawPath = url.searchParams.get('path') ?? ''
+    const base = url.searchParams.get('base')
+    const joined = base && base.startsWith('/') && isHtmlFile(rawPath) && !/^[/~]/.test(rawPath) && !rawPath.split('/').includes('..') ? `${base.replace(/\/+$/, '')}/${rawPath}` : rawPath
+    const found = await resolveLocal(joined)
+    if (found && !found.directory && found.size <= MAX_HTML_BYTES && isHtmlFile(found.path)) {
+      // Opaque origin: scripts may run (whiteboards animate) but cannot touch the board's cookies or API.
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': 'sandbox allow-scripts allow-popups', 'x-content-type-options': 'nosniff' })
+      const page = await readFile(found.path)
+      return res.end(url.searchParams.get('viewer') === '1' ? withSizeReporter(page.toString('utf8')) : page)
+    }
+    if (found && !found.directory && found.size <= MAX_PDF_BYTES && isPdfFile(found.path)) {
+      // iOS fetches PDFs in byte ranges; a server that ignores Range leaves its viewer blank.
+      const headers = { 'content-type': 'application/pdf', 'content-disposition': contentDisposition(found.path, url.searchParams.get('download') === '1'), 'accept-ranges': 'bytes', 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' }
+      const range = parseRange(req.headers.range, found.size)
+      if (range === 'unsatisfiable') {
+        res.writeHead(416, { 'content-range': `bytes */${found.size}` })
+        return res.end()
+      }
+      if (range) res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${found.size}`, 'content-length': range.end - range.start + 1 })
+      else res.writeHead(200, { ...headers, 'content-length': found.size })
+      const stream = createReadStream(found.path, range ?? undefined)
+      stream.on('error', () => res.destroy())
+      res.on('close', () => stream.destroy())
+      return stream.pipe(res)
+    }
     const type = found && !found.directory && found.size <= MAX_IMAGE_BYTES ? imageType(found.path) : null
     if (!type) return send(res, 404, 'not found', 'text/plain')
     res.writeHead(200, { 'content-type': type, 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' })
@@ -1183,7 +1211,7 @@ createServer(async (req, res) => {
     if (req.method !== 'GET') return send(res, 405, 'method not allowed', 'text/plain')
     if (url.pathname === '/api/upload') return await serveUpload(res, url)
     const route = getRoutes[url.pathname]
-    if (route) return await route(url, res)
+    if (route) return await route(url, res, req)
     return await serveStatic(res, url.pathname)
   } catch (error) {
     return send(res, 500, String(error), 'text/plain')
