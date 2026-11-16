@@ -163,7 +163,8 @@
         <div class="hello-sub">Each run starts a new board-only session in the project, with the prompt below. It shows up in Focus when it starts. The board has to be running at the time.</div>
       </div>
       <form class="sched-form" id="schedule-form" autocomplete="off"></form>
-      <div class="sched-head"><h3>Scheduled</h3><span id="schedule-status"></span></div>
+      <div class="sched-head"><h3>Scheduled</h3><span id="schedule-status"></span><div class="seg" id="schedule-view"><button data-view="list">List</button><button data-view="month">Month</button><button data-view="week">Week</button><button data-view="day">Day</button></div></div>
+      <div class="sched-cal" id="schedule-cal" hidden></div>
       <div class="rt-list" id="schedule-rows"></div>
       <div class="empty" id="schedule-empty" hidden>No schedules yet.</div>
     </div>

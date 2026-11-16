@@ -14,6 +14,7 @@ import { PATH_PATTERN, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtm
 import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
+import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
@@ -3773,7 +3774,8 @@ async function loadMrs(force = false) {
 
 const REPEAT_LABELS = { none: 'Once', daily: 'Every day', weekdays: 'Weekdays', weekly: 'Every week' }
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const sched = { fields: {}, note: null, history: new Set() }
+const sched = { fields: {}, note: null, history: new Set(), view: 'list', month: new Date() }
+const CAL_VIEWS = new Set(['month', 'week', 'day'])
 
 // Same project picker as New chat: known projects, then "Other folder…" opens the Finder picker.
 function fillScheduleFolders() {
@@ -4097,6 +4099,47 @@ function scheduleHistory(r) {
   return list
 }
 
+function renderScheduleCalendar(routines) {
+  const box = $('schedule-cal')
+  box.replaceChildren()
+  const view = sched.view
+  const anchor = sched.month
+  const bar = el('div', 'cal-bar')
+  const step = (label, by) => {
+    const b = el('button', 'btn', label)
+    b.onclick = () => { sched.month = by === 0 ? new Date() : shiftAnchor(anchor, view, by); renderSchedulePage() }
+    return b
+  }
+  const days = view === 'month' ? monthGrid(anchor) : view === 'week' ? weekGrid(anchor) : dayGrid(anchor)
+  const title = view === 'month' ? anchor.toLocaleDateString([], { month: 'long', year: 'numeric' })
+    : view === 'week' ? `${days[0].toLocaleDateString([], { month: 'short', day: 'numeric' })} – ${days[6].toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`
+    : anchor.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+  bar.append(step('‹', -1), el('strong', 'cal-title', title), step('›', 1), step('Today', 0))
+  box.append(bar)
+  const grid = el('div', `cal-grid ${view}`)
+  if (view !== 'day') for (const name of DAY_NAMES) grid.append(el('div', 'cal-dow', name.slice(0, 3)))
+  const events = eventsByDay(routines, days)
+  const todayKey = dayKey(new Date())
+  const max = view === 'month' ? 3 : Infinity
+  for (const d of days) {
+    const cell = el('div', `cal-day${view === 'month' && d.getMonth() !== anchor.getMonth() ? ' other' : ''}${dayKey(d) === todayKey ? ' today' : ''}`)
+    cell.append(el('div', 'cal-num', String(d.getDate())))
+    const list = events.get(dayKey(d)) ?? []
+    if (!list.length && view !== 'month') cell.append(el('div', 'cal-more', 'Nothing scheduled'))
+    for (const { routine, at } of list.slice(0, max)) {
+      const time = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      const chip = el('button', 'cal-chip')
+      chip.append(el('span', 'cal-time', time), text(` ${routine.name}`), el('span', 'cal-opts', `${modelLabel(routine.model)} · ${effortLabel(routine.effort)}${view === 'day' ? ` · ${home(routine.folder)}` : ''}`))
+      chip.title = `${routine.name}\n${time} · ${REPEAT_LABELS[routine.repeat]}\nModel: ${modelLabel(routine.model)} · Effort: ${effortLabel(routine.effort)}\n${home(routine.folder)}`
+      chip.onclick = () => startEdit(routine)
+      cell.append(chip)
+    }
+    if (list.length > max) cell.append(el('div', 'cal-more', `+${list.length - max} more`))
+    grid.append(cell)
+  }
+  box.append(grid)
+}
+
 function renderSchedulePage() {
   const data = state.schedule.data
   if (!data) return
@@ -4104,8 +4147,13 @@ function renderSchedulePage() {
   const active = rows.filter((r) => r.enabled).length
   $('schedule-status').textContent = rows.length ? `${rows.length} total · ${active} active` : ''
   $('schedule-empty').hidden = rows.length > 0
+  document.querySelectorAll('#schedule-view button').forEach((b) => { b.onclick = () => { sched.view = b.dataset.view; renderSchedulePage() }; b.setAttribute('aria-pressed', String(b.dataset.view === sched.view)) })
   const list = $('schedule-rows')
   list.replaceChildren()
+  $('schedule-cal').hidden = !CAL_VIEWS.has(sched.view)
+  document.querySelector('.sched-page').classList.toggle('wide', CAL_VIEWS.has(sched.view))
+  list.hidden = CAL_VIEWS.has(sched.view)
+  if (CAL_VIEWS.has(sched.view)) return renderScheduleCalendar(rows)
   for (const r of rows) {
     const item = el('div', `rt-item${r.enabled ? '' : ' off'}${sched.editing === r.rid ? ' editing' : ''}`)
     const main = el('div', 'rt-main')
@@ -4121,6 +4169,7 @@ function renderSchedulePage() {
       link.onclick = (event) => { event.preventDefault(); openInFocus(r.lastSessionId) }
       meta.append(link)
     }
+    meta.append(el('span', 'rt-model', `${modelLabel(r.model)} · ${effortLabel(r.effort)} effort`))
     if (r.runs) meta.append(el('span', undefined, `${r.runs} run${r.runs === 1 ? '' : 's'}`))
     if (r.lastError) meta.append(el('span', 'err', r.lastError))
     main.append(el('div', 'rt-title', r.name), meta)
