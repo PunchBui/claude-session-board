@@ -26,7 +26,7 @@ import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
 import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
-import { backgroundTasks, backgroundCounts, safeOutputPath } from './lib/background.js'
+import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
 import { readNewSessionDefaults } from './lib/defaults.js'
@@ -257,6 +257,7 @@ async function buildCard(raw) {
     details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
     usage: scanned ? usageOf(scanned.state) : null,
     subagents: scanned ? await subagentStore.summary(scanned.path) : null,
+    backgroundTasks: scanned ? sessionBackground(scanned.state.background, { nowMs: Date.now(), idleMs: Date.now() - scanned.info.mtimeMs }) : null,
     babysit: babysitBySession.get(raw.sessionId) ?? null,
     live,
     loop: scanned ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,

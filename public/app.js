@@ -1942,7 +1942,8 @@ function renderNowDoing(c) {
 function renderWorking(c) {
   const live = c.live
   const label = phaseLabel(live)
-  if (!label && !live?.subagents?.length) return null
+  const background = runningBackground(c)
+  if (!label && !live?.subagents?.length && !background.length) return null
   const row = el('div', 'working')
   if (label) {
     const line = el('div', 'working-line')
@@ -1956,7 +1957,69 @@ function renderWorking(c) {
     line.append(icon('corner-down-right', { size: 14 }), el('b', undefined, sub.name), el('span', 'what', sub.text), sinceSpan(sub.since))
     row.append(line)
   }
+  if (background.length) {
+    if (!label) {
+      const line = el('div', 'working-line')
+      line.append(el('span', 'pulse'), el('span', undefined, `${background.length} background ${background.length === 1 ? 'command' : 'commands'} running`))
+      row.append(line)
+    }
+    for (const task of background.slice(0, BACKGROUND_LINES)) {
+      const line = el('div', 'working-line sub')
+      line.append(icon('terminal', { size: 14 }), el('b', undefined, task.kind === 'monitor' ? 'Monitor' : 'Background'), el('span', 'what', task.label), sinceSpan(new Date(task.startedAt).toISOString()))
+      row.append(line)
+    }
+    if (background.length > BACKGROUND_LINES) row.append(el('div', 'working-line sub bg-more', `+${background.length - BACKGROUND_LINES} more`))
+  }
   return row
+}
+
+const BACKGROUND_LINES = 3
+const BACKGROUND_CARD_MIN_WIDTH = 1100
+
+const runningBackground = (c) => (c.backgroundTasks?.tasks ?? []).filter((task) => task.status === 'running')
+
+function backgroundCardRow(task) {
+  const row = el('div', `bg-row ${task.status}`)
+  const top = el('div', 'bg-row-top')
+  const status = el('span', `bg-status ${task.status}`)
+  status.append(el('span', 'dot'))
+  top.append(status, el('span', 'bg-name', task.label || task.id))
+  const meta = el('div', 'bg-meta')
+  if (task.status === 'running') {
+    meta.append(sinceSpan(new Date(task.startedAt).toISOString()))
+    if (task.kind === 'monitor') meta.append(el('span', undefined, `${task.eventCount} event${task.eventCount === 1 ? '' : 's'}`))
+  } else {
+    const result = task.kind === 'monitor' ? `${task.eventCount} event${task.eventCount === 1 ? '' : 's'}` : task.exitCode === null ? '' : `exit ${task.exitCode}`
+    meta.append(el('span', undefined, [BG_LABELS[task.status] ?? task.status, result].filter(Boolean).join(' · ')), el('span', 'dim', relative(task.endedAt)))
+  }
+  row.append(top, meta)
+  if (task.status === 'running' && task.lastEvent) row.append(el('div', 'bg-last', task.lastEvent))
+  return row
+}
+
+function renderBackgroundCard(c) {
+  const bg = c.backgroundTasks
+  if (!bg?.tasks.length) return null
+  const ui = uiOf(c.id)
+  const open = ui.bgOpen ?? window.innerWidth >= BACKGROUND_CARD_MIN_WIDTH
+  const box = el('aside', open ? 'bg-card' : 'bg-card collapsed')
+  box.setAttribute('aria-label', 'Background commands')
+  const head = el('button', 'bg-head')
+  head.type = 'button'
+  head.setAttribute('aria-expanded', String(open))
+  const title = bg.running ? `${bg.running} running in background` : 'Background finished'
+  head.append(el('span', bg.running ? 'pulse' : 'bg-done'), icon('terminal', { size: 14 }), el('b', undefined, title), icon(open ? 'chevron-up' : 'chevron-down', { size: 14 }))
+  head.onclick = () => { ui.bgOpen = !open; renderFocus() }
+  box.append(head)
+  if (open) {
+    const list = el('div', 'bg-list')
+    list.append(...bg.tasks.map(backgroundCardRow))
+    if (bg.hidden) list.append(el('div', 'bg-more', `+${bg.hidden} more`))
+    const link = el('a', 'bg-foot', 'All background commands')
+    link.href = '/background'
+    box.append(list, link)
+  }
+  return box
 }
 
 function renderChat(c) {
@@ -1984,6 +2047,8 @@ function renderChat(c) {
     chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' })
   }
   wrap.append(chat, jump)
+  const backgroundCard = renderBackgroundCard(c)
+  if (backgroundCard) wrap.append(backgroundCard)
   return wrap
 }
 
@@ -2292,6 +2357,11 @@ function patchChat(view, oldWrap, newWrap, next) {
     oldWrap.replaceWith(newWrap)
     return
   }
+  const oldBackground = oldWrap.querySelector('.bg-card')
+  const newBackground = newWrap.querySelector('.bg-card')
+  if (oldBackground && newBackground) oldBackground.replaceWith(newBackground)
+  else if (oldBackground) oldBackground.remove()
+  else if (newBackground) oldWrap.append(newBackground)
   const { ops, remove } = listOps(view.msgs, next.msgs)
   const oldKids = [...oldInner.children]
   const newKids = [...newInner.children]

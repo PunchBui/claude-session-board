@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { newScanState, absorbLine } from '../lib/scan.js'
-import { backgroundTasks, backgroundCounts, runningCount, safeOutputPath } from '../lib/background.js'
+import { backgroundTasks, backgroundCounts, sessionBackground, runningCount, safeOutputPath } from '../lib/background.js'
 import { backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from '../public/loops.js'
 
 const T0 = Date.parse('2026-10-30T03:00:00.000Z')
@@ -162,4 +162,36 @@ test('diffBackground announces when a session runs out of running tasks', () => 
   assert.deepEqual(done.events.map((e) => [e.kind, e.message]), [['bgdone', '2 background tasks finished']])
   assert.equal(diffBackground(done.next, [session(0)]).events.length, 0)
   assert.equal(diffBackground(first, [session(0, { failed: 1 })]).events[0].kind, 'bgfailed')
+})
+
+test('sessionBackground lists running tasks first, keeps recent finishes, and drops old ones', () => {
+  const state = newScanState()
+  startCommand(state, 'old', 0)
+  startCommand(state, 'bad', 1)
+  startCommand(state, 'live', 2)
+  feed(state, notify('<task-id>old</task-id><status>completed</status><summary>Background command finished (exit code 0)</summary>', 3))
+  feed(state, notify('<task-id>bad</task-id><status>failed</status><summary>Background command failed (exit code 2)</summary>', 20))
+  const view = sessionBackground(state.background, { nowMs: T0 + 25 * 60_000, idleMs: 60_000 })
+  assert.equal(view.running, 1)
+  assert.deepEqual(view.tasks.map((task) => [task.id, task.status]), [['live', 'running'], ['bad', 'failed']])
+  assert.equal(view.tasks[0].label, 'Start the board server')
+  assert.equal(view.tasks[1].exitCode, 2)
+  assert.equal(view.hidden, 0)
+})
+
+test('sessionBackground caps the list and reports how many are hidden', () => {
+  const state = newScanState()
+  for (let i = 0; i < 5; i += 1) startCommand(state, `t${i}`, i)
+  const view = sessionBackground(state.background, { nowMs: T0 + 10 * 60_000, idleMs: 0, limit: 3 })
+  assert.equal(view.running, 5)
+  assert.equal(view.tasks.length, 3)
+  assert.equal(view.hidden, 2)
+})
+
+test('sessionBackground treats a long-quiet session as having nothing running', () => {
+  const state = newScanState()
+  startCommand(state, 'bg1', 0)
+  const view = sessionBackground(state.background, { nowMs: T0 + 3 * 24 * 3_600_000, idleMs: 2 * 24 * 3_600_000 })
+  assert.equal(view.running, 0)
+  assert.deepEqual(view.tasks, [])
 })
