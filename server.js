@@ -25,7 +25,7 @@ import { resolveClaudeBin } from './lib/claudebin.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
-import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
+import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
@@ -802,6 +802,16 @@ const postRoutes = {
     }
     const mr = mergeRequests.patchAuthored(body.url, (current) => added.reduce((mr, name) => withLabel(mr, name, Date.now()), current))
     return json(res, 200, { ok: true, mr })
+  },
+  async '/api/mrs/close'(body, res) {
+    if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
+    try {
+      await closeMr(body.url)
+    } catch (error) {
+      return json(res, 502, { error: String(error.message ?? error) })
+    }
+    mergeRequests.removeAuthored(body.url)
+    return json(res, 200, { ok: true })
   },
   async '/api/mrs/babysit'(body, res) {
     const badSession = body.sessionId !== undefined && !SESSION_ID.test(body.sessionId)

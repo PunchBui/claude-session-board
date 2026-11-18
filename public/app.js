@@ -3372,6 +3372,24 @@ async function addMrLabel(mr, label, button) {
   }
 }
 
+async function closeMrRequest(mr, button) {
+  if (!window.confirm(`Close this merge request?\n\n${mr.title}`)) return
+  button.disabled = true
+  button.textContent = 'Closing…'
+  const { ok, data } = await postJson('/api/mrs/close', { url: mr.url })
+  if (!ok) {
+    button.disabled = false
+    button.textContent = 'Close'
+    button.title = data.error ?? 'Could not close the merge request'
+    return
+  }
+  const authored = state.mrs.data.authored.filter((item) => item.url !== mr.url)
+  const needAction = [...authored, ...state.mrs.data.reviewing].filter((item) => item.actionable).length
+  state.mrs.data = { ...state.mrs.data, authored, actionable: needAction }
+  renderMrsBadge()
+  renderMrsPage()
+}
+
 function setMrBabysit(url, babysit) {
   const patch = (list) => list.map((item) => (item.url === url ? { ...item, babysit } : item))
   const data = state.mrs.data
@@ -3496,6 +3514,12 @@ function mrVerdict(mr) {
     const button = el('button', 'btn mr-add-ready', `Add ${action}`)
     button.onclick = () => addMrLabel(mr, action, button)
     box.append(button)
+  }
+  if (mr.role === 'authored' && !mr.mergedAt) {
+    const close = el('button', 'btn mr-close', 'Close')
+    close.title = 'Close this merge request on GitLab without merging it'
+    close.onclick = () => closeMrRequest(mr, close)
+    box.append(close)
   }
   if (mr.role === 'authored' && mr.mergedAt) {
     const deploy = mrDeploy(mr)

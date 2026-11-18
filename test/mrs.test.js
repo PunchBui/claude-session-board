@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -345,6 +345,26 @@ test('cache patchAuthored updates one MR and the actionable count in place', asy
   assert.equal((await get()).actionable, 0)
   assert.equal(loads, 1)
   assert.equal(get.patchAuthored('https://nope', (x) => x), null)
+})
+
+test('closes a merge request through glab on the configured host', async () => {
+  let args
+  await closeMr(`https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/42`, async (a) => { args = a })
+  assert.deepEqual(args, ['mr', 'close', '42', '--repo', `${GITLAB_HOST}/team/sub/repo`])
+  await assert.rejects(() => closeMr('https://gitlab.com/a/b/-/merge_requests/1', async () => {}))
+})
+
+test('cache removeAuthored drops one MR and recounts the actionable ones', async () => {
+  const mr = { ...normalizeMr(node({ approved: true }), 'dkunweeroj'), verdict: { code: 'approved' }, actionable: true }
+  let loads = 0
+  const get = createMrCache({ load: async () => { loads++; return { authored: [mr], reviewing: [], actionable: 1 } } })
+  await get()
+  assert.equal(get.removeAuthored(mr.url), true)
+  const data = await get()
+  assert.deepEqual(data.authored, [])
+  assert.equal(data.actionable, 0)
+  assert.equal(loads, 1)
+  assert.equal(get.removeAuthored(mr.url), false)
 })
 
 test('requests recently merged merge requests within the last week', async () => {
