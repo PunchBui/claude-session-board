@@ -72,6 +72,21 @@ test('live: question and stale approval detection', () => {
   assert.equal(liveOf(other, { nowMs: now, mtimeMs: now - 5000, running: false }).phase, 'tool')
 })
 
+test('live: a quiet pending tool is not an approval when the session never prompts', () => {
+  const now = Date.now()
+  const build = (mode) => {
+    const state = newScanState()
+    if (mode) absorbLine(state, line({ type: 'user', timestamp: '2026-10-27T08:00:00.000Z', permissionMode: mode, message: { role: 'user', content: 'run it' } }))
+    absorbLine(state, assistant('p', [{ type: 'tool_use', id: 'm1', name: 'mcp__superset__call_tool', input: { query: 'select 1' } }], { output_tokens: 1 }))
+    return liveOf(state, { nowMs: now, mtimeMs: now - 120_000, running: false })
+  }
+  assert.equal(build('default').attention.kind, 'approval')
+  assert.equal(build(null).attention.kind, 'approval')
+  assert.equal(build('bypassPermissions').attention, null)
+  assert.equal(build('dontAsk').attention, null)
+  assert.equal(build('bypassPermissions').phase, 'tool')
+})
+
 test('live: subagents come from pending Agent calls', () => {
   const state = newScanState()
   absorbLine(state, assistant('h', [{ type: 'tool_use', id: 's1', name: 'Agent', input: { description: 'Explore repo' } }], { output_tokens: 1 }))
