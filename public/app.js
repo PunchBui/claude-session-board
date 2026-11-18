@@ -5,7 +5,7 @@ import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
-import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from './loops.js'
+import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
@@ -17,8 +17,8 @@ import { initLinkMenu } from './linkmenu.js'
 import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 
-const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'loops', '/background': 'background', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
-const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', loops: 'Loops', background: 'Background commands', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
+const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
+const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
 const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
@@ -53,7 +53,6 @@ const state = {
   alertSnap: null,
   loopSnap: null,
   backgroundSnap: null,
-  backgroundSeenAt: 0,
   knownIds: null,
   unseen: 0,
   attachments: new Map(),
@@ -61,8 +60,9 @@ const state = {
   usage: { days: 30, metric: 'output', data: null, at: 0 },
   skills: { data: null, scope: 'all', temp: null, days: 30, sort: 'uses', query: '', at: 0, open: new Set(), details: new Map() },
   schedule: { data: null, at: 0, built: false },
-  loops: { data: null, filter: 'all', at: 0, open: new Set() },
-  background: { data: null, filter: 'all', at: 0, open: new Set(), output: new Map() },
+  loops: { data: null, at: 0 },
+  background: { data: null, at: 0, output: new Map(), loading: new Set() },
+  panel: { open: false, tab: 'background', scope: 'session', closed: new Set(), opened: new Set(), finishedOpen: false, endedOpen: false },
   mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
 }
 
@@ -73,7 +73,7 @@ try {
   state.kept = JSON.parse(localStorage.getItem('board.kept') || '{}')
   state.alertsOn = localStorage.getItem('board.alerts') === '1'
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
-state.backgroundSeenAt = Number(localStorage.getItem('board.backgroundSeen')) || 0
+  Object.assign(state.panel, JSON.parse(localStorage.getItem('board.panel') || '{}'))
   state.usage.metric = localStorage.getItem('board.usageMetric') || 'output'
   state.skills.days = [7, 30, 90].includes(Number(localStorage.getItem('board.skillsDays'))) ? Number(localStorage.getItem('board.skillsDays')) : 30
   state.skills.sort = SKILL_SORTS.includes(localStorage.getItem('board.skillsSort')) ? localStorage.getItem('board.skillsSort') : 'uses'
@@ -551,35 +551,6 @@ function visible() {
     (!state.status || s.status === state.status) &&
     (!state.temp || temperatureOf(s).group === state.temp) &&
     (!q || `${s.title} ${s.cwd} ${s.project}`.toLowerCase().includes(q)))
-}
-
-function renderBackgroundBadge() {
-  const progress = backgroundProgress(state.sessions, state.backgroundSeenAt)
-  const badge = $('background-count')
-  badge.className = `badge bg-${progress.mode}`
-  badge.hidden = progress.mode === 'idle'
-  badge.replaceChildren()
-  badge.style.setProperty('--pct', `${progress.pct}%`)
-  if (progress.mode === 'running') {
-    badge.append(text(`${progress.done}/${progress.total}`))
-    badge.title = `${progress.running} running, ${progress.done} finished in the last hour`
-  } else if (progress.mode !== 'idle') {
-    badge.append(icon(progress.mode === 'failed' ? 'x-circle' : 'check', { size: 11, strokeWidth: 3 }), text(String(progress.done)))
-    badge.title = progress.mode === 'failed' ? `${progress.done} finished, ${progress.failed} failed` : `${progress.done} finished`
-  }
-}
-
-function markBackgroundSeen() {
-  state.backgroundSeenAt = Date.now()
-  remember('board.backgroundSeen', String(state.backgroundSeenAt))
-  renderBackgroundBadge()
-}
-
-function renderLoopsBadge() {
-  const count = state.sessions.reduce((sum, s) => sum + (s.loop && s.loop.state !== 'ended' ? s.loop.count : 0), 0)
-  const badge = $('loops-count')
-  badge.hidden = count === 0
-  badge.textContent = String(count)
 }
 
 function renderMrsBadge() {
@@ -1974,53 +1945,8 @@ function renderWorking(c) {
 }
 
 const BACKGROUND_LINES = 3
-const BACKGROUND_CARD_MIN_WIDTH = 1100
 
 const runningBackground = (c) => (c.backgroundTasks?.tasks ?? []).filter((task) => task.status === 'running')
-
-function backgroundCardRow(task) {
-  const row = el('div', `bg-row ${task.status}`)
-  const top = el('div', 'bg-row-top')
-  const status = el('span', `bg-status ${task.status}`)
-  status.append(el('span', 'dot'))
-  top.append(status, el('span', 'bg-name', task.label || task.id))
-  const meta = el('div', 'bg-meta')
-  if (task.status === 'running') {
-    meta.append(sinceSpan(new Date(task.startedAt).toISOString()))
-    if (task.kind === 'monitor') meta.append(el('span', undefined, `${task.eventCount} event${task.eventCount === 1 ? '' : 's'}`))
-  } else {
-    const result = task.kind === 'monitor' ? `${task.eventCount} event${task.eventCount === 1 ? '' : 's'}` : task.exitCode === null ? '' : `exit ${task.exitCode}`
-    meta.append(el('span', undefined, [BG_LABELS[task.status] ?? task.status, result].filter(Boolean).join(' · ')), el('span', 'dim', relative(task.endedAt)))
-  }
-  row.append(top, meta)
-  if (task.status === 'running' && task.lastEvent) row.append(el('div', 'bg-last', task.lastEvent))
-  return row
-}
-
-function renderBackgroundCard(c) {
-  const bg = c.backgroundTasks
-  if (!bg?.tasks.length) return null
-  const ui = uiOf(c.id)
-  const open = ui.bgOpen ?? window.innerWidth >= BACKGROUND_CARD_MIN_WIDTH
-  const box = el('aside', open ? 'bg-card' : 'bg-card collapsed')
-  box.setAttribute('aria-label', 'Background commands')
-  const head = el('button', 'bg-head')
-  head.type = 'button'
-  head.setAttribute('aria-expanded', String(open))
-  const title = bg.running ? `${bg.running} running in background` : 'Background finished'
-  head.append(el('span', bg.running ? 'pulse' : 'bg-done'), icon('terminal', { size: 14 }), el('b', undefined, title), icon(open ? 'chevron-up' : 'chevron-down', { size: 14 }))
-  head.onclick = () => { ui.bgOpen = !open; renderFocus() }
-  box.append(head)
-  if (open) {
-    const list = el('div', 'bg-list')
-    list.append(...bg.tasks.map(backgroundCardRow))
-    if (bg.hidden) list.append(el('div', 'bg-more', `+${bg.hidden} more`))
-    const link = el('a', 'bg-foot', 'All background commands')
-    link.href = '/background'
-    box.append(list, link)
-  }
-  return box
-}
 
 function renderChat(c) {
   chatBase = c.cwd ?? ''
@@ -2047,8 +1973,6 @@ function renderChat(c) {
     chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' })
   }
   wrap.append(chat, jump)
-  const backgroundCard = renderBackgroundCard(c)
-  if (backgroundCard) wrap.append(backgroundCard)
   return wrap
 }
 
@@ -2297,7 +2221,7 @@ function renderCard(c) {
   }
   const actions = el('div', 'head-actions')
   const phone = isMobile()
-  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, step, openLink(c.id)].filter(Boolean))
+  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, tasksButton(c), step, openLink(c.id)].filter(Boolean))
   row.append(starButton(c.id), titleBox)
   if (phone) {
     // Phone: the actions, including Chat/Changes, fold behind a ... button.
@@ -2357,11 +2281,6 @@ function patchChat(view, oldWrap, newWrap, next) {
     oldWrap.replaceWith(newWrap)
     return
   }
-  const oldBackground = oldWrap.querySelector('.bg-card')
-  const newBackground = newWrap.querySelector('.bg-card')
-  if (oldBackground && newBackground) oldBackground.replaceWith(newBackground)
-  else if (oldBackground) oldBackground.remove()
-  else if (newBackground) oldWrap.append(newBackground)
   const { ops, remove } = listOps(view.msgs, next.msgs)
   const oldKids = [...oldInner.children]
   const newKids = [...newInner.children]
@@ -2752,6 +2671,7 @@ function renderFocus() {
   badge.textContent = String(state.cards.length)
   renderSortMenu()
   renderMobileHeader(state.draft ? null : current)
+  renderTaskPanel(state.draft ? null : current)
 }
 
 function goToCard(id) {
@@ -3319,56 +3239,6 @@ function loopDetail(r) {
   if (r.fireCount > r.fires.length) runs.append(el('span', 'dim', `+${r.fireCount - r.fires.length} earlier`))
   box.append(runs)
   return box
-}
-
-function renderLoopsPage() {
-  hideTip()
-  const data = state.loops.data
-  if (!data) return
-  const { filter, open } = state.loops
-  const all = [...data.loops].sort(byLatestEnded)
-  const rows = all.filter((r) => filter === 'all' || (filter === 'active' ? r.status !== 'ended' : r.status === 'ended'))
-  const active = all.filter((r) => r.status !== 'ended').length
-  $('loops-status').textContent = `${all.length} loop${all.length === 1 ? '' : 's'} · ${active} active${data.indexed?.running ? ` · indexing ${data.indexed.done}/${data.indexed.total} sessions` : ''}`
-  $('loops-empty').hidden = rows.length > 0
-  const body = $('loops-rows')
-  body.replaceChildren()
-  for (const r of rows) {
-    const key = `${r.sessionId}:${r.id}`
-    const tr = document.createElement('tr')
-    tr.className = 'loop-row'
-    const title = el('div')
-    title.append(el('div', 'row-title', (r.prompt || '(no prompt)').replace(/\s+/g, ' ').slice(0, 90)))
-    const session = el('div')
-    session.append(el('div', 'row-title', r.title), projectChip(r))
-    tr.append(
-      cell(title),
-      cell(session),
-      cell(loopStatus(r)),
-      cell(el('span', 'num', scheduleLabel(r))),
-      cell(el('span', 'num', String(r.fireCount))),
-      cell(el('span', 'num', relative(r.createdAt))),
-      cell(el('span', 'num', r.lastFiredAt ? relative(r.lastFiredAt) : '—')),
-      cell(el('span', 'num', r.endedAt ? relative(r.endedAt) : '—')),
-      cell(openLink(r.sessionId))
-    )
-    tr.onclick = (event) => {
-      if (event.target.closest('a')) return
-      if (open.has(key)) open.delete(key)
-      else open.add(key)
-      renderLoopsPage()
-    }
-    body.append(tr)
-    if (open.has(key)) {
-      const detail = document.createElement('tr')
-      detail.className = 'loop-detail-row'
-      const td = cell(loopDetail(r))
-      td.colSpan = 9
-      detail.append(td)
-      body.append(detail)
-    }
-  }
-  document.querySelectorAll('#loops-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
 }
 
 const CI_LABELS = { success: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', created: 'Queued', canceled: 'Canceled', skipped: 'Skipped', manual: 'Manual' }
@@ -4275,32 +4145,66 @@ async function loadLoops() {
   try {
     state.loops.data = await getJson('/api/loops')
     state.loops.at = Date.now()
-    renderLoopsPage()
+    renderTaskPanel()
   } catch {}
 }
 
 const BG_LABELS = { running: 'Running', completed: 'Completed', failed: 'Failed', killed: 'Killed', stopped: 'Stopped', expired: 'Expired', unknown: 'Unknown' }
 
-function backgroundStatus(task) {
-  const span = el('span', `bg-status ${task.status}`)
-  span.append(el('span', 'dot'), text(BG_LABELS[task.status] ?? task.status))
-  return attachTip(span, () => backgroundTip(task))
+const panelSession = (selected) => (state.panel.scope === 'session' && selected ? selected.id : null)
+
+function savePanel() {
+  const { open, tab, scope, finishedOpen, endedOpen } = state.panel
+  remember('board.panel', JSON.stringify({ open, tab, scope, finishedOpen, endedOpen }))
 }
 
-function backgroundResult(task) {
-  if (task.status === 'running') return task.kind === 'monitor' ? `${task.eventCount} event${task.eventCount === 1 ? '' : 's'} so far` : '—'
-  if (task.kind === 'monitor') return `${task.eventCount} event${task.eventCount === 1 ? '' : 's'}`
-  return task.exitCode === null ? '—' : `exit ${task.exitCode}`
+function togglePanel() {
+  state.panel.open = !state.panel.open
+  savePanel()
+  renderFocus()
+  if (state.panel.open) loadTaskData()
 }
 
-function backgroundDetail(task, key) {
-  const box = el('div', 'loop-detail')
-  box.append(el('div', 'bg-command', task.command || task.description || '(no command recorded)'))
-  if (task.summary) box.append(el('div', 'loop-facts', task.summary))
+function tasksButton(c) {
+  const count = (c.backgroundTasks?.running ?? 0) + (c.loop && c.loop.state !== 'ended' ? c.loop.count : 0)
+  const b = el('button', 'icon-only tasks-btn')
+  b.type = 'button'
+  b.append(icon('list', { size: 16 }))
+  if (count) b.append(el('span', 'tasks-n', String(count)))
+  b.title = 'Background tasks and loops'
+  b.setAttribute('aria-label', 'Background tasks and loops')
+  b.setAttribute('aria-pressed', String(state.panel.open))
+  b.onclick = togglePanel
+  return b
+}
+
+function flipIn(set, key) {
+  if (set.has(key)) set.delete(key)
+  else set.add(key)
+  renderTaskPanel(state.panelSelected)
+}
+
+function panelSection(label, count, { toggle = null, open = true } = {}) {
+  const head = el(toggle ? 'button' : 'div', 'tp-section')
+  if (toggle) {
+    head.type = 'button'
+    head.setAttribute('aria-expanded', String(open))
+    head.onclick = toggle
+    head.append(icon(open ? 'chevron-down' : 'chevron-right', { size: 13 }))
+  }
+  head.append(el('span', undefined, label), el('span', 'tp-count', String(count)))
+  return head
+}
+
+function taskDetail(task) {
+  const key = taskKey(task)
+  const box = el('div', 'tp-detail')
+  if (task.command) box.append(el('div', 'tp-cmd', `$ ${task.command}`))
+  if (task.summary) box.append(el('div', 'tp-note', task.summary))
   if (task.events.length) {
-    const list = el('div', 'bg-events')
+    const list = el('div', 'tp-events')
     for (const event of [...task.events].reverse()) {
-      const row = el('div', 'bg-event')
+      const row = el('div', 'tp-event')
       row.append(el('span', 'dim', new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })), el('span', undefined, event.text))
       list.append(row)
     }
@@ -4308,79 +4212,169 @@ function backgroundDetail(task, key) {
   }
   if (task.hasOutput) {
     const out = state.background.output.get(key)
-    const pre = el('pre', 'bg-output', out ? (out.available ? `${out.truncated ? '… (showing the last part)\n' : ''}${out.text || '(no output)'}` : 'Output is no longer available.') : 'Loading output…')
-    box.append(pre)
-    if (!out) loadBackgroundOutput(task, key)
-  }
+    if (!out && !state.background.loading.has(key)) {
+      state.background.loading.add(key)
+      fetchBackgroundOutput(task).then(() => { state.background.loading.delete(key); renderTaskPanel(state.panelSelected) })
+    }
+    const text = out ? (out.available ? `${out.truncated ? '… (showing the last part)\n' : ''}${out.text}` : 'Output is no longer available.') : 'Loading output…'
+    box.append(el('pre', 'tp-out', text.trim() ? text : 'No output yet'))
+  } else if (!task.events.length) box.append(el('div', 'tp-note', 'No output recorded.'))
   return box
 }
 
-async function loadBackgroundOutput(task, key) {
+function taskRow(task, showSession) {
+  const open = taskOpen(task)
+  const running = task.status === 'running'
+  const row = el('div', `tp-row ${task.status}${open ? ' open' : ''}`)
+  const head = el('button', 'tp-row-head')
+  head.type = 'button'
+  head.setAttribute('aria-expanded', String(open))
+  head.onclick = () => flipIn(running ? state.panel.closed : state.panel.opened, taskKey(task))
+  const label = (task.description || task.command || '(no description)').replace(/\s+/g, ' ')
+  const title = el('span', 'tp-row-title')
+  title.append(el('span', 'tp-row-name', label))
+  if (showSession) title.append(el('span', 'tp-row-session', task.title))
+  head.append(icon(open ? 'chevron-down' : 'chevron-right', { size: 14 }), title)
+  if (running) head.append(sinceSpan(new Date(task.startedAt).toISOString()))
+  else head.append(el('span', `tp-status ${task.status}`, [BG_LABELS[task.status] ?? task.status, task.kind === 'monitor' ? '' : task.exitCode === null ? '' : `exit ${task.exitCode}`].filter(Boolean).join(' · ')))
+  row.append(head)
+  if (open) row.append(taskDetail(task))
+  return row
+}
+
+function loopRow(r, showSession) {
+  const key = `${r.sessionId}:${r.id}`
+  const open = state.panel.opened.has(key)
+  const row = el('div', `tp-row loop ${r.status}${open ? ' open' : ''}`)
+  const head = el('button', 'tp-row-head')
+  head.type = 'button'
+  head.setAttribute('aria-expanded', String(open))
+  head.onclick = () => flipIn(state.panel.opened, key)
+  const title = el('span', 'tp-row-title')
+  title.append(el('span', 'tp-row-name', (r.prompt || '(no prompt)').replace(/\s+/g, ' ')))
+  const sub = el('span', 'tp-row-session')
+  sub.append(loopStatus(r), text(` ${scheduleLabel(r)} · ${r.fireCount} ${r.fireCount === 1 ? 'run' : 'runs'}${showSession ? ` · ${r.title}` : ''}`))
+  title.append(sub)
+  head.append(icon(open ? 'chevron-down' : 'chevron-right', { size: 14 }), title)
+  row.append(head)
+  if (open) row.append(loopDetail(r))
+  return row
+}
+
+function panelEmpty(message) {
+  return el('div', 'tp-empty', message)
+}
+
+function backgroundBody(tasks, showSession) {
+  const frag = document.createDocumentFragment()
+  const running = tasks.filter((task) => task.status === 'running').sort((a, b) => b.startedAt - a.startedAt)
+  const finished = tasks.filter((task) => task.status !== 'running').sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+  if (!tasks.length) return panelEmpty('No background commands yet. Commands Claude runs in the background, and monitors it arms, show up here.')
+  frag.append(panelSection('Running', running.length))
+  if (running.length) frag.append(...running.map((task) => taskRow(task, showSession)))
+  else frag.append(panelEmpty('Nothing running.'))
+  if (finished.length) {
+    const open = state.panel.finishedOpen
+    frag.append(panelSection('Finished', finished.length, { toggle: () => { state.panel.finishedOpen = !open; savePanel(); renderTaskPanel(state.panelSelected) }, open }))
+    if (open) frag.append(...finished.map((task) => taskRow(task, showSession)))
+  }
+  return frag
+}
+
+function loopsBody(loops, showSession) {
+  const frag = document.createDocumentFragment()
+  const sorted = [...loops].sort(byLatestEnded)
+  const active = sorted.filter((r) => r.status !== 'ended')
+  const ended = sorted.filter((r) => r.status === 'ended')
+  if (!loops.length) return panelEmpty('No loops yet. Sessions that schedule recurring checks with /loop or cron jobs show up here.')
+  frag.append(panelSection('Active', active.length))
+  if (active.length) frag.append(...active.map((r) => loopRow(r, showSession)))
+  else frag.append(panelEmpty('No active loops.'))
+  if (ended.length) {
+    const open = state.panel.endedOpen
+    frag.append(panelSection('Ended', ended.length, { toggle: () => { state.panel.endedOpen = !open; savePanel(); renderTaskPanel(state.panelSelected) }, open }))
+    if (open) frag.append(...ended.map((r) => loopRow(r, showSession)))
+  }
+  return frag
+}
+
+function renderTaskPanel(selected = state.panelSelected) {
+  state.panelSelected = selected
+  const panel = $('task-panel')
+  const open = state.panel.open && state.tab === 'focus'
+  panel.hidden = !open
+  if (!open) return
+  hideTip()
+  const keepScroll = panel.querySelector('.tp-body')?.scrollTop ?? 0
+  const sessionId = panelSession(selected)
+  const mine = (items) => (sessionId ? items.filter((item) => item.sessionId === sessionId) : items)
+  const tasks = mine(state.background.data?.tasks ?? [])
+  const loops = mine(state.loops.data?.loops ?? [])
+  const running = tasks.filter((task) => task.status === 'running').length
+  const activeLoops = loops.filter((r) => r.status !== 'ended').length
+
+  const head = el('div', 'tp-head')
+  const tabs = el('div', 'tp-tabs')
+  for (const [key, label, count] of [['background', 'Background', running], ['loops', 'Loops', activeLoops]]) {
+    const b = el('button', undefined, label)
+    b.type = 'button'
+    if (count) b.append(el('span', 'n', String(count)))
+    b.setAttribute('aria-pressed', String(state.panel.tab === key))
+    b.onclick = () => { state.panel.tab = key; savePanel(); renderTaskPanel(selected) }
+    tabs.append(b)
+  }
+  const close = el('button', 'icon-only')
+  close.type = 'button'
+  close.title = 'Close panel'
+  close.setAttribute('aria-label', 'Close panel')
+  close.append(icon('x', { size: 16 }))
+  close.onclick = togglePanel
+  head.append(tabs, close)
+
+  const scope = el('div', 'seg tp-scope')
+  for (const [key, label] of [['session', 'This session'], ['all', 'All sessions']]) {
+    const b = el('button', undefined, label)
+    b.type = 'button'
+    b.disabled = key === 'session' && !selected
+    b.setAttribute('aria-pressed', String(state.panel.scope === key))
+    b.onclick = () => { state.panel.scope = key; savePanel(); renderTaskPanel(selected) }
+    scope.append(b)
+  }
+
+  const body = el('div', 'tp-body')
+  const loaded = state.panel.tab === 'background' ? state.background.data : state.loops.data
+  if (!loaded) body.append(panelEmpty('Loading…'))
+  else body.append(state.panel.tab === 'background' ? backgroundBody(tasks, !sessionId) : loopsBody(loops, !sessionId))
+  panel.replaceChildren(head, scope, body)
+  body.scrollTop = keepScroll
+}
+
+const taskKey = (task) => `${task.sessionId}:${task.id}`
+
+const taskOpen = (task) => (task.status === 'running' ? !state.panel.closed.has(taskKey(task)) : state.panel.opened.has(taskKey(task)))
+
+async function fetchBackgroundOutput(task) {
+  const key = taskKey(task)
   try {
-    const out = await getJson(`/api/background/output?session=${encodeURIComponent(task.sessionId)}&task=${encodeURIComponent(task.id)}`)
-    state.background.output.set(key, out)
+    state.background.output.set(key, await getJson(`/api/background/output?session=${encodeURIComponent(task.sessionId)}&task=${encodeURIComponent(task.id)}`))
   } catch {
     state.background.output.set(key, { available: false })
   }
-  if (state.tab === 'background') renderBackgroundPage()
-}
-
-function renderBackgroundPage() {
-  hideTip()
-  const data = state.background.data
-  if (!data) return
-  const { filter, open } = state.background
-  const all = [...data.tasks].sort(byBackgroundOrder)
-  const rows = all.filter(BACKGROUND_FILTERS[filter] ?? BACKGROUND_FILTERS.all)
-  const running = all.filter((t) => t.status === 'running').length
-  $('background-status').textContent = `${all.length} command${all.length === 1 ? '' : 's'} · ${running} running${data.indexed?.running ? ` · indexing ${data.indexed.done}/${data.indexed.total} sessions` : ''}`
-  $('background-empty').hidden = rows.length > 0
-  const body = $('background-rows')
-  body.replaceChildren()
-  for (const task of rows) {
-    const key = `${task.sessionId}:${task.id}`
-    const tr = document.createElement('tr')
-    tr.className = 'loop-row'
-    const title = el('div')
-    title.append(el('div', 'row-title', (task.description || task.command || '(no description)').replace(/\s+/g, ' ').slice(0, 90)))
-    if (task.description && task.command) title.append(el('div', 'row-sub mono', task.command.replace(/\s+/g, ' ').slice(0, 110)))
-    const session = el('div')
-    session.append(el('div', 'row-title', task.title), projectChip(task))
-    tr.append(
-      cell(title),
-      cell(session),
-      cell(backgroundStatus(task)),
-      cell(el('span', 'num', task.kind === 'monitor' ? 'Monitor' : 'Command')),
-      cell(el('span', 'num', relative(task.startedAt))),
-      cell(el('span', 'num', duration(task.durationMs))),
-      cell(el('span', 'num', backgroundResult(task))),
-      cell(openLink(task.sessionId))
-    )
-    tr.onclick = (event) => {
-      if (event.target.closest('a')) return
-      if (open.has(key)) open.delete(key)
-      else open.add(key)
-      renderBackgroundPage()
-    }
-    body.append(tr)
-    if (open.has(key)) {
-      const detail = document.createElement('tr')
-      detail.className = 'loop-detail-row'
-      const td = cell(backgroundDetail(task, key))
-      td.colSpan = 8
-      detail.append(td)
-      body.append(detail)
-    }
-  }
-  document.querySelectorAll('#background-filter button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)))
 }
 
 async function loadBackground() {
   try {
     state.background.data = await getJson('/api/background')
     state.background.at = Date.now()
-    renderBackgroundPage()
+    const stale = state.background.data.tasks.filter((task) => task.hasOutput && taskOpen(task) && (task.status === 'running' || !state.background.output.has(taskKey(task))))
+    await Promise.all(stale.map(fetchBackgroundOutput))
+    renderTaskPanel()
   } catch {}
+}
+
+function loadTaskData() {
+  loadBackground()
+  loadLoops()
 }
 
 async function loadUsage() {
@@ -4610,7 +4604,16 @@ function navigate(path) {
   applyRoute()
 }
 
+const LEGACY_PANELS = { '/loops': 'loops', '/background': 'background' }
+
 function applyRoute() {
+  const legacy = LEGACY_PANELS[location.pathname.replace(/(.)\/+$/, '$1')]
+  if (legacy) {
+    state.panel.open = true
+    state.panel.tab = legacy
+    savePanel()
+    history.replaceState({}, '', '/focus')
+  }
   const tab = pathTab()
   if (tab === 'all') readFilters()
   state.tab = tab
@@ -4640,9 +4643,8 @@ function applyRoute() {
   if (tab === 'usage') loadUsage()
   if (tab === 'skills') loadSkills()
   if (tab === 'schedule') loadSchedule()
-  if (tab === 'loops') loadLoops()
+  if (tab === 'focus' && state.panel.open) loadTaskData()
   if (tab === 'mrs') loadMrs()
-  if (tab === 'background') { loadBackground(); markBackgroundSeen() }
   refresh()
 }
 
@@ -4679,20 +4681,19 @@ async function refresh() {
       renderSummary()
       renderRows()
       renderFocus()
-      renderLoopsBadge()
       if (state.tab === 'schedule' && state.schedule.built) fillScheduleFolders()
-      renderBackgroundBadge()
-      if (state.tab === 'background') markBackgroundSeen()
     }
     if (prunePending()) renderFocus()
     pollChanges()
     pollAgents()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
-    if (state.tab === 'loops' && Date.now() - state.loops.at > 5_000) loadLoops()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
     if (Date.now() - state.mrs.at > 60_000) loadMrs()
-    if (state.tab === 'background' && Date.now() - state.background.at > 4_000) { state.background.output.clear(); loadBackground() }
+    if (state.tab === 'focus' && state.panel.open) {
+      if (Date.now() - state.background.at > 4_000) loadBackground()
+      if (Date.now() - state.loops.at > 5_000) loadLoops()
+    }
   } catch {}
 }
 
@@ -4780,8 +4781,6 @@ $('tab-search').onclick = (event) => { event.preventDefault(); navigate('/search
 $('tab-usage').onclick = (event) => { event.preventDefault(); navigate('/usage') }
 $('tab-skills').onclick = (event) => { event.preventDefault(); navigate('/skills') }
 $('tab-schedule').onclick = (event) => { event.preventDefault(); navigate('/schedule') }
-$('tab-loops').onclick = (event) => { event.preventDefault(); navigate('/loops') }
-$('tab-background').onclick = (event) => { event.preventDefault(); navigate('/background') }
 $('tab-mrs').onclick = (event) => { event.preventDefault(); navigate('/mrs') }
 window.onpopstate = applyRoute
 $('q').oninput = () => { renderRows(); writeFilters() }
@@ -4839,9 +4838,6 @@ document.addEventListener('click', (event) => { if (!$('side-sort-menu').hidden 
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('side-sort-menu').hidden) setSortMenu(false) })
 renderSortMenu()
 $('side-q').oninput = renderFocus
-document.querySelectorAll('#background-filter button').forEach((b) => {
-  b.onclick = () => { state.background.filter = b.dataset.filter; renderBackgroundPage() }
-})
 document.querySelectorAll('#mrs-filter button').forEach((b) => {
   b.onclick = () => { state.mrs.filter = b.dataset.filter; renderMrsPage() }
 })
@@ -4849,9 +4845,6 @@ document.querySelectorAll('#mrs-temp button').forEach((b) => {
   b.onclick = () => { state.mrs.temp = state.mrs.temp === b.dataset.temp ? null : b.dataset.temp; renderMrsPage() }
 })
 $('mrs-refresh').onclick = () => loadMrs(true)
-document.querySelectorAll('#loops-filter button').forEach((b) => {
-  b.onclick = () => { state.loops.filter = b.dataset.filter; renderLoopsPage() }
-})
 document.querySelectorAll('#usage-metric button').forEach((b) => {
   b.onclick = () => { state.usage.metric = b.dataset.metric; remember('board.usageMetric', state.usage.metric); renderUsagePage() }
 })
@@ -5019,7 +5012,7 @@ $('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), el('span', 
 $('focus-clear').replaceChildren(icon('list-x', { size: 16 }), el('span', 'lbl', 'Clean all'))
 $('side-collapse').replaceChildren(icon('panel-left', { size: 18 }))
 // Page menu: an icon per page, so the collapsed sidebar can show icons alone.
-for (const [name, shape] of Object.entries({ all: 'list', focus: 'star', loops: 'repeat', background: 'terminal', mrs: 'git-pull-request', search: 'search', usage: 'bar-chart', skills: 'zap', schedule: 'calendar' })) {
+for (const [name, shape] of Object.entries({ all: 'list', focus: 'star', mrs: 'git-pull-request', search: 'search', usage: 'bar-chart', skills: 'zap', schedule: 'calendar' })) {
   const tab = $(`tab-${name}`)
   tab.prepend(icon(shape, { size: 16 }))
   tab.title = tab.querySelector('.tab-label').textContent

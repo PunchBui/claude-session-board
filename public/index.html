@@ -44,28 +44,9 @@
   <section id="view-focus" hidden>
     <div class="split" id="split">
       <section class="stage" id="cards"></section>
+      <aside class="task-panel" id="task-panel" aria-label="Background tasks and loops" hidden></aside>
       <div class="empty" id="focus-empty" hidden>Nothing in focus yet.<br>Star a session on the All sessions page to pin it here,<br>or start one with New chat.</div>
     </div>
-  </section>
-  <section id="view-loops" hidden>
-    <div class="page-head">
-      <h2>Loops</h2>
-      <div class="seg" id="loops-filter" role="group" aria-label="Filter">
-        <button data-filter="all" aria-pressed="true">All</button>
-        <button data-filter="active" aria-pressed="false">Active</button>
-        <button data-filter="ended" aria-pressed="false">Ended</button>
-      </div>
-    </div>
-    <div class="status-line" id="loops-status"></div>
-    <div class="sheet">
-      <div class="scroll-x">
-        <table>
-          <thead><tr><th>Loop</th><th>Session</th><th>Status</th><th>Schedule</th><th>Runs</th><th>Started</th><th>Last run</th><th>Ended</th><th></th></tr></thead>
-          <tbody id="loops-rows"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="empty" id="loops-empty" hidden>No loops yet.<br>Sessions that schedule recurring checks with /loop or cron jobs show up here.</div>
   </section>
   <section id="view-mrs" hidden>
     <div class="page-head">
@@ -97,27 +78,6 @@
     </div>
     <div class="empty" id="mrs-nomatch" hidden>No merge requests match these filters.</div>
     <div class="empty" id="mrs-empty" hidden>No open merge requests.<br>Open MRs you authored or were asked to review on gitlab.example.com show up here.</div>
-  </section>
-  <section id="view-background" hidden>
-    <div class="page-head">
-      <h2>Background commands</h2>
-      <div class="seg" id="background-filter" role="group" aria-label="Filter">
-        <button data-filter="all" aria-pressed="true">All</button>
-        <button data-filter="running" aria-pressed="false">Running</button>
-        <button data-filter="finished" aria-pressed="false">Finished</button>
-        <button data-filter="problems" aria-pressed="false">Problems</button>
-      </div>
-    </div>
-    <div class="status-line" id="background-status"></div>
-    <div class="sheet">
-      <div class="scroll-x">
-        <table>
-          <thead><tr><th>Command</th><th>Session</th><th>Status</th><th>Type</th><th>Started</th><th>Duration</th><th>Result</th><th></th></tr></thead>
-          <tbody id="background-rows"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="empty" id="background-empty" hidden>No background commands yet.<br>Commands that Claude runs in the background, and monitors it arms, show up here.</div>
   </section>
   <section id="view-search" hidden>
     <div class="page-head"><h2>Search conversations</h2></div>
@@ -222,8 +182,6 @@
       <nav class="tabs" role="tablist" aria-label="Pages">
         <a role="tab" id="tab-all" href="/" aria-selected="true"><span class="tab-label">All sessions</span></a>
         <a role="tab" id="tab-focus" href="/focus" aria-selected="false"><span class="tab-label">Focus</span><span class="badge" id="focus-count" hidden></span></a>
-        <a role="tab" id="tab-loops" href="/loops" aria-selected="false"><span class="tab-label">Loops</span><span class="badge" id="loops-count" hidden></span></a>
-        <a role="tab" id="tab-background" href="/background" aria-selected="false"><span class="tab-label">Background</span><span class="badge" id="background-count" hidden></span></a>
         <a role="tab" id="tab-mrs" href="/mrs" aria-selected="false"><span class="tab-label">Merge requests</span><span class="badge" id="mrs-count" hidden></span></a>
         <a role="tab" id="tab-search" href="/search" aria-selected="false"><span class="tab-label">Search</span></a>
         <a role="tab" id="tab-usage" href="/usage" aria-selected="false"><span class="tab-label">Usage</span></a>
