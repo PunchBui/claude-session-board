@@ -971,9 +971,16 @@ const postRoutes = {
     const queue = queueFor(body.id)
     const item = queue.items.find((entry) => entry.qid === body.qid)
     if (!item) return json(res, 404, { error: 'queued message not found' })
+    const interrupting = manager.runFor(body.id)?.state === 'running'
+    const wasPaused = queue.paused
+    if (interrupting) {
+      const stopped = await manager.interruptPrompt(body.id)
+      if (stopped.status !== 200) return reply(res, stopped)
+    }
     const result = await manager.requestPrompt({ id: body.id }, item.prompt, { force: true })
     if (result.status === 202) {
       queue.items = queue.items.filter((entry) => entry.qid !== body.qid)
+      if (interrupting) queue.paused = wasPaused
       await persistQueues()
     }
     return reply(res, result)

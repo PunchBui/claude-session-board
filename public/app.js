@@ -1476,9 +1476,7 @@ function renderQueue(c) {
     remove.title = 'Remove from queue'
     remove.onclick = () => postJson('/api/queue/remove', { id: c.id, qid: item.qid }).then(resync)
     const force = el('button', 'btn', 'Send now')
-    const running = c.run?.state === 'running'
-    force.disabled = running
-    force.title = running ? 'A run is in progress; this message is sent automatically when it finishes' : 'Send this message now, even if the session looks busy in the desktop app'
+    force.title = c.run?.state === 'running' ? 'Interrupt the running prompt and send this message now' : 'Send this message now, even if the session looks busy in the desktop app'
     force.onclick = async () => {
       const result = await postJson('/api/queue/force', { id: c.id, qid: item.qid })
       if (!result.ok) toast({ id: 'force-send', title: 'Could not send now', kind: 'finished', message: result.data?.error ?? 'Could not send' })

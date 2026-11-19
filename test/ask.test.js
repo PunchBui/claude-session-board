@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { askFrom, answerLine, permissionRequestFrom, cancelledId, denyLine, errorLine, userMessageLine, tailJsonLines } from '../lib/ask.js'
+import { askFrom, answerLine, permissionRequestFrom, cancelledId, denyLine, errorLine, interruptLine, userMessageLine, tailJsonLines } from '../lib/ask.js'
 
 const request = (extra = {}) => ({
   type: 'control_request',
@@ -93,4 +93,9 @@ test('the tail hands over complete lines as they are appended, including split m
   tail.stop()
   assert.deepEqual(seen.at(-1), { c: 3 })
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('interruptLine is a stream-json interrupt control request', () => {
+  assert.deepEqual(parse(interruptLine('req-1')), { type: 'control_request', request_id: 'req-1', request: { subtype: 'interrupt' } })
+  assert.ok(interruptLine('req-1').endsWith('\n'))
 })

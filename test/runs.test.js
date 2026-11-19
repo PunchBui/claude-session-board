@@ -195,6 +195,49 @@ test('stop sends SIGTERM, the run stays running until the process closes, then i
   assert.deepEqual(child.kills, ['SIGTERM'])
 })
 
+test('interrupting a run asks the cli to interrupt over stdin, settles it stopped and does not kill the process', async (t) => {
+  const h = harness(t)
+  await start(h)
+  const run = h.manager.runFor(SID)
+  const child = h.spawned[0]
+  const writes = []
+  child.write = (line) => writes.push(JSON.parse(line))
+  const interrupted = h.manager.interruptPrompt(SID)
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].type, 'control_request')
+  assert.deepEqual(writes[0].request, { subtype: 'interrupt' })
+  child.emit('close', 0, null)
+  assert.equal((await interrupted).status, 200)
+  assert.equal(run.state, 'stopped')
+  assert.deepEqual(child.kills, [])
+})
+
+test('an interrupted run that does not exit is stopped after the grace period', async (t) => {
+  const h = harness(t, { exitOn: ['SIGTERM'] })
+  await start(h)
+  const run = h.manager.runFor(SID)
+  const child = h.spawned[0]
+  child.write = () => true
+  const result = await h.manager.interruptPrompt(SID)
+  assert.equal(result.status, 200)
+  assert.equal(run.state, 'stopped')
+  assert.deepEqual(child.kills, ['SIGTERM'])
+})
+
+test('interrupting a run that never exits reports it did not stop in time', async (t) => {
+  const h = harness(t)
+  await start(h)
+  h.spawned[0].write = () => true
+  const result = await h.manager.interruptPrompt(SID)
+  assert.equal(result.status, 409)
+  assert.equal(h.manager.runFor(SID).state, 'running')
+})
+
+test('interrupting a session with nothing running succeeds without writing', async (t) => {
+  const h = harness(t)
+  assert.equal((await h.manager.interruptPrompt(SID)).status, 200)
+})
+
 test('a process that ignores SIGTERM gets SIGKILL after the grace period', async (t) => {
   const h = harness(t)
   await start(h)
