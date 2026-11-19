@@ -39,6 +39,10 @@ export function createTimeline(host, { projectColor, openSession, openSchedule }
   let signature = ''
   let builtMinute = -1
   let live = []
+  let deferred = false
+
+  host.dataset.ownTips = ''
+  host.addEventListener('mouseleave', () => { if (deferred) render() })
 
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)) } catch {} }
   const range = () => {
@@ -260,7 +264,10 @@ export function createTimeline(host, { projectColor, openSession, openSchedule }
   function tick() {
     const window = range()
     const now = Date.now()
-    if (Math.floor(now / 60_000) !== builtMinute) return render(true)
+    if (Math.floor(now / 60_000) !== builtMinute && !deferred) {
+      render()
+      if (!deferred) return
+    }
     for (const item of live) {
       if (item.now) {
         item.node.style.left = percent(now, window)
@@ -272,11 +279,18 @@ export function createTimeline(host, { projectColor, openSession, openSchedule }
   function render(force = false) {
     const now = Date.now()
     lanes = timelineLanes({ ...data, nowMs: now, show: settings.show })
-    const nextSignature = JSON.stringify([lanes.map((l) => [l.key, l.status, l.events.length, l.events.find((e) => !e.past)?.at]), settings])
-    if (!force && nextSignature === signature && Math.floor(now / 60_000) === builtMinute) return tick()
+    const upcoming = (lane) => lane.events.find((e) => !e.past)
+    const nextSignature = JSON.stringify([lanes.map((l) => [l.key, l.status, l.events.length, upcoming(l)?.running ? 'running' : upcoming(l)?.at]), settings])
+    const stale = nextSignature !== signature || Math.floor(now / 60_000) !== builtMinute
+    if (!force && !stale) return tick()
+    if (!force && host.matches(':hover')) {
+      deferred = true
+      return
+    }
+    deferred = false
     signature = nextSignature
     builtMinute = Math.floor(now / 60_000)
-    hideTip()
+    hideTip(host)
     live = []
     const window = range()
     host.replaceChildren(header(nextEvent(lanes, now)))

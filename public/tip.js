@@ -11,7 +11,8 @@ function element() {
   return tip
 }
 
-export function hideTip() {
+export function hideTip(scope = null) {
+  if (scope ? !scope.contains(owner) : owner?.closest('[data-own-tips]')) return
   if (tip) tip.hidden = true
   owner = null
 }
@@ -57,7 +58,7 @@ export function attachTip(node, build) {
     owner = node
     place(node)
   }
-  const hide = () => { if (owner === node) hideTip() }
+  const hide = () => { if (owner === node) hideTip(node) }
   node.tabIndex = 0
   node.addEventListener('mouseenter', show)
   node.addEventListener('mouseleave', hide)
