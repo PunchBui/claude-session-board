@@ -118,6 +118,16 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 
 The Schedule tab (`/schedule`) holds routines: a project folder, a prompt, a time, a repeat (once, every day, weekdays, or every week on a chosen day) and the same model, effort, Chrome and permission choices as New chat. Every time a routine fires, the board starts a new board-only session in that folder and adds it to Focus, so each run has its own conversation. "Run now" fires one immediately, Pause stops it, and the last run links to its session. Routines live in `data/routines.json`. The board must be running at the time; a missed time fires once on the next start and then moves to the next slot.
 
+## Today timeline
+
+A strip at the top of every desktop page plots today's runs on an hour grid (09–18 by default; 07–19, 08–17, 10–19 or All day from the menu), one row per item, with a red line at the current time:
+
+- **Schedules** (Schedule tab routines): a ✓ chip for each run today (✕ if it failed) and a dashed chip for each run still to come. A past chip opens the session that run started; an upcoming chip or the row name opens the schedule's edit form.
+- **Queued prompts** on a focused session (including babysit's next check): a marker at each time it will run today.
+- **Loops**: a cron job shows a tick for every remaining match of its cron expression today (any 5-field expression, not just `*/N`) and faded ticks for runs so far; a self-paced `/loop` shows its earlier ticks and only its next wakeup, since it picks each delay as it goes. Ended loops appear only if they ran today.
+
+Each upcoming row has a live countdown pill (`next 14:10 · in 4m 30s`), and the header names the next run of all. Clicking a loop or queued-prompt row opens that session in Focus. Runs outside the chosen hours show as `‹ 2` / `54 ›` at the row's edges. The Schedules, Loops and Past runs buttons filter rows; the chevron collapses the strip to its header. Settings are kept in the browser. Phones don't show the strip.
+
 ## Prompts, queue and schedules
 
 - Prompts run as headless `claude -p --resume <id>` in the session folder with `PROMPT_PERMISSION_MODE` (default `bypassPermissions`, so prompts sent from this page edit files and run commands without asking). Set it to `default` to deny tools that need approval, or `acceptEdits` to allow edits only. Only run this on a machine you trust, and never expose the server beyond localhost except through the token-protected remote access below.

@@ -17,6 +17,7 @@ import { initLinkMenu } from './linkmenu.js'
 import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from './sidechats.js'
+import { createTimeline } from './timelineview.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
@@ -62,6 +63,7 @@ const state = {
   skills: { data: null, scope: 'all', temp: null, days: 30, sort: 'uses', query: '', at: 0, open: new Set(), details: new Map() },
   schedule: { data: null, at: 0, built: false },
   loops: { data: null, at: 0 },
+  timeline: { at: 0 },
   background: { data: null, at: 0, output: new Map(), loading: new Set() },
   sideChats: { data: null, at: 0, cards: new Map(), fetched: new Map(), loading: new Set(), open: new Set(), starting: new Set(), drafts: new Map(), notes: new Map(), pending: new Map(), closedOpen: false },
   panel: { open: false, tab: 'background', scope: 'session', closed: new Set(), opened: new Set(), finishedOpen: false, endedOpen: false },
@@ -112,6 +114,13 @@ const projectColor = (name) => {
   return `hsl(${hash % 360} 52% 46%)`
 }
 const home = (p) => (p ? p.replace(/^\/Users\/[^/]+/, '~') : '—')
+const timeline = createTimeline($('timeline'), { projectColor, openSession: (id) => openInFocus(id), openSchedule: editSchedule })
+new ResizeObserver(([entry]) => {
+  const height = entry.target.offsetHeight
+  document.documentElement.style.setProperty('--tl-h', height ? `${height + 12}px` : '0px')
+}).observe($('timeline'))
+setInterval(() => timeline.tick(), 1000)
+
 const text = (value) => document.createTextNode(value ?? '')
 
 function el(tag, className, content) {
@@ -4048,6 +4057,7 @@ async function saveSchedule() {
   const { ok, data } = await postJson(editing ? '/api/routines/update' : '/api/routines', editing ? { ...body, rid: editing } : body)
   if (!ok) return setSchedNote(data.error ?? 'Could not save the schedule.', true)
   state.schedule.data = data
+  timeline.update({ routines: data.routines })
   if (editing || !f.cancel.hidden) endEdit()
   else { f.name.value = ''; f.prompt.value = '' }
   setSchedNote(editing ? 'Saved.' : 'Added.')
@@ -4060,13 +4070,17 @@ async function loadSchedule() {
   try {
     state.schedule.data = await getJson('/api/routines')
     state.schedule.at = Date.now()
+    timeline.update({ routines: state.schedule.data.routines })
     renderSchedulePage()
   } catch {}
 }
 
 async function scheduleAction(path, body) {
   const { ok, data } = await postJson(path, body)
-  if (data.routines) state.schedule.data = { routines: data.routines }
+  if (data.routines) {
+    state.schedule.data = { routines: data.routines }
+    timeline.update({ routines: data.routines })
+  }
   setSchedNote(ok ? '' : (data.error ?? 'Something went wrong.'), !ok)
   if (ok && path.endsWith('/run')) { state.signature = ''; refresh() }
   renderSchedulePage()
@@ -4194,10 +4208,28 @@ function renderSchedulePage() {
   }
 }
 
+async function editSchedule(rid) {
+  navigate('/schedule')
+  await loadSchedule()
+  const routine = state.schedule.data?.routines?.find((r) => r.rid === rid)
+  if (routine) startEdit(routine)
+}
+
+async function loadTimeline() {
+  state.timeline.at = Date.now()
+  try {
+    const [routines, loops] = await Promise.all([getJson('/api/routines'), getJson('/api/loops')])
+    state.loops.data = loops
+    state.loops.at = Date.now()
+    timeline.update({ routines: routines.routines, loops: loops.loops })
+  } catch {}
+}
+
 async function loadLoops() {
   try {
     state.loops.data = await getJson('/api/loops')
     state.loops.at = Date.now()
+    timeline.update({ loops: state.loops.data.loops })
     renderTaskPanel()
   } catch {}
 }
@@ -5021,6 +5053,7 @@ async function refresh() {
       state.resume = new Map(sessions.filter((s) => s.resume).map((s) => [s.id, s.resume]))
       state.focusIds = focus.ids
       state.cards = focus.cards
+      timeline.update({ prompts: focus.cards.map((c) => ({ sessionId: c.id, title: c.title, project: c.project, items: c.schedules ?? [] })) })
       state.loaded = true
       renderSummary()
       renderRows()
@@ -5035,6 +5068,7 @@ async function refresh() {
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
     if (Date.now() - state.mrs.at > 60_000) loadMrs()
+    if (!isMobile() && Date.now() - state.timeline.at > 15_000) loadTimeline()
     if (state.tab === 'focus' && state.panel.open) {
       if (Date.now() - state.background.at > 4_000) loadBackground()
       if (Date.now() - state.loops.at > 5_000) loadLoops()
