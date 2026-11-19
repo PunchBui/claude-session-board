@@ -245,3 +245,22 @@ test('loops sort with active first, then the most recently ended', () => {
   ]
   assert.deepEqual([...list].sort(byLatestEnded).map((l) => l.id), ['active-new', 'active-old', 'new-ended', 'mid', 'old'])
 })
+
+test('a loop whose prompt is a slash command records each tick', () => {
+  const state = newScanState()
+  const prompt = '/csb-babysit https://example.com/mr/1100'
+  feed(state, toolUse('w1', 'ScheduleWakeup', { delaySeconds: 270, prompt }, 0))
+  feed(state, { type: 'user', turnOrigin: 'scheduled', wakeupSource: 'loop_wakeup', timestamp: iso(4.5), message: { content: '<command-message>csb-babysit</command-message>\n<command-name>/csb-babysit</command-name>\n<command-args>https://example.com/mr/1100</command-args>' } })
+  feed(state, { type: 'user', isMeta: true, timestamp: iso(4.5), message: { content: 'Base directory for this skill: /skills/csb-babysit' } })
+  const [record] = loopRecords(state.loops, { nowMs: T0 + 5 * 60_000, working: true, idleMs: 0 })
+  assert.equal(record.fireCount, 1)
+  assert.equal(record.lastFiredAt, T0 + 4.5 * 60_000)
+  assert.equal(view(state, 5, { working: true }).nextAt, null)
+})
+
+test('a scheduled plain prompt that arrives as a normal user message is also a tick', () => {
+  const state = newScanState()
+  feed(state, toolUse('w1', 'ScheduleWakeup', { delaySeconds: 600, prompt: 'poll' }, 0))
+  feed(state, { type: 'user', turnOrigin: 'scheduled', timestamp: iso(10), message: { content: 'poll' } })
+  assert.equal(loopRecords(state.loops, { nowMs: T0 + 11 * 60_000, working: true, idleMs: 0 })[0].fireCount, 1)
+})

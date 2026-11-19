@@ -99,6 +99,7 @@ function loopLane(loop, window) {
     .filter((at) => at >= dayStart && at < Math.min(nowMs, dayEnd))
     .map((at) => ({ at, past: true, sessionId: loop.sessionId }))
   const future = loopFuture(loop, window).map((at) => ({ at, past: false, sessionId: loop.sessionId }))
+  if (loop.kind === 'wakeup' && loop.status !== 'ended' && !future.length) future.push({ at: nowMs, past: false, running: true, sessionId: loop.sessionId })
   const how = loop.kind === 'wakeup' ? 'self-paced' : (loop.recurring === false ? `once · ${loop.cron}` : (loop.every ? `every ${loop.every}m` : loop.cron))
   return {
     key: `loop-${loop.sessionId}-${loop.id}`,
@@ -147,7 +148,7 @@ export function timelineLanes({ routines = [], loops = [], prompts = [], nowMs =
 export function nextEvent(lanes, nowMs = Date.now()) {
   let best = null
   for (const lane of lanes) {
-    const event = lane.events.find((e) => !e.past && e.at >= nowMs)
+    const event = lane.events.find((e) => !e.past && !e.running && e.at >= nowMs)
     if (event && (!best || event.at < best.event.at)) best = { lane, event }
   }
   return best

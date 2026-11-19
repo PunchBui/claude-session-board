@@ -217,11 +217,12 @@ export function createTimeline(host, { projectColor, openSession, openSchedule }
       mark.style.left = percent(event.at, window)
       track.append(mark)
     }
-    const next = future.find((e) => e.at >= now)
+    const next = future.find((e) => e.running || e.at >= now)
     if (next) {
       const pill = el('span', 'tl-pill')
       pill.style.left = percent(next.at, window)
-      live.push({ node: pill, at: next.at, format: (at) => `next ${hhmm(at)} · ${countdown(at)}` })
+      if (next.running) pill.textContent = 'running now'
+      else live.push({ node: pill, at: next.at, format: (at) => `next ${hhmm(at)} · ${countdown(at)}` })
       track.append(pill)
     }
     track.classList.add('tl-clickable')

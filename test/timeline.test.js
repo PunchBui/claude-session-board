@@ -144,3 +144,8 @@ test('hiding finished rows drops rows with nothing left today but keeps past run
   assert.deepEqual(lanes.map((l) => l.key), ['loop-sess-job'])
   assert.equal(lanes[0].events[0].past, true)
 })
+
+test('a self-paced loop mid-tick shows as running now instead of dropping out', () => {
+  const [lane] = timelineLanes({ nowMs: NOW, loops: [loop({ kind: 'wakeup', cron: null, every: null, nextAt: null, fires: [at(14, 5)] })], show: { finished: false } })
+  assert.deepEqual(lane.events.at(-1), { at: NOW, past: false, running: true, sessionId: 'sess' })
+})
