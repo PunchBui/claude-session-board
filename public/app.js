@@ -1321,6 +1321,8 @@ async function submitPrompt(id, box) {
   const typed = box.value.trim()
   const fresh = FRESH_COMMAND.exec(typed)
   if (fresh) return startFreshChat(id, box, fresh[1])
+  const side = SIDE_COMMAND.exec(typed)
+  if (side) return startSideFromComposer(id, box, side[1].trim())
   const files = attachmentsOf(id)
   if (!typed && !files.length) return
   const prompt = withAttachments(id, typed)
@@ -2908,6 +2910,18 @@ function clearDraftAttachments() {
 }
 
 const FRESH_COMMAND = /^\/(?:clear|reset|new)\b\s*([\s\S]*)$/i
+const SIDE_COMMAND = /^\/(?:btw|side)\b\s*([\s\S]*)$/i
+
+function startSideFromComposer(id, box, question) {
+  const card = state.cards.find((c) => c.id === id)
+  if (!card) return
+  box.value = ''
+  state.drafts.delete(id)
+  autosize(box)
+  if (!(state.panel.open && state.panel.tab === 'sidechats')) openPanelTab('sidechats')
+  if (question) return startSideChat(card, question)
+  requestAnimationFrame(() => document.querySelector(`textarea[data-keep="sc:new:${CSS.escape(id)}"]`)?.focus())
+}
 
 function startFreshChat(id, box, firstPrompt) {
   const card = state.cards.find((c) => c.id === id)

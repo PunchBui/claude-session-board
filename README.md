@@ -134,6 +134,7 @@ Typing `/` in a card's prompt box opens an autocomplete list of every command a 
 - Output from built-ins such as `/context`, `/usage`, `/mcp` and `/model` is shown in the chat as a command panel.
 - `/model <name>` and `/effort <level>` only last one headless run, so the board reads the last accepted change from the transcript and passes it as `--model` / `--effort` on every later prompt, queued item and schedule for that session. `/model default` and `/effort auto` go back to the default.
 - `/clear`, `/new` and `/reset` open a New chat in the same folder with the same model, effort and permission mode, and any text after the command as its first prompt. They are refused in the queue, broadcasts and schedules.
+- `/btw <question>` and `/side <question>` in a session's prompt box start a side chat on a copy of that conversation and open the Side chats panel, the same as its "Ask a side question…" box. With no question they open the panel and put the cursor in that box.
 - Commands that need the terminal UI, such as `/help`, `/status`, `/permissions` or `/resume`, answer that they are not available here.
 
 ## Alerts

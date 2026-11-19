@@ -73,6 +73,14 @@ test('commands reported by Claude Code are listed with their source, the board h
   assert.ok(!items.some((item) => item.name === 'compact'))
 })
 
+test('the board lists /btw and /side once each as side-chat commands, even when Claude Code reports btw', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'csb-home-'))
+  const items = await listCommands({ cwd: null, home, probed: ['btw', 'model'] })
+  const by = (name) => items.filter((item) => item.name === name)
+  assert.deepEqual([...by('btw'), ...by('side')].map((item) => item.source), ['board', 'board'])
+  assert.match(by('btw')[0].description, /side question/i)
+})
+
 test('initCommands reads slash_commands from the init event only', () => {
   assert.deepEqual(initCommands(JSON.stringify({ type: 'system', subtype: 'init', slash_commands: ['model', '__internal', 'x:y', 3] })), ['model', 'x:y'])
   assert.equal(initCommands(JSON.stringify({ type: 'system', subtype: 'hook_started' })), null)
