@@ -131,8 +131,9 @@ function promptLanes(session, { dayStart, dayEnd, nowMs }) {
 
 export function timelineLanes({ routines = [], loops = [], prompts = [], nowMs = Date.now(), show = {} }) {
   const window = { ...dayBounds(nowMs), nowMs }
-  const { schedules = true, loops: showLoops = true, past = true } = show
+  const { schedules = true, loops: showLoops = true, past = true, finished = true } = show
   const keep = (lane) => {
+    if (!finished && !lane.events.some((event) => !event.past)) return null
     const events = past ? lane.events : lane.events.filter((event) => !event.past)
     return events.length ? { ...lane, events } : null
   }

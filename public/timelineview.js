@@ -5,8 +5,13 @@ import { timelineLanes, nextEvent, splitWindow, countdown, dayBounds, HOUR_PRESE
 
 const KEY = 'board.timeline'
 const HOUR = 3_600_000
-const DEFAULTS = { collapsed: false, hours: [9, 18], show: { schedules: true, loops: true, past: true } }
-const FILTERS = [['schedules', 'Schedules'], ['loops', 'Loops'], ['past', 'Past runs']]
+const DEFAULTS = { collapsed: false, hours: [9, 18], show: { finished: true, schedules: true, loops: true, past: true } }
+const FILTERS = [
+  ['finished', 'Finished', 'Rows with nothing left to run today'],
+  ['schedules', 'Schedules', 'Schedule-tab runs and prompts queued on a session'],
+  ['loops', 'Loops', 'Cron and self-paced loops'],
+  ['past', 'Past runs', 'Runs that already happened today'],
+]
 
 const hhmm = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 const pad = (h) => String(h).padStart(2, '0')
@@ -88,9 +93,10 @@ export function createTimeline(host, { projectColor, openSession, openSchedule }
     }
     head.append(upcoming, el('span', 'tl-spacer'))
     const filters = el('div', 'tl-filters')
-    for (const [key, label] of FILTERS) {
+    for (const [key, label, hint] of FILTERS) {
       const b = el('button', 'tl-filter', label)
       b.type = 'button'
+      b.title = `${settings.show[key] ? 'Hide' : 'Show'}: ${hint.charAt(0).toLowerCase()}${hint.slice(1)}`
       b.setAttribute('aria-pressed', String(settings.show[key]))
       b.onclick = () => { settings.show[key] = !settings.show[key]; save(); render(true) }
       filters.append(b)

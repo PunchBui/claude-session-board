@@ -126,7 +126,7 @@ A strip at the top of every desktop page plots today's runs on an hour grid (09�
 - **Queued prompts** on a focused session (including babysit's next check): a marker at each time it will run today.
 - **Loops**: a cron job shows a tick for every remaining match of its cron expression today (any 5-field expression, not just `*/N`) and faded ticks for runs so far; a self-paced `/loop` shows its earlier ticks and only its next wakeup, since it picks each delay as it goes. Ended loops appear only if they ran today.
 
-Each upcoming row has a live countdown pill (`next 14:10 · in 4m 30s`), and the header names the next run of all. Clicking a loop or queued-prompt row opens that session in Focus. Runs outside the chosen hours show as `‹ 2` / `54 ›` at the row's edges. The Schedules, Loops and Past runs buttons filter rows; the chevron collapses the strip to its header. Settings are kept in the browser. Phones don't show the strip.
+Each upcoming row has a live countdown pill (`next 14:10 · in 4m 30s`), and the header names the next run of all. Clicking a loop or queued-prompt row opens that session in Focus. Runs outside the chosen hours show as `‹ 2` / `54 ›` at the row's edges. The Finished button hides rows with nothing left to run today (a schedule that already ran, an ended loop); Schedules, Loops and Past runs filter the rest; the chevron collapses the strip to its header. Settings are kept in the browser. Phones don't show the strip.
 
 ## Prompts, queue and schedules
 

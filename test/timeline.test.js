@@ -132,3 +132,15 @@ test('a queued prompt on a session shows its upcoming runs today and opens that 
   assert.deepEqual(lanes[0].events, [{ at: NOW + 270_000, past: false, sessionId: 'babysit' }])
   assert.equal(timelineLanes({ nowMs: NOW, prompts: [{ sessionId: 's', items: [{ sid: 'x', prompt: 'p', at: NOW + 1000 }] }], show: { schedules: false } }).length, 0)
 })
+
+test('hiding finished rows drops rows with nothing left today but keeps past runs on live rows', () => {
+  const input = {
+    nowMs: NOW,
+    routines: [routine({ history: [{ at: at(9), sessionId: 's' }] })],
+    loops: [loop(), loop({ id: 'done', status: 'ended', fires: [at(10)] })],
+    show: { finished: false },
+  }
+  const lanes = timelineLanes(input)
+  assert.deepEqual(lanes.map((l) => l.key), ['loop-sess-job'])
+  assert.equal(lanes[0].events[0].past, true)
+})
