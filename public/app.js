@@ -16,6 +16,7 @@ import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
 import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
+import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from './sidechats.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
@@ -62,6 +63,7 @@ const state = {
   schedule: { data: null, at: 0, built: false },
   loops: { data: null, at: 0 },
   background: { data: null, at: 0, output: new Map(), loading: new Set() },
+  sideChats: { data: null, at: 0, cards: new Map(), fetched: new Map(), loading: new Set(), open: new Set(), starting: new Set(), drafts: new Map(), notes: new Map(), pending: new Map(), closedOpen: false },
   panel: { open: false, tab: 'background', scope: 'session', closed: new Set(), opened: new Set(), finishedOpen: false, endedOpen: false },
   mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
 }
@@ -546,7 +548,7 @@ function tempBadge(t, session) {
 
 function visible() {
   const q = $('q').value.trim().toLowerCase()
-  return state.sessions.filter((s) =>
+  return mainSessions(state.sessions).filter((s) =>
     ($('archived').checked || !s.archived) &&
     (!state.status || s.status === state.status) &&
     (!state.temp || temperatureOf(s).group === state.temp) &&
@@ -562,7 +564,7 @@ function renderMrsBadge() {
 }
 
 function renderSummary() {
-  const pool = state.sessions.filter((s) => $('archived').checked || !s.archived)
+  const pool = mainSessions(state.sessions).filter((s) => $('archived').checked || !s.archived)
   const counts = pool.reduce((acc, s) => ({ ...acc, [s.status]: (acc[s.status] ?? 0) + 1 }), {})
   const box = $('summary')
   box.replaceChildren()
@@ -618,6 +620,12 @@ function renderRows() {
       const draft = el('span', 'draft-chip', 'Draft')
       draft.title = state.drafts.get(s.id).trim().slice(0, 200)
       heading.append(draft)
+    }
+    if (s.sideChats) {
+      const chip = el('span', 'side-chip')
+      chip.append(icon('message-circle', { size: 12 }), text(` ${s.sideChats} side ${s.sideChats === 1 ? 'chat' : 'chats'}`))
+      chip.title = 'Open the session on Focus and use the Side chats panel to read them'
+      heading.append(chip)
     }
     title.append(heading)
     if (s.detail) title.append(el('div', 'row-sub', s.detail))
@@ -2221,7 +2229,7 @@ function renderCard(c) {
   }
   const actions = el('div', 'head-actions')
   const phone = isMobile()
-  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, tasksButton(c), step, openLink(c.id)].filter(Boolean))
+  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, sideChatButton(c), tasksButton(c), step, openLink(c.id)].filter(Boolean))
   row.append(starButton(c.id), titleBox)
   if (phone) {
     // Phone: the actions, including Chat/Changes, fold behind a ... button.
@@ -2434,6 +2442,13 @@ function sideItem(c, selected) {
   if (level) sub.append(el('span', `tag ctx ${level}`, compact(c.usage.context)))
   const queued = c.queue?.items.length ?? 0
   if (queued) sub.append(el('span', 'tag q', `+${queued}`))
+  const sides = sideChatCount(state.sessions, c.id)
+  if (sides) {
+    const tag = el('span', 'tag sidechat')
+    tag.append(icon('message-circle', { size: 11 }), text(` ${sides}`))
+    tag.title = `${sides} side ${sides === 1 ? 'chat' : 'chats'}`
+    sub.append(tag)
+  }
   const sched = c.schedules ?? []
   if (sched.length) {
     const tag = el('span', 'tag sched')
@@ -2519,7 +2534,7 @@ async function dropSessionOn(targetId, after) {
 function renderOthers(list) {
   const q = $('side-q').value.trim().toLowerCase()
   const starred = new Set(state.focusIds)
-  const rest = state.sessions
+  const rest = mainSessions(state.sessions)
     .filter((s) => !starred.has(s.id) && ($('archived').checked || !s.archived) && (!q || `${s.title} ${s.project} ${s.cwd}`.toLowerCase().includes(q)))
     .sort((a, b) => (b.touchedAt ?? b.lastActivityAt ?? 0) - (a.touchedAt ?? a.lastActivityAt ?? 0))
   if (!rest.length) {
@@ -4197,8 +4212,32 @@ function tasksButton(c) {
   if (count) b.append(el('span', 'tasks-n', String(count)))
   b.title = 'Background tasks and loops'
   b.setAttribute('aria-label', 'Background tasks and loops')
-  b.setAttribute('aria-pressed', String(state.panel.open))
-  b.onclick = togglePanel
+  b.setAttribute('aria-pressed', String(state.panel.open && state.panel.tab !== 'sidechats'))
+  b.onclick = () => openPanelTab('background')
+  return b
+}
+
+function openPanelTab(tab) {
+  const side = tab === 'sidechats'
+  if (state.panel.open && side === (state.panel.tab === 'sidechats')) return togglePanel()
+  state.panel.open = true
+  if (side || state.panel.tab === 'sidechats') state.panel.tab = tab
+  if (side) state.panel.scope = 'session'
+  savePanel()
+  renderFocus()
+  loadTaskData()
+}
+
+function sideChatButton(c) {
+  const count = sideChatCount(state.sessions, c.id)
+  const b = el('button', 'icon-only tasks-btn')
+  b.type = 'button'
+  b.append(icon('message-circle', { size: 16 }))
+  if (count) b.append(el('span', 'tasks-n', String(count)))
+  b.title = count ? `Side chats (${count} open)` : 'Side chat: ask a quick question on a copy of this conversation'
+  b.setAttribute('aria-label', 'Side chats')
+  b.setAttribute('aria-pressed', String(state.panel.open && state.panel.tab === 'sidechats'))
+  b.onclick = () => openPanelTab('sidechats')
   return b
 }
 
@@ -4322,6 +4361,254 @@ function loopsBody(loops, showSession) {
   return frag
 }
 
+const SIDE_PENDING_MS = 120_000
+
+function sideComposer(key, { placeholder, label, onSend, busy = false }) {
+  const sc = state.sideChats
+  const wrap = el('div', 'sc-compose')
+  const box = el('div', 'sc-ask')
+  const area = document.createElement('textarea')
+  area.rows = 1
+  area.placeholder = placeholder
+  area.dataset.keep = `sc:${key}`
+  area.value = sc.drafts.get(key) ?? ''
+  area.disabled = busy
+  area.oninput = () => { sc.drafts.set(key, area.value); autosize(area) }
+  area.onkeydown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault()
+      onSend(area.value.trim())
+    }
+  }
+  const send = el('button', 'icon-only sc-send')
+  send.type = 'button'
+  send.title = label
+  send.setAttribute('aria-label', label)
+  send.disabled = busy
+  send.append(icon('arrow-up', { size: 16 }))
+  send.onclick = () => onSend(area.value.trim())
+  box.append(area, send)
+  wrap.append(box)
+  const note = sc.notes.get(key)
+  if (note) wrap.append(el('div', 'sc-note', note))
+  requestAnimationFrame(() => autosize(area))
+  return wrap
+}
+
+async function startSideChat(c, prompt) {
+  const sc = state.sideChats
+  const key = `new:${c.id}`
+  if (!prompt || sc.starting.has(c.id)) return
+  sc.starting.add(c.id)
+  sc.notes.set(key, 'Starting a side chat on a copy of this conversation…')
+  renderTaskPanel()
+  const result = await postJson('/api/side-chats', { id: c.id, prompt })
+  sc.starting.delete(c.id)
+  if (result.ok) {
+    sc.drafts.delete(key)
+    sc.notes.delete(key)
+    sc.open.add(result.data.id)
+    sc.pending.set(result.data.id, { text: prompt, at: Date.now() })
+    await loadSideChats()
+    await loadSideChat(result.data.id)
+    sideBurst()
+  } else {
+    sc.notes.set(key, result.data.error ?? 'Could not start the side chat')
+  }
+  renderTaskPanel()
+}
+
+async function sendSideReply(r, prompt) {
+  const sc = state.sideChats
+  const key = `reply:${r.id}`
+  if (!prompt) return
+  const card = sc.cards.get(r.id)
+  const busy = card?.run?.state === 'running' || Boolean(card?.active) || r.running
+  sc.drafts.delete(key)
+  sc.notes.set(key, busy ? 'Queuing…' : 'Sending…')
+  if (!busy) sc.pending.set(r.id, { text: prompt, at: Date.now() })
+  renderTaskPanel()
+  let result = await postJson(busy ? '/api/queue' : '/api/prompt', { id: r.id, prompt })
+  if (!busy && shouldQueue(result)) {
+    sc.pending.delete(r.id)
+    result = await postJson('/api/queue', { id: r.id, prompt })
+  }
+  if (result.ok) sc.notes.delete(key)
+  else {
+    sc.pending.delete(r.id)
+    sc.drafts.set(key, prompt)
+    sc.notes.set(key, result.data.error ?? 'Could not send')
+  }
+  await loadSideChat(r.id)
+  loadSideChats()
+  sideBurst()
+}
+
+async function closeSideChat(r, closed) {
+  const result = await postJson('/api/side-chats/close', { id: r.id, closed })
+  if (!result.ok) state.sideChats.notes.set(`reply:${r.id}`, result.data.error ?? 'Could not update the side chat')
+  if (closed) state.sideChats.open.delete(r.id)
+  await loadSideChats()
+  state.signature = ''
+  refresh()
+}
+
+function sideChatDetail(r, showParent) {
+  const sc = state.sideChats
+  const card = sc.cards.get(r.id)
+  const box = el('div', 'sc-detail')
+  const log = el('div', 'sc-log')
+  log.dataset.sc = r.id
+  if (!card) log.append(el('div', 'tp-note', 'Loading…'))
+  else {
+    chatBase = card.cwd ?? ''
+    const messages = card.details?.chat ?? []
+    const pending = sc.pending.get(r.id)
+    const waiting = pending && !ownReplies(messages, pending.at)
+    log.append(...messages.map(renderMessage))
+    if (waiting) log.append(renderMessage({ role: 'user', text: pending.text, pending: true }))
+    const working = renderWorking(card)
+    if (working) log.append(working)
+    else if (card.run?.state === 'running') {
+      const line = el('div', 'working')
+      const inner = el('div', 'working-line')
+      inner.append(el('span', 'pulse'), el('span', 'shimmer', 'Starting…'))
+      line.append(inner)
+      log.append(line)
+    }
+    if (!messages.length && !waiting && !working && card.run?.state !== 'running') log.append(el('div', 'tp-note', 'No messages yet.'))
+    if (['failed', 'stalled'].includes(card.run?.state) && card.run.error) log.append(el('div', 'sc-error', card.run.error))
+    const queued = card.queue?.items.length ?? 0
+    if (queued) log.append(el('div', 'tp-note', `${queued} queued ${queued === 1 ? 'message' : 'messages'}: ${queued === 1 ? 'it runs' : 'they run'} when this reply finishes.`))
+  }
+  box.append(log)
+  if (!r.closed) box.append(sideComposer(`reply:${r.id}`, { placeholder: 'Reply in this side chat…', label: 'Send in this side chat', onSend: (prompt) => sendSideReply(r, prompt) }))
+  const actions = el('div', 'sc-actions')
+  const toggle = el('button', 'btn', r.closed ? 'Reopen' : 'Close')
+  toggle.title = r.closed ? 'Move it back to Open' : 'Move it to Closed. Nothing is deleted.'
+  toggle.onclick = () => closeSideChat(r, !r.closed)
+  actions.append(toggle)
+  if (showParent && r.parentTitle) {
+    const go = el('button', 'btn', 'Go to session')
+    go.title = r.parentTitle
+    go.onclick = () => openInFocus(r.parentId)
+    actions.append(go)
+  }
+  actions.append(openLink(r.id))
+  box.append(actions)
+  return box
+}
+
+function sideChatRow(r, showParent) {
+  const sc = state.sideChats
+  const open = sc.open.has(r.id)
+  const row = el('div', `tp-row sc-row${r.running ? ' running' : ''}${open ? ' open' : ''}`)
+  const head = el('button', 'tp-row-head')
+  head.type = 'button'
+  head.setAttribute('aria-expanded', String(open))
+  head.onclick = () => {
+    if (open) sc.open.delete(r.id)
+    else {
+      sc.open.add(r.id)
+      loadSideChat(r.id)
+    }
+    renderTaskPanel()
+  }
+  const title = el('span', 'tp-row-title')
+  title.append(el('span', 'tp-row-name', r.title))
+  const sub = [showParent ? r.parentTitle : null, r.source === 'board' ? 'started on the board' : 'from Claude desktop'].filter(Boolean)
+  title.append(el('span', 'tp-row-session', sub.join(' · ')))
+  head.append(icon(open ? 'chevron-down' : 'chevron-right', { size: 14 }), title)
+  if (r.running) {
+    const live = el('span', 'sc-live')
+    live.append(el('span', 'spinner'), text('Working'))
+    head.append(live)
+  } else head.append(el('span', 'tp-status', relative(r.lastActivityAt)))
+  row.append(head)
+  if (open) row.append(sideChatDetail(r, showParent))
+  return row
+}
+
+function sideChatsBody(selected, sessionId) {
+  const sc = state.sideChats
+  const frag = document.createDocumentFragment()
+  const { open, closed } = sideChatGroups(sc.data?.items ?? [], sessionId)
+  if (sessionId && selected) {
+    frag.append(sideComposer(`new:${selected.id}`, { placeholder: 'Ask a side question…', label: 'Start a side chat', busy: sc.starting.has(selected.id), onSend: (prompt) => startSideChat(selected, prompt) }))
+    frag.append(el('div', 'tp-note sc-hint', 'Runs on a copy of this conversation, so the main chat does not change.'))
+  }
+  frag.append(panelSection('Open', open.length))
+  if (open.length) frag.append(...open.map((r) => sideChatRow(r, !sessionId)))
+  else frag.append(panelEmpty(sessionId ? 'No side chats on this session yet.' : 'No open side chats.'))
+  if (closed.length) {
+    const shown = sc.closedOpen
+    frag.append(panelSection('Closed', closed.length, { toggle: () => { sc.closedOpen = !shown; renderTaskPanel() }, open: shown }))
+    if (shown) frag.append(...closed.map((r) => sideChatRow(r, !sessionId)))
+  }
+  return frag
+}
+
+async function loadSideChats() {
+  try {
+    state.sideChats.data = await getJson('/api/side-chats')
+    state.sideChats.at = Date.now()
+    renderTaskPanel()
+  } catch {}
+}
+
+async function loadSideChat(id) {
+  const sc = state.sideChats
+  if (sc.loading.has(id)) return
+  sc.loading.add(id)
+  let changed = false
+  try {
+    const card = await getJson(`/api/side-chat?id=${encodeURIComponent(id)}`)
+    if (card?.id) {
+      changed = JSON.stringify(card) !== JSON.stringify(sc.cards.get(id))
+      sc.cards.set(id, card)
+      sc.fetched.set(id, Date.now())
+      const pending = sc.pending.get(id)
+      const failed = ['failed', 'stalled'].includes(card.run?.state) && card.run.startedAt >= (pending?.at ?? 0) - 5000
+      if (pending && (ownReplies(card.details?.chat ?? [], pending.at) || failed || Date.now() - pending.at > SIDE_PENDING_MS)) {
+        sc.pending.delete(id)
+        changed = true
+      }
+    }
+  } catch {}
+  sc.loading.delete(id)
+  if (changed) renderTaskPanel()
+}
+
+const sidePanelShown = () => state.tab === 'focus' && state.panel.open && state.panel.tab === 'sidechats'
+
+function sideChatLive(id) {
+  const card = state.sideChats.cards.get(id)
+  return state.sideChats.pending.has(id) || card?.run?.state === 'running' || Boolean(card?.active)
+}
+
+function pollSideChats() {
+  if (!sidePanelShown()) return
+  const sc = state.sideChats
+  if (Date.now() - sc.at > 4000) loadSideChats()
+  for (const id of sc.open) {
+    if (Date.now() - (sc.fetched.get(id) ?? 0) > (sideChatLive(id) ? 1000 : 15_000)) loadSideChat(id)
+  }
+}
+
+let sideBurstTimer = null
+
+function sideBurst() {
+  clearInterval(sideBurstTimer)
+  let ticks = 0
+  sideBurstTimer = setInterval(() => {
+    ticks += 1
+    const live = [...state.sideChats.open].filter(sideChatLive)
+    if (ticks > 150 || !live.length || !sidePanelShown()) return clearInterval(sideBurstTimer)
+    live.forEach(loadSideChat)
+    if (ticks % 3 === 0) loadSideChats()
+  }, 1200)
+}
+
 function renderTaskPanel(selected = state.panelSelected) {
   state.panelSelected = selected
   const panel = $('task-panel')
@@ -4336,10 +4623,11 @@ function renderTaskPanel(selected = state.panelSelected) {
   const loops = mine(state.loops.data?.loops ?? [])
   const running = tasks.filter((task) => task.status === 'running').length
   const activeLoops = loops.filter((r) => r.status !== 'ended').length
+  const openSides = sideChatGroups(state.sideChats.data?.items ?? [], sessionId).open.length
 
   const head = el('div', 'tp-head')
   const tabs = el('div', 'tp-tabs')
-  for (const [key, label, count] of [['background', 'Background', running], ['loops', 'Loops', activeLoops]]) {
+  for (const [key, label, count] of [['background', 'Background', running], ['loops', 'Loops', activeLoops], ['sidechats', 'Side chats', openSides]]) {
     const b = el('button', undefined, label)
     b.type = 'button'
     if (count) b.append(el('span', 'n', String(count)))
@@ -4366,11 +4654,27 @@ function renderTaskPanel(selected = state.panelSelected) {
   }
 
   const body = el('div', 'tp-body')
-  const loaded = state.panel.tab === 'background' ? state.background.data : state.loops.data
+  const tab = state.panel.tab
+  const loaded = tab === 'background' ? state.background.data : tab === 'loops' ? state.loops.data : state.sideChats.data
   if (!loaded) body.append(panelEmpty('Loading…'))
-  else body.append(state.panel.tab === 'background' ? backgroundBody(tasks, !sessionId) : loopsBody(loops, !sessionId))
+  else body.append(tab === 'background' ? backgroundBody(tasks, !sessionId) : tab === 'loops' ? loopsBody(loops, !sessionId) : sideChatsBody(selected, sessionId))
+  const focused = document.activeElement
+  const keep = panel.contains(focused) ? focused.dataset?.keep : null
+  const caret = keep && 'selectionStart' in focused ? [focused.selectionStart, focused.selectionEnd] : null
+  const logs = new Map([...panel.querySelectorAll('.sc-log')].map((log) => [log.dataset.sc, { top: log.scrollTop, stick: log.scrollHeight - log.clientHeight - log.scrollTop < 40 }]))
   panel.replaceChildren(head, scope, body)
   body.scrollTop = keepScroll
+  for (const log of panel.querySelectorAll('.sc-log')) {
+    const was = logs.get(log.dataset.sc)
+    log.scrollTop = !was || was.stick ? log.scrollHeight : was.top
+  }
+  if (keep) {
+    const field = [...panel.querySelectorAll('[data-keep]')].find((node) => node.dataset.keep === keep)
+    if (field && !field.disabled) {
+      field.focus({ preventScroll: true })
+      if (caret) field.setSelectionRange(...caret)
+    }
+  }
 }
 
 const taskKey = (task) => `${task.sessionId}:${task.id}`
@@ -4399,6 +4703,8 @@ async function loadBackground() {
 function loadTaskData() {
   loadBackground()
   loadLoops()
+  loadSideChats()
+  state.sideChats.open.forEach(loadSideChat)
 }
 
 async function loadUsage() {
@@ -4710,6 +5016,7 @@ async function refresh() {
     if (prunePending()) renderFocus()
     pollChanges()
     pollAgents()
+    pollSideChats()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()

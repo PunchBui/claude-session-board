@@ -83,6 +83,7 @@
   .badge.bg-failed { background: var(--danger); }
   @keyframes bgpulse { 50% { opacity: .72; } }
   @media (prefers-reduced-motion: reduce) { .badge.bg-running { animation: none; } }
+  .side-chip { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); vertical-align: 1px; }
   .draft-chip { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--caution); background: color-mix(in srgb, var(--caution) 16%, transparent); vertical-align: 1px; }
   .badge { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; font-weight: 600; padding: 0 6px; margin-left: 6px; }
   .spacer { flex: 1; min-width: 0; }
@@ -791,6 +792,25 @@
   .tasks-btn { position: relative; }
   .tasks-btn[aria-pressed="true"] { color: var(--accent); }
   .tasks-n { position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--info); color: #fff; font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; }
+  .sc-compose { display: flex; flex-direction: column; gap: 4px; }
+  .sc-ask { display: flex; align-items: flex-end; gap: 6px; padding: 4px 4px 4px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
+  .sc-ask:focus-within { border-color: var(--accent); }
+  .sc-ask textarea { flex: 1; min-width: 0; border: 0; outline: 0; resize: none; background: none; color: var(--text); font: 13.5px/20px inherit; padding: 5px 0; min-height: 30px; max-height: 160px; }
+  .sc-ask textarea::placeholder { color: var(--faint); }
+  .sc-send { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--accent); color: #fff; }
+  .sc-send:disabled { opacity: .45; }
+  .sc-note { font-size: 12px; color: var(--muted); padding: 0 4px; }
+  .sc-hint { padding: 0 4px 4px; }
+  .sc-detail { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 10px; }
+  .sc-log { display: flex; flex-direction: column; gap: 12px; max-height: min(55vh, 520px); overflow: auto; padding: 8px 2px 2px; border-top: 1px solid var(--line); scrollbar-width: thin; }
+  .sc-log .msg.user .body { font-size: 13.5px; line-height: 1.55; padding: 7px 12px; border-radius: 14px; max-width: 92%; background: var(--surface); }
+  .sc-log .msg.assistant .body { font-size: 13.5px; line-height: 1.6; }
+  .sc-log .msg.tools .toolbox { font-size: 12px; }
+  .sc-log .working-line { font-size: 12.5px; }
+  .sc-error { font-size: 12px; color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .sc-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sc-actions .btn { font-size: 12px; }
+  .sc-live { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 11.5px; color: var(--info); }
   @media (max-width: 900px) {
     .split:has(.task-panel:not([hidden])) { grid-template-columns: minmax(0, 1fr); }
     .task-panel:not([hidden]) { position: fixed; top: 0; right: 0; bottom: 0; width: min(100%, 400px); z-index: 30; border-radius: 0; box-shadow: -10px 0 30px rgba(0, 0, 0, .35); }
@@ -872,6 +892,7 @@
   .tag { flex: none; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 0 7px; line-height: 18px; }
   .tag.q { color: var(--muted); background: var(--surface-2); }
   .tag.sched { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); background: var(--surface-2); }
+  .tag.sidechat { display: inline-flex; flex: none; white-space: nowrap; align-items: center; gap: 2px; color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
   .tag.ctx { color: var(--muted); background: var(--surface-2); }
   .tag.ctx.caution { color: color-mix(in srgb, var(--caution) 55%, var(--text)); background: color-mix(in srgb, var(--caution) 22%, transparent); }
   .tag.ctx.danger { color: color-mix(in srgb, var(--danger) 70%, var(--text)); background: color-mix(in srgb, var(--danger) 20%, transparent); }

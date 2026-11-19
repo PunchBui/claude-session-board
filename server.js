@@ -42,6 +42,7 @@ import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimite
 import { createBoardStore, boardRaw } from './lib/boardsessions.js'
 import { createTitler } from './lib/autotitle.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
+import { sideChatParent, isSideChat, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -66,6 +67,7 @@ const ROUTINE_FILE = join(DATA_DIR, 'routines.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const RUNS_FILE = join(DATA_DIR, 'runs.json')
 const BOARD_SESSIONS_FILE = join(DATA_DIR, 'board-sessions.json')
+const SIDE_CHATS_FILE = join(DATA_DIR, 'side-chats.json')
 const ADOPT_POLL_MS = 2000
 const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: homedir() })
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
@@ -164,6 +166,7 @@ function toSummary(raw) {
     cliSessionId: raw.cliSessionId ?? null,
     source: raw.source ?? 'desktop',
     resume: raw.resume ?? null,
+    sideChatOf: sideChatParent(raw),
   }
 }
 
@@ -206,9 +209,10 @@ async function loadSessions() {
   for (const raw of raws) {
     if (!raw.isArchived && Date.now() - (raw.lastActivityAt ?? 0) < LOOP_LOOKBACK_MS) scanSession(raw).catch(() => {})
   }
-  return raws
-    .map((raw) => ({ ...toSummary(raw), lastPromptAt: promptAtFor(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
-    .map(({ cliSessionId, ...rest }) => rest)
+  const summaries = raws.map((raw) => ({ ...toSummary(raw), lastPromptAt: promptAtFor(raw), loop: loopFor(raw), background: backgroundCountFor(raw) }))
+  const sideChats = countOpenSideChats(summaries, await readClosedSideChats())
+  return summaries
+    .map(({ cliSessionId, ...rest }) => ({ ...rest, sideChats: sideChats.get(rest.id) ?? 0 }))
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
 }
 
@@ -254,7 +258,7 @@ async function buildCard(raw) {
     lastPromptAt: promptAtOf(scanned?.state),
     active,
     transcriptFound: Boolean(scanned),
-    details: scanned ? { chat: scanned.state.chat.slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
+    details: scanned ? { chat: (base.sideChatOf ? ownChat(scanned.state.chat, forkedAt(raw)) : scanned.state.chat).slice(-CHAT_ITEMS), toolCount: scanned.state.toolCalls, filesEdited: scanned.state.files.size } : null,
     usage: scanned ? usageOf(scanned.state) : null,
     subagents: scanned ? await subagentStore.summary(scanned.path) : null,
     backgroundTasks: scanned ? sessionBackground(scanned.state.background, { nowMs: Date.now(), idleMs: Date.now() - scanned.info.mtimeMs }) : null,
@@ -301,6 +305,31 @@ const boardStore = createBoardStore({ file: BOARD_SESSIONS_FILE, readJson, write
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
   return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+}
+
+async function readClosedSideChats() {
+  return parseClosedFile(await readJson(SIDE_CHATS_FILE, {}))
+}
+
+async function sideChatRows() {
+  const [raws, closed] = await Promise.all([readRawSessions(), readClosedSideChats()])
+  const shut = new Set(closed)
+  const byId = new Map(raws.map((raw) => [raw.sessionId, raw]))
+  const sides = raws.filter(isSideChat)
+  const scanned = await Promise.all(sides.map((raw) => scanSession(raw).catch(() => null)))
+  return sides.map((raw, i) => {
+    const summary = toSummary(raw)
+    const running = manager.runFor(raw.sessionId)?.state === 'running' || Date.now() - Math.max(summary.lastActivityAt ?? 0, scanned[i]?.info.mtimeMs ?? 0) < ACTIVE_WINDOW_MS
+    const parent = byId.get(summary.sideChatOf)
+    return sideChatRow(summary, { parent: parent ? toSummary(parent) : null, question: firstQuestion(scanned[i]?.state.chat, forkedAt(raw)), closed: shut.has(raw.sessionId), running })
+  }).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+}
+
+async function sideChatCard(id) {
+  const raw = await findRaw(id)
+  if (!raw || !isSideChat(raw)) return null
+  const card = await buildCard(raw)
+  return { ...card, run: manager.publicRun(id), queue: publicQueue(id) }
 }
 
 async function readMrPings() {
@@ -461,9 +490,11 @@ async function tick() {
 
 async function loadFocusCards() {
   const [ids, raws] = await Promise.all([readFocus(), readRawSessions()])
+  const sideIds = new Set(raws.filter(isSideChat).map((raw) => raw.sessionId))
+  const shown = ids.filter((id) => !sideIds.has(id))
   const byId = new Map(raws.map((raw) => [raw.sessionId, raw]))
   const cards = await Promise.all(
-    ids.filter((id) => byId.has(id)).map((id) =>
+    shown.filter((id) => byId.has(id)).map((id) =>
       buildCard(byId.get(id)).then((card) => ({
         ...card,
         run: manager.publicRun(id),
@@ -472,7 +503,7 @@ async function loadFocusCards() {
       }))
     )
   )
-  return { ids, cards }
+  return { ids: shown, cards }
 }
 
 const mergeRequests = createMrCache({
@@ -887,6 +918,17 @@ const postRoutes = {
     if (result.status === 202) await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
     return reply(res, result)
   },
+  async '/api/side-chats'(body, res) {
+    return reply(res, await manager.requestSideChat(body))
+  },
+  async '/api/side-chats/close'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '') || typeof body.closed !== 'boolean') return json(res, 400, { error: 'bad request' })
+    const raw = await findRaw(body.id)
+    if (!raw || !isSideChat(raw)) return json(res, 404, { error: 'side chat not found' })
+    const closed = setClosed(await readClosedSideChats(), body.id, body.closed)
+    await writeJson(SIDE_CHATS_FILE, { closed })
+    return json(res, 200, { ok: true })
+  },
   async '/api/handoff'(body, res) {
     const file = handoffFile(String(body.id ?? ''), tmpdir())
     return reply(res, await manager.requestPrompt(body, handoffPrompt(file), { handoff: file }))
@@ -1084,6 +1126,13 @@ const getRoutes = {
   },
   async '/api/focus'(url, res) {
     return json(res, 200, await loadFocusCards())
+  },
+  async '/api/side-chats'(url, res) {
+    return json(res, 200, { items: await sideChatRows() })
+  },
+  async '/api/side-chat'(url, res) {
+    const card = await sideChatCard(url.searchParams.get('id'))
+    return card ? json(res, 200, card) : json(res, 404, { error: 'side chat not found' })
   },
   async '/api/background'(url, res) {
     return json(res, 200, await backgroundHistory())
