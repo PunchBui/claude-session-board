@@ -35,7 +35,7 @@ import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
 import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, settleMerged, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
-import { resolveLocal, imageType, isHtmlFile, isPdfFile, contentDisposition, parseRange, withSizeReporter, MAX_IMAGE_BYTES, MAX_HTML_BYTES, MAX_PDF_BYTES } from './lib/localfile.js'
+import { resolveLocal, resolveWithBase, imageType, isHtmlFile, isPdfFile, contentDisposition, parseRange, withSizeReporter, MAX_IMAGE_BYTES, MAX_HTML_BYTES, MAX_PDF_BYTES } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
@@ -799,7 +799,7 @@ const reply = (res, { status, body }) => json(res, status, body)
 
 const postRoutes = {
   async '/api/reveal'(body, res) {
-    const found = await resolveLocal(body.path)
+    const found = await resolveWithBase(body.path, body.base)
     if (!found) return json(res, 404, { error: 'That file or folder no longer exists.' })
     execFile('open', ['-R', found.path], () => {})
     return json(res, 200, { ok: true })

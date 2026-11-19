@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, symlink, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveLocal, expandHome, imageType } from '../lib/localfile.js'
+import { resolveLocal, resolveWithBase, findByName, expandHome, imageType } from '../lib/localfile.js'
 
 async function sandbox() {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'localfile-')))
@@ -99,4 +99,32 @@ test('byte ranges: open-ended, bounded, suffix, clamped, and unsatisfiable', () 
   assert.equal(parseRange(undefined, 1000), null)
   assert.equal(parseRange('bytes=0-1,5-6', 1000), null)
   assert.equal(parseRange('items=0-1', 1000), null)
+})
+
+test('resolves a bare filename inside the session folder', async () => {
+  const { base, elsewhere, options } = await sandbox()
+  await writeFile(join(elsewhere, 'deck.pptx'), 'x')
+  const found = await resolveWithBase('deck.pptx', elsewhere, { ...options, search: async () => [] })
+  assert.equal(found.path, join(elsewhere, 'deck.pptx'))
+  await rm(base, { recursive: true })
+})
+
+test('falls back to a name search, preferring a non-Library copy', async () => {
+  const { base, home, elsewhere, options } = await sandbox()
+  await mkdir(join(home, 'Library'))
+  await writeFile(join(home, 'Library', 'deck.pptx'), 'x')
+  await writeFile(join(elsewhere, 'deck.pptx'), 'x')
+  const search = async () => [join(home, 'Library', 'deck.pptx'), join(elsewhere, 'deck.pptx'), join(elsewhere, 'other-deck.pptx')]
+  const found = await resolveWithBase('deck.pptx', join(base, 'missing'), { ...options, search })
+  assert.equal(found.path, join(elsewhere, 'deck.pptx'))
+  await rm(base, { recursive: true })
+})
+
+test('never searches for names with a path or a parent segment', async () => {
+  const { base, options } = await sandbox()
+  const search = async () => { throw new Error('searched') }
+  assert.equal(await resolveWithBase('../deck.pptx', base, { ...options, search }), null)
+  assert.equal(await resolveWithBase('a/deck.pptx', base, { ...options, search }), null)
+  assert.equal(await findByName('nothing.pptx', { ...options, search: async () => [] }), null)
+  await rm(base, { recursive: true })
 })

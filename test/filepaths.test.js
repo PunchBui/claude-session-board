@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { PATH_PATTERN, isPath, isImagePath, stripLocation, fileUrl } from '../public/filepaths.js'
+import { PATH_PATTERN, BARE_DOC_PATTERN, isBareDoc, isPath, isImagePath, stripLocation, fileUrl } from '../public/filepaths.js'
 
 const found = (text) => text.match(new RegExp(PATH_PATTERN.source, 'g'))
 
@@ -47,4 +47,23 @@ test('a trailing line and column are dropped before the file is opened', () => {
 
 test('the file url carries the encoded path', () => {
   assert.equal(fileUrl('/Users/me/my shot.png'), '/api/file?path=%2FUsers%2Fme%2Fmy%20shot.png')
+})
+
+test('finds a bare document filename in prose', () => {
+  const bare = (text) => text.match(new RegExp(BARE_DOC_PATTERN.source, 'g'))
+  assert.deepEqual(bare('Saved CHILD-2026-Q4-S4-Sprint-Demo.pptx. Next, open report_v2.xlsx, then notes.docx'), ['CHILD-2026-Q4-S4-Sprint-Demo.pptx', 'report_v2.xlsx', 'notes.docx'])
+})
+
+test('a bare document match skips paths, urls and code files', () => {
+  const bare = (text) => text.match(new RegExp(BARE_DOC_PATTERN.source, 'g'))
+  assert.equal(bare('/Users/me/deck.pptx and ~/deck.pptx and ./deck.pptx'), null)
+  assert.equal(bare('see https://example.com/deck.pptx'), null)
+  assert.equal(bare('edit server.js and README.md'), null)
+})
+
+test('isBareDoc accepts a whole filename only', () => {
+  assert.equal(isBareDoc('CHILD-2026-Q4-S4-Sprint-Demo.pptx'), true)
+  assert.equal(isBareDoc('deck.pptx.bak'), false)
+  assert.equal(isBareDoc('dir/deck.pptx'), false)
+  assert.equal(isBareDoc('see deck.pptx'), false)
 })

@@ -10,7 +10,7 @@ import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { splitAttachments, visibleText } from './attachments.js'
-import { PATH_PATTERN, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtml, stripLocation, fileUrl } from './filepaths.js'
+import { PATH_PATTERN, BARE_DOC_PATTERN, isBareDoc, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtml, stripLocation, fileUrl } from './filepaths.js'
 import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
@@ -656,8 +656,8 @@ function renderRows() {
 }
 
 const URL_PATTERN = /https?:\/\/[^\s<>"'`]+/
-const LINK_PATTERN = new RegExp(`(${[/`[^`\n]+`/, /\*\*[^*\n]+\*\*/, /\[[^\]\n]+\]\(\S+?\)/, URL_PATTERN, PATH_PATTERN].map((re) => re.source).join('|')})`, 'g')
-const PLAIN_PATTERN = new RegExp(`(${[URL_PATTERN, PATH_PATTERN].map((re) => re.source).join('|')})`, 'g')
+const LINK_PATTERN = new RegExp(`(${[/`[^`\n]+`/, /\*\*[^*\n]+\*\*/, /\[[^\]\n]+\]\(\S+?\)/, URL_PATTERN, PATH_PATTERN, BARE_DOC_PATTERN].map((re) => re.source).join('|')})`, 'g')
+const PLAIN_PATTERN = new RegExp(`(${[URL_PATTERN, PATH_PATTERN, BARE_DOC_PATTERN].map((re) => re.source).join('|')})`, 'g')
 const SAFE_PROTOCOLS = new Set(['http:', 'https:'])
 
 function safeUrl(value) {
@@ -690,8 +690,8 @@ function linkNode(href, label) {
   return a
 }
 
-async function revealFile(path) {
-  const result = await postJson('/api/reveal', { path })
+async function revealFile(path, base) {
+  const result = await postJson('/api/reveal', { path, base })
   if (!result.ok) toast({ id: 'reveal-file', title: 'Could not open in Finder', kind: 'failed', message: result.data?.error ?? 'Could not open the file.' })
 }
 
@@ -1060,7 +1060,7 @@ function fileNode(path, label, { preview = true } = {}) {
     event.preventDefault()
     if (pdf) openPdfViewer(target)
     else if (html) openHtmlViewer(target, base)
-    else revealFile(target)
+    else revealFile(target, base)
   }
   if (typeof label === 'string') a.append(text(label))
   else a.append(label)
@@ -1101,7 +1101,7 @@ function inline(parent, value) {
       const inner = part.slice(1, -1)
       const code = el('code', undefined, inner)
       const href = /^https?:\/\/\S+$/.test(inner) ? safeUrl(inner) : null
-      parent.append(href ? linkNode(href, code) : isPath(inner) || (chatBase && isRelativeHtml(inner)) ? fileNode(inner, code) : code)
+      parent.append(href ? linkNode(href, code) : isPath(inner) || isBareDoc(inner) || (chatBase && isRelativeHtml(inner)) ? fileNode(inner, code) : code)
     } else if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) {
       const strong = el('strong')
       inline(strong, part.slice(2, -2))
@@ -1111,12 +1111,14 @@ function inline(parent, value) {
       const label = part.slice(1, split)
       const target = part.slice(split + 2, -1)
       const href = safeUrl(target)
-      parent.append(href ? linkNode(href, label) : isPath(target) || (chatBase && isRelativeHtml(target)) ? fileNode(target, label) : text(part))
+      parent.append(href ? linkNode(href, label) : isPath(target) || isBareDoc(target) || (chatBase && isRelativeHtml(target)) ? fileNode(target, label) : text(part))
     } else if (/^https?:\/\//.test(part)) {
       const [url, tail] = splitTrailing(part)
       const href = safeUrl(url)
       if (href) parent.append(linkNode(href, url), text(tail))
       else parent.append(text(part))
+    } else if (isBareDoc(part)) {
+      parent.append(fileNode(part, part))
     } else if (isPath(splitTrailing(part)[0])) {
       const [path, tail] = splitTrailing(part)
       parent.append(fileNode(path, path), text(tail))
@@ -1134,6 +1136,8 @@ function linkifyPlain(parent, value) {
       const href = safeUrl(url)
       if (href) parent.append(linkNode(href, url), text(tail))
       else parent.append(text(part))
+    } else if (isBareDoc(part)) {
+      parent.append(fileNode(part, part, { preview: false }))
     } else if (isPath(splitTrailing(part)[0])) {
       const [path, tail] = splitTrailing(part)
       parent.append(fileNode(path, path, { preview: false }), text(tail))
@@ -1472,7 +1476,9 @@ function renderQueue(c) {
     remove.title = 'Remove from queue'
     remove.onclick = () => postJson('/api/queue/remove', { id: c.id, qid: item.qid }).then(resync)
     const force = el('button', 'btn', 'Send now')
-    force.title = 'Send this message now, even if the session looks busy in the desktop app'
+    const running = c.run?.state === 'running'
+    force.disabled = running
+    force.title = running ? 'A run is in progress; this message is sent automatically when it finishes' : 'Send this message now, even if the session looks busy in the desktop app'
     force.onclick = async () => {
       const result = await postJson('/api/queue/force', { id: c.id, qid: item.qid })
       if (!result.ok) toast({ id: 'force-send', title: 'Could not send now', kind: 'finished', message: result.data?.error ?? 'Could not send' })
