@@ -318,6 +318,8 @@
   .mr-deploy { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; flex-basis: 100%; }
   .mr-babysit-stop { padding: 1px 10px; font-size: 12px; }
   .mr-babysit-stop:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+  .mr-auto-merge { padding: 1px 10px; font-size: 12px; }
+  .mr-auto-merge:disabled { opacity: .55; cursor: default; }
   .mr-close { padding: 1px 10px; font-size: 12px; }
   .mr-close:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
   .mr-close:disabled { opacity: .55; cursor: default; }

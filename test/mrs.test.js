@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, setAutoMerge, withAutoMerge, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -352,6 +352,51 @@ test('closes a merge request through glab on the configured host', async () => {
   await closeMr(`https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/42`, async (a) => { args = a })
   assert.deepEqual(args, ['mr', 'close', '42', '--repo', `${GITLAB_HOST}/team/sub/repo`])
   await assert.rejects(() => closeMr('https://gitlab.com/a/b/-/merge_requests/1', async () => {}))
+})
+
+test('auto-merge is offered only when GitLab lists an available strategy and it is not already on', () => {
+  const offered = (over) => normalizeMr(node(over), 'dkunweeroj').autoMergeAvailable
+  assert.equal(offered({ availableAutoMergeStrategies: ['MERGE_WHEN_PIPELINE_SUCCEEDS'] }), true)
+  assert.equal(offered({ availableAutoMergeStrategies: [] }), false)
+  assert.equal(offered({}), false)
+  assert.equal(offered({ autoMergeEnabled: true, availableAutoMergeStrategies: ['MERGE_WHEN_PIPELINE_SUCCEEDS'] }), false)
+})
+
+test('withAutoMerge marks the MR as auto-merging and recomputes the verdict', () => {
+  const base = normalizeMr(node({ headPipeline: { status: 'RUNNING' }, availableAutoMergeStrategies: ['MERGE_WHEN_PIPELINE_SUCCEEDS'] }), 'dkunweeroj')
+  const next = withAutoMerge(base, NOW)
+  assert.equal(next.autoMerge, true)
+  assert.equal(next.autoMergeAvailable, false)
+  assert.equal(next.verdict.code, 'merge-ci-running')
+})
+
+test('setAutoMerge re-checks availability and merges with auto-merge through glab', async () => {
+  const url = `https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/42`
+  const calls = []
+  const live = (mergeRequest) => async (args) => {
+    calls.push(args)
+    return args[0] === 'api' ? JSON.stringify({ data: { project: { mergeRequest } } }) : ''
+  }
+  await setAutoMerge(url, live({ autoMergeEnabled: false, availableAutoMergeStrategies: ['MERGE_WHEN_PIPELINE_SUCCEEDS'] }))
+  assert.match(calls[0].join(' '), /project\(fullPath: "team\/sub\/repo"\).*iid: "42"/)
+  assert.deepEqual(calls[1], ['mr', 'merge', '42', '--auto-merge', '--yes', '--repo', `${GITLAB_HOST}/team/sub/repo`])
+})
+
+test('setAutoMerge never calls merge when auto-merge is unavailable, already on, or the URL is foreign', async () => {
+  const url = `https://${GITLAB_HOST}/team/repo/-/merge_requests/7`
+  const run = (mergeRequest, calls) => async (args) => {
+    calls.push(args[0])
+    return JSON.stringify({ data: { project: { mergeRequest } } })
+  }
+  let calls = []
+  await assert.rejects(() => setAutoMerge(url, run({ autoMergeEnabled: false, availableAutoMergeStrategies: [] }, calls)), /not available/)
+  assert.deepEqual(calls, ['api'])
+  calls = []
+  await setAutoMerge(url, run({ autoMergeEnabled: true, availableAutoMergeStrategies: [] }, calls))
+  assert.deepEqual(calls, ['api'])
+  calls = []
+  await assert.rejects(() => setAutoMerge(url, run(null, calls)), /not found/)
+  await assert.rejects(() => setAutoMerge('https://gitlab.com/a/b/-/merge_requests/1', async () => ''))
 })
 
 test('cache removeAuthored drops one MR and recounts the actionable ones', async () => {

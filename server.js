@@ -25,7 +25,7 @@ import { resolveClaudeBin } from './lib/claudebin.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
-import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
+import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, setAutoMerge, withAutoMerge, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
@@ -832,6 +832,16 @@ const postRoutes = {
       return json(res, 502, { error: String(error.message ?? error) })
     }
     const mr = mergeRequests.patchAuthored(body.url, (current) => added.reduce((mr, name) => withLabel(mr, name, Date.now()), current))
+    return json(res, 200, { ok: true, mr })
+  },
+  async '/api/mrs/auto-merge'(body, res) {
+    if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
+    try {
+      await setAutoMerge(body.url)
+    } catch (error) {
+      return json(res, 502, { error: String(error.message ?? error) })
+    }
+    const mr = mergeRequests.patchAuthored(body.url, (current) => withAutoMerge(current, Date.now()))
     return json(res, 200, { ok: true, mr })
   },
   async '/api/mrs/close'(body, res) {

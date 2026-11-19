@@ -3410,6 +3410,28 @@ async function addMrLabel(mr, label, button) {
   }
 }
 
+async function setMrAutoMerge(mr, button) {
+  button.disabled = true
+  button.textContent = 'Setting…'
+  const { ok, data } = await postJson('/api/mrs/auto-merge', { url: mr.url })
+  if (!ok) {
+    button.disabled = false
+    button.textContent = 'Auto-merge'
+    button.title = data.error ?? 'Could not set auto-merge'
+    return
+  }
+  if (data.mr) {
+    const { autoMerge, autoMergeAvailable, verdict, actionable } = data.mr
+    const authored = state.mrs.data.authored.map((item) => (item.url === mr.url ? { ...item, autoMerge, autoMergeAvailable, verdict, actionable } : item))
+    const needAction = [...authored, ...state.mrs.data.reviewing].filter((item) => item.actionable).length
+    state.mrs.data = { ...state.mrs.data, authored, actionable: needAction }
+    renderMrsBadge()
+    updateMrRow(mr.url)
+  } else {
+    loadMrs(true)
+  }
+}
+
 async function closeMrRequest(mr, button) {
   if (!window.confirm(`Close this merge request?\n\n${mr.title}`)) return
   button.disabled = true
@@ -3552,6 +3574,12 @@ function mrVerdict(mr) {
     const button = el('button', 'btn mr-add-ready', `Add ${action}`)
     button.onclick = () => addMrLabel(mr, action, button)
     box.append(button)
+  }
+  if (mr.role === 'authored' && !mr.mergedAt && mr.autoMergeAvailable) {
+    const auto = el('button', 'btn mr-auto-merge', 'Auto-merge')
+    auto.title = 'Merge this merge request automatically once its pipeline succeeds'
+    auto.onclick = () => setMrAutoMerge(mr, auto)
+    box.append(auto)
   }
   if (mr.role === 'authored' && !mr.mergedAt) {
     const close = el('button', 'btn mr-close', 'Close')
