@@ -1,6 +1,6 @@
 ---
 name: csb-babysit
-description: "Babysit one GitLab merge request from the Claude Session Board: watch its pipeline, fix it when it fails, add the 'Ready for review' label when it passes, add the 'Ready to merge' label once it is approved, and stop and nudge the user when a human is needed. Reports its status to the board (http://localhost:4747) so it shows on the MR row. Use when the user says 'babysit this MR', or when the board's Babysit button sends it. Trigger: /csb-babysit <merge request url>"
+description: "Babysit one GitLab merge request from the Claude Session Board: watch its pipeline, fix it when it fails, add the repository's review label ('Ready for review') when it passes, add its merge labels ('Ready to merge' and whatever ready-to-merge/deploy labels the repository defines) once it is approved, and stop and nudge the user when a human is needed. Reports its status to the board (http://localhost:4747) so it shows on the MR row. Use when the user says 'babysit this MR', or when the board's Babysit button sends it. Trigger: /csb-babysit <merge request url>"
 trigger: /csb-babysit
 ---
 
@@ -47,8 +47,8 @@ Send `cliSessionId` exactly as shown on every post. It tells the board which ses
 |---|---|
 | `watching` | Pipeline is running/pending, or nothing to do yet |
 | `fixing` | A failed pipeline is being fixed (send `attempts`: fix pushes so far, 1..3) |
-| `in-review` | Waiting for review or approval: the pipeline passed and `Ready for review` is on the MR, or the MR is already waiting for review (see below) while a pipeline is still running |
-| `ready-to-merge` | Approved and `Ready to merge` is on the MR. Final. |
+| `in-review` | Waiting for review or approval: the pipeline passed and a review label is on the MR, or the MR is already waiting for review (see below) while a pipeline is still running |
+| `ready-to-merge` | Approved and a merge label is on the MR. Final. |
 | `needs-you` | A human is needed. Final until the user resumes. `note` says exactly what you need. |
 | `stopped` | The MR was closed, or the user pressed Stop on the board. Final. |
 
@@ -64,6 +64,19 @@ glab ci status --branch <source branch> --repo <project>
 ```
 
 Read `state`, `draft`, `has_conflicts`, `detailed_merge_status`, the head pipeline `status`, `labels`, and whether it is approved (`glab mr approvers <iid>` or the `approved` flag).
+
+Read the repository's own label names before you judge any label. Repositories spell them differently (`Ready to merge`, `ready for merge`, `ready-to-deploy`, `Ready for review`, ...), and a label name that is not in the repository's list is not one it acts on. Include the group labels the project inherits:
+
+```bash
+glab api "projects/<encoded project>/labels?search=ready&per_page=100" | python3 -c "
+import json,re,sys
+for l in json.load(sys.stdin):
+    n=l['name']
+    kind='merge' if re.fullmatch(r'ready[\s_-]*(to|for)[\s_-]*(merge|deploy)',n,re.I) else 'review' if re.fullmatch(r'ready[\s_-]*(to|for)[\s_-]*review',n,re.I) else None
+    if kind: print(kind, n)"
+```
+
+Everywhere below, a **merge label** is any MR label that matches the `merge` rule above and a **review label** is any that matches the `review` rule, whatever its capitalisation or separators. Compare the MR's `labels` with the same two patterns, never with the literal text `Ready to merge` / `Ready for review`. Labels such as `Ready for review after CI` and `DO NOT USE ...` are neither. If the repository defines no merge label, or no review label, you need for the step you are on, that is `needs-you` with the label kind that is missing: do not create labels.
 
 Count unresolved review threads on every run, before choosing a row. Never trust `blocking_discussions_resolved`, and never read the discussions endpoint without pagination: it returns only 20 per page by default and bot threads (MSSQL/DB review, CodeBuddy, security) often sit on later pages.
 
@@ -89,11 +102,11 @@ Work through the first row that matches:
 | Pipeline `running` / `pending` / `created` / `waiting_for_resource`, MR already waiting for review | `in-review`, note `Waiting for review; pipeline <id> <status>`. Do not add labels yet. Go to **5. Wait**. |
 | Pipeline `running` / `pending` / `created` / `waiting_for_resource` | `watching`. Go to **5. Wait**. |
 | Pipeline `manual` or `skipped` or none | `needs-you`, note which job needs a human trigger. |
-| Pipeline `success`, MR not approved | Ensure `Ready for review` (**4a**), then `in-review`, **5. Wait**. |
-| Pipeline `success`, approved, no `Ready to merge` label | Check **4b** conditions, add the label, `ready-to-merge`, end. |
-| Pipeline `success`, approved, label already there | `ready-to-merge`, end. |
+| Pipeline `success`, MR not approved | Ensure a review label (**4a**), then `in-review`, **5. Wait**. |
+| Pipeline `success`, approved, no merge label | Check **4b** conditions, add the label, `ready-to-merge`, end. |
+| Pipeline `success`, approved, a merge label already there | `ready-to-merge`, end. |
 
-**Already waiting for review** means the MR is open, not a draft, not approved, and has the `Ready for review` label or at least one reviewer assigned. The pipeline is still watched in that state: a later failure goes to **3. Fix** and reports `fixing`, and the state returns to `in-review` once the fix pipeline is running or passed.
+**Already waiting for review** means the MR is open, not a draft, not approved, and has a review label or at least one reviewer assigned. The pipeline is still watched in that state: a later failure goes to **3. Fix** and reports `fixing`, and the state returns to `in-review` once the fix pipeline is running or passed.
 
 Merge conflicts are never fixed here. They are the user's call: `needs-you`, note `Merge conflicts with <target>`, end. Unresolved review threads go to **3b. Review comments**. These checks come first whenever they apply, except for a failed pipeline on a conflicted MR, where conflicts win.
 
@@ -126,7 +139,7 @@ New unresolved threads that appear later start this again. Threads you already a
 
 ## 4. Labels
 
-Add labels through the board, which finds the project's matching label names and updates the MR row at once:
+Add labels through the board. It reads the project's label list itself (group labels included): `Ready for review` adds that one label, and `Ready to merge` adds every merge label the repository defines (`Ready to merge`, `ready for merge`, `ready to deploy`, `ready-to-deploy`, ...), so whichever one the repository's automation listens to is set. It also updates the MR row at once:
 
 ```bash
 curl -s -X POST http://localhost:4747/api/mrs/label \
@@ -134,11 +147,13 @@ curl -s -X POST http://localhost:4747/api/mrs/label \
   -d '{"url":"<mr url>","label":"Ready for review"}'
 ```
 
-If the board is unreachable, fall back to `glab mr update <iid> --label "Ready for review" --repo <project>`. Labels are added, never removed.
+The response lists the labels it added. After adding, re-read the MR (`glab mr view <iid> --repo <project> --output json`) and confirm the MR now carries a label that matches the right pattern from step 2. If it does not, report `needs-you` with the labels the repository defines and the ones the MR has.
 
-**4a. Ready for review.** Only when the head pipeline is `success`, the MR is not a draft, has no conflicts, and the label is not already on it.
+If the board is unreachable, fall back to `glab mr update <iid> --label "<name>" --repo <project>` with names taken from the repository's own label list (step 2), one `--label` per merge label for the ready case. Labels are added, never removed.
 
-**4b. Ready to merge.** Only when all hold, checked fresh just before adding: the MR is approved, the head pipeline is `success` (not a stale pipeline for an older commit: compare the pipeline's SHA with the MR's head SHA), no conflicts, no unresolved threads (re-run the paginated count from step 2), not a draft. If approval arrived but one of these fails, handle that case first. A new push after approval that resets approval means it is not approved any more: go back to waiting.
+**4a. Review label.** Only when the head pipeline is `success`, the MR is not a draft, has no conflicts, and no review label is on it yet.
+
+**4b. Merge label.** Only when all hold, checked fresh just before adding: the MR is approved, the head pipeline is `success` (not a stale pipeline for an older commit: compare the pipeline's SHA with the MR's head SHA), no conflicts, no unresolved threads (re-run the paginated count from step 2), not a draft, and no merge label is on it yet. If approval arrived but one of these fails, handle that case first. A new push after approval that resets approval means it is not approved any more: go back to waiting.
 
 ## 5. Wait
 

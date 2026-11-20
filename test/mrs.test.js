@@ -64,6 +64,17 @@ test('ready verdict takes its wording from the repo ready label', () => {
   assert.equal(label({ labels: { nodes: [{ title: 'ready to merge' }] } }), 'ready to merge')
 })
 
+test('ready and review labels match whatever spacing or wording the repo uses', () => {
+  const ready = (title) => normalizeMr(node({ labels: { nodes: [{ title }] } }), 'x').readyLabel
+  const review = (title) => normalizeMr(node({ labels: { nodes: [{ title }] } }), 'x').reviewLabel
+  for (const title of ['Ready to merge', 'ready for merge', 'ready for deploy', 'ready-to-deploy', 'Ready_To_Merge']) assert.equal(ready(title), title)
+  for (const title of ['Ready for review', 'ready-for-review', 'ready to review']) assert.equal(review(title), title)
+  for (const title of ['Ready for review after CI', 'DO NOT USE ready to review', 'bug', 'ready']) {
+    assert.equal(ready(title), null)
+    assert.equal(review(title), null)
+  }
+})
+
 test('a ready or auto-merging MR with a live pipeline is merge CI running', () => {
   const running = { headPipeline: { status: 'RUNNING' } }
   assert.equal(verdict({ ...running, labels: { nodes: [{ title: 'Ready to merge' }] } }), 'merge-ci-running')
@@ -299,12 +310,12 @@ test('the ready label also adds every ready to merge or deploy label the repo de
   const calls = []
   const run = async (a) => {
     calls.push(a)
-    return a[0] === 'api' ? JSON.stringify([{ name: 'Ready to deploy' }, { name: 'bug' }, { name: 'Ready to merge' }, { name: 'ready for review' }]) : ''
+    return a[0] === 'api' ? JSON.stringify([{ name: 'Ready to deploy' }, { name: 'bug' }, { name: 'Ready to merge' }, { name: 'ready for review' }, { name: 'ready-to-deploy' }, { name: 'ready for merge' }, { name: 'DO NOT USE ready to review' }]) : ''
   }
   const added = await addLabel(`https://${GITLAB_HOST}/team/repo/-/merge_requests/7`, 'Ready to merge', run)
-  assert.deepEqual(added, ['Ready to merge', 'Ready to deploy'])
+  assert.deepEqual(added, ['Ready to merge', 'Ready to deploy', 'ready-to-deploy', 'ready for merge'])
   assert.deepEqual(calls[0].slice(0, 4), ['api', '--hostname', GITLAB_HOST, 'projects/team%2Frepo/labels?search=ready&per_page=100'])
-  assert.deepEqual(calls[1], ['mr', 'update', '7', '--label', 'Ready to merge', '--label', 'Ready to deploy', '--repo', `${GITLAB_HOST}/team/repo`])
+  assert.deepEqual(calls[1], ['mr', 'update', '7', '--label', 'Ready to merge', '--label', 'Ready to deploy', '--label', 'ready-to-deploy', '--label', 'ready for merge', '--repo', `${GITLAB_HOST}/team/repo`])
 })
 
 test('the ready label falls back to itself when the repo labels cannot be listed', async () => {
