@@ -1460,6 +1460,11 @@
   .fl-nt, .fl-nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .fl-nm { font-size: 11.5px; color: var(--muted); }
   .fl-node.epic { border-left: 3px solid var(--accent); }
+  .fl-node.epic.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+  .fl-pill { display: inline-flex; align-items: center; gap: 6px; max-width: 320px; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--text); border-radius: 999px; padding: 2px 6px 2px 11px; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fl-pill:hover { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+  .fl-pill-x { flex: none; width: 18px; height: 18px; line-height: 17px; text-align: center; border-radius: 50%; color: var(--muted); font-size: 14px; }
+  .fl-pill:hover .fl-pill-x { color: var(--text); }
   .fl-node.loose { border-style: dashed; cursor: default; }
   .fl-node.loose > .btn { margin-top: 5px; }
   .fl-node.dim { opacity: .28; }

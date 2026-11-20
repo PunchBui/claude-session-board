@@ -194,6 +194,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     return h('div', { class: 'fl-filters' },
       seg(RANGES.map((days) => [days, `${days} days`]), ui.range, (value) => set({ range: Number(value) }), 'Range'),
       epicSelect,
+      ui.epic === 'all' ? null : h('button', { class: 'fl-pill', type: 'button', title: 'Show every epic', onclick: () => set({ epic: 'all' }) }, ui.epic === 'null' ? 'No epic' : `Epic: ${ui.epic}${epicOf(ui.epic) ? ` · ${epicOf(ui.epic).title}` : ''}`, h('span', { class: 'fl-pill-x', 'aria-hidden': 'true' }, '×')),
       seg(STATUSES, ui.status, (value) => set({ status: value }), 'Status'),
       h('label', { class: 'fl-check' }, h('input', { type: 'checkbox', checked: ui.work || null, onchange: (event) => set({ work: event.target.checked }) }), 'Working days only'),
       query,
@@ -552,7 +553,11 @@ export function createFlowView(root, { openSession, postJson, reload }) {
       col('Epics', epics.map((key) => {
         const epic = key ? epicOf(key) : null
         const count = ordered.filter((ticket) => (ticket.epic ?? null) === key).length
-        return node(`e:${key ?? 'none'}`, 'epic', epic?.key ?? null, epic?.title ?? 'No epic', plural(count, 'ticket'), () => key && set({ epic: key }))
+        const value = String(key ?? 'null')
+        const picked = ui.epic === value
+        const card = node(`e:${key ?? 'none'}`, `epic${picked ? ' on' : ''}`, epic?.key ?? null, epic?.title ?? 'No epic', plural(count, 'ticket'), () => set({ epic: picked ? 'all' : value }))
+        card.title = picked ? 'Click to show every epic again' : 'Click to show only this epic'
+        return card
       })),
       col('Tickets', ordered.map((ticket) => node(`t:${ticket.key}`, '', ticket.key, ticket.title, ticket.done ? `Done in ${fmtSpan(ticket.lead)}` : `${ticket.state.label} · ${ticket.state.sub}`, () => openDetail(ticket.key)))),
       col('Sessions', sessions.map((item) => node(`s:${item.id}`, '', null, item.title, [item.project, item.tickets.find((link) => keys.has(link.key))?.why].filter(Boolean).join(' · '), () => openSession(item.id))),
