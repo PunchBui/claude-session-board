@@ -39,8 +39,9 @@ import { resolveLocal, resolveWithBase, imageType, isHtmlFile, isPdfFile, conten
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
 import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
-import { createBoardStore, boardRaw } from './lib/boardsessions.js'
+import { createBoardStore, boardRaw, keptBoardIds, evictionOrder } from './lib/boardsessions.js'
 import { createTitler } from './lib/autotitle.js'
+import { readJsonBody, BodyTooLargeError } from './lib/body.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 import { sideChatParent, isSideChat, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
 
@@ -300,7 +301,26 @@ const readJson = (file, fallback) =>
   readJsonQuarantine(file, fallback, { onCorrupt: ({ file: path, kept }) => console.error(`${path} did not parse; kept it as ${kept}`) })
 
 const writeJson = writeJsonAtomic
-const boardStore = createBoardStore({ file: BOARD_SESSIONS_FILE, readJson, writeJson })
+const boardStore = createBoardStore({ file: BOARD_SESSIONS_FILE, readJson, writeJson, evictable: boardEvictable })
+
+async function boardEvictable(items) {
+  const [focus, babysit, deploy, closedSideChats] = await Promise.all([readFocus(), readMrBabysit(), readMrDeploy(), readClosedSideChats()])
+  const keep = keptBoardIds(items, {
+    focus,
+    babysit,
+    deploy,
+    closedSideChats,
+    scheduled: schedules,
+    running: (id) => manager.runFor(id)?.state === 'running',
+    queued: (id) => Boolean(queues.get(id)?.items.length),
+  })
+  const usedAt = new Map(await Promise.all(items.map(async (entry) => {
+    const path = transcriptPaths.get(entry.cliSessionId)
+    const info = path ? await stat(path).catch(() => null) : null
+    return [entry.sessionId, info?.mtimeMs ?? 0]
+  })))
+  return evictionOrder(items, { keep, usedAt })
+}
 
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
@@ -670,16 +690,7 @@ function send(res, status, body, type) {
 
 const json = (res, status, value) => send(res, status, JSON.stringify(value), 'application/json')
 
-async function readBody(req) {
-  const chunks = []
-  let size = 0
-  for await (const chunk of req) {
-    size += chunk.length
-    if (size > 20_000) throw new Error('body too large')
-    chunks.push(chunk)
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-}
+const readBody = (req) => readJsonBody(req)
 
 async function serveStatic(res, pathname) {
   const trimmed = pathname.replace(/(.)\/+$/, '$1')
@@ -1291,6 +1302,7 @@ createServer(async (req, res) => {
     if (route) return await route(url, res, req)
     return await serveStatic(res, url.pathname)
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return json(res, 413, { error: error.message })
     return send(res, 500, String(error), 'text/plain')
   }
 }).listen(PORT, HOST, () => console.log(`Claude session board on http://localhost:${PORT}`))
