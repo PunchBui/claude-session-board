@@ -160,10 +160,14 @@ export function diffBackground(previous, sessions) {
   const events = []
   const next = new Map()
   for (const session of sessions) {
-    const running = session.background?.running ?? 0
+    const before = previous?.get(session.id) ?? 0
+    if (!session.background) {
+      next.set(session.id, before)
+      continue
+    }
+    const running = session.background.running ?? 0
     next.set(session.id, running)
     if (!previous) continue
-    const before = previous.get(session.id) ?? 0
     if (before > 0 && running === 0) {
       const { done, failed } = session.background
       const text = `${before} background ${before === 1 ? 'task' : 'tasks'} finished${failed ? `, ${failed} failed` : ''}`

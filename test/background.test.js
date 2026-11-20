@@ -164,6 +164,18 @@ test('diffBackground announces when a session runs out of running tasks', () => 
   assert.equal(diffBackground(first, [session(0, { failed: 1 })]).events[0].kind, 'bgfailed')
 })
 
+test('diffBackground keeps the last running count while a session has no background counts', () => {
+  const counted = (running) => ({ id: 's1', title: 'Deploy', background: { running, done: 2, failed: 0, lastEndedAt: 1 } })
+  const unknown = { id: 's1', title: 'Deploy', background: null }
+  const first = diffBackground(null, [counted(2)]).next
+  const gap = diffBackground(first, [unknown])
+  assert.deepEqual(gap.events, [])
+  assert.equal(gap.next.get('s1'), 2)
+  assert.deepEqual(diffBackground(gap.next, [counted(0)]).events.map((e) => e.kind), ['bgdone'])
+  assert.equal(diffBackground(null, [unknown]).next.get('s1'), 0)
+  assert.equal(diffBackground(gap.next, [{ id: 's1', title: 'Deploy' }]).events.length, 0)
+})
+
 test('sessionBackground lists running tasks first, keeps recent finishes, and drops old ones', () => {
   const state = newScanState()
   startCommand(state, 'old', 0)

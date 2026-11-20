@@ -18,6 +18,7 @@ import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLa
 import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from './history.js'
 import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from './sidechats.js'
 import { createTimeline } from './timelineview.js'
+import { coalesce } from './coalesce.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
@@ -311,6 +312,7 @@ async function postJson(path, body) {
 }
 const shouldQueue = (result) => !result.ok && result.data.queueable === true
 const getJson = (path) => fetch(path, { cache: 'no-store' }).then((r) => signedOut(r).json())
+const refresh = coalesce(refreshBoard)
 const resync = async () => { state.signature = ''; await refresh() }
 
 function setNote(id, message) {
@@ -1381,6 +1383,7 @@ async function createSchedule(c, box) {
   const { ok, data } = await postJson('/api/schedule', { id: c.id, prompt, at, repeat: ui.repeat })
   if (ok) {
     state.drafts.delete(c.id)
+    state.attachments.delete(c.id)
     ui.popover = null
     setNote(c.id, null)
   } else {
@@ -5056,7 +5059,25 @@ function applyRoute() {
   refresh()
 }
 
-async function refresh() {
+function detectEvents(sessions, cards) {
+  const hadBaseline = state.alertSnap !== null
+  try {
+    const alerts = diffAlerts(state.alertSnap, cards)
+    const loops = diffLoops(state.loopSnap, sessions)
+    const background = diffBackground(state.backgroundSnap, sessions)
+    state.alertSnap = alerts.next
+    state.loopSnap = loops.next
+    state.backgroundSnap = background.next
+    return hadBaseline ? [...withoutTickFinishes(alerts.events, loops.events), ...loops.events, ...background.events] : []
+  } catch {
+    state.alertSnap = null
+    state.loopSnap = null
+    state.backgroundSnap = null
+    return []
+  }
+}
+
+async function refreshBoard() {
   try {
     const [sessions, firstFocus] = await Promise.all([getJson('/api/sessions'), getJson('/api/focus')])
     let focus = firstFocus
@@ -5066,15 +5087,8 @@ async function refresh() {
       for (const id of fresh) await postJson('/api/focus', { id, focused: true })
       focus = await getJson('/api/focus')
     }
-    const { events: tickEvents, next } = diffAlerts(state.alertSnap, focus.cards)
-    const hadBaseline = state.alertSnap !== null
-    state.alertSnap = next
-    const { events: loopEvents, next: loopNext } = diffLoops(state.loopSnap, sessions)
-    state.loopSnap = loopNext
-    const { events: backgroundEvents, next: backgroundNext } = diffBackground(state.backgroundSnap, sessions)
-    state.backgroundSnap = backgroundNext
-    const events = [...withoutTickFinishes(tickEvents, loopEvents), ...loopEvents, ...backgroundEvents]
-    if (hadBaseline && events.length) {
+    const events = detectEvents(sessions, focus.cards)
+    if (events.length) {
       recordHistory(events)
       if (state.alertsOn) notify(events)
     }
