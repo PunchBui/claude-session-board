@@ -59,7 +59,7 @@ An installed PWA cannot start the server itself. Install a LaunchAgent so the se
 
 ### Run it as its own app (macOS)
 
-`electron/` wraps the board in a standalone window with its own Dock icon, no browser chrome and the page's top bar as the title bar. The board itself is unchanged and keeps running as the launch agent (or the app starts the server itself if it is not running).
+`electron/` wraps the board in a standalone window with its own Dock icon, no browser chrome and the sidebar's head (plus a thin strip along the top of the page) as the draggable title bar. The board itself is unchanged and keeps running as the launch agent (or the app starts the server itself if it is not running).
 
 ```bash
 ./electron/build.sh
@@ -110,7 +110,7 @@ This generates fictional sessions, transcripts and git repositories in a tempora
 - Changes tab: git branch, ahead and behind, uncommitted files and diff size for the session folder, the files Claude edited, ticket keys (set `JIRA_BASE_URL` to link them; set `GITLAB_HOST` to your GitLab hostname for the Merge requests tab, which uses `glab`) and merge request links mentioned in the chat.
 - Agents tab (shown once a session has started subagents): each subagent with its type, description, running, done or stopped state, duration, tool calls, output tokens and worktree branch. Click one to read its full transcript; running ones refresh every few seconds. Read from `<session>/subagents/` next to the transcript.
 - Attach files and images with the paperclip, by pasting, or by dragging them onto the card (the chat, header or prompt box; a dashed outline shows the drop zone) (25 MB each). They are saved under `data/uploads/` (deleted after 7 days) and their paths are added to the prompt, so Claude reads them from disk.
-- File paths in chat replies (`~/...` or an absolute path under `/Users`, `/tmp`, `/private`, `/var`, `/Volumes`, `/Applications`, `/Library`, `/usr`, `/etc`, `/opt` and similar) are links: clicking one reveals the file in Finder (`POST /api/reveal`, `open -R`, so nothing is ever launched), and png, jpg, gif and webp paths also show an inline preview that opens full size on click (`GET /api/file`, images up to 25 MB). Any existing path can be revealed or previewed, but only images are ever served, symlinks are resolved first, and SVG is not previewed.
+- File paths in chat replies (`~/...` or an absolute path under `/Users`, `/tmp`, `/private`, `/var`, `/Volumes`, `/Applications`, `/Library`, `/usr`, `/etc`, `/opt` and similar) are links: clicking one reveals the file in Finder (`POST /api/reveal`, `open -R`, so nothing is ever launched), and png, jpg, gif and webp paths also show an inline preview that opens full size on click (`GET /api/file`). That endpoint serves any absolute or `~/` path the board's user can read, after resolving symlinks, as long as it is a png, jpg, gif or webp image (up to 25 MB), an HTML page (up to 10 MB, sent with a `sandbox allow-scripts allow-popups` content security policy, so its scripts run in an opaque origin with no access to the board's cookies or API) or a PDF (up to 50 MB, with byte ranges); anything else, SVG included, is a 404. Through remote access it needs the login cookie like every other page, so anyone holding the token can read those files.
 - Prompt box with a queue, ⚡ shortcuts (stored in `data/snippets.json`) and ⏰ scheduling (once, daily, weekdays or weekly).
 - 📣 Broadcast queues one prompt on several focused sessions.
 
@@ -149,14 +149,16 @@ Typing `/` in a card's prompt box opens an autocomplete list of every command a 
 
 ## Alerts
 
-The 🔔 button turns on toasts, a short beep, browser notifications and a tab-title counter when a focused session finishes, asks a question, may need approval, is marked blocked, or a prompt fails or pauses the queue.
+The Alerts on/off button at the foot of the sidebar turns on toasts, a short beep, browser notifications and a tab-title counter when a focused session finishes, asks a question, may need approval, is marked blocked, or a prompt fails or pauses the queue. The 🔔 bell lists past notifications.
 
 ## Configuration
 
 - `PORT` (default `4747`), `SESSIONS_DIR`, `PROJECTS_DIR`, `DATA_DIR`
 - `PROMPT_PERMISSION_MODE`, `CLAUDE_BIN`, `JIRA_BASE_URL`
+- `GITLAB_HOST` (your GitLab hostname; the Merge requests tab needs it and reads it through `glab`)
 - `REMOTE_HOSTS` and `BOARD_TOKEN` override `data/remote.json` (comma-separated hostnames; the token must be 24+ characters). Remote hosts without a token stop the server from starting.
 - `CLAUDE_HOME` (where `.claude/commands`, `.claude/skills` and `.claude/plugins` are read from, default your home folder)
+- `BOARD_REPO` (the Electron app only: the board checkout it watches and runs, instead of the path recorded by `electron/build.sh`)
 
 The server binds to `127.0.0.1`, rejects Host headers other than localhost and the configured remote hosts (which need the login cookie, with failed logins rate-limited), and only accepts POSTs from its own origin. It reads session files and transcripts and never edits them.
 

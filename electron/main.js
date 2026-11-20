@@ -5,7 +5,7 @@ const { app, BrowserWindow, Menu, shell, session, nativeImage, nativeTheme } = r
 const { spawn, execFile } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs')
-const { classify, createBatcher } = require('./watch.cjs')
+const { WATCHED, changedFile, classify, createBatcher } = require('./watch.cjs')
 
 const PORT = Number(process.env.PORT ?? 4747)
 const ORIGIN = `http://127.0.0.1:${PORT}`
@@ -101,11 +101,11 @@ function watchCode() {
     if (kind === 'server') restartServer()
     else reloadPage()
   })
-  for (const target of ['public', 'lib', 'server.js']) {
-    const full = path.join(repo, target)
+  for (const { dir, recursive } of WATCHED) {
+    const full = path.join(repo, dir)
     if (!fs.existsSync(full)) continue
     try {
-      fs.watch(full, { recursive: true }, (event, name) => batch(classify(repo, name ? path.join(full, name) : full)))
+      fs.watch(full, { recursive }, (event, name) => batch(classify(repo, changedFile(repo, dir, name))))
     } catch {}
   }
 }

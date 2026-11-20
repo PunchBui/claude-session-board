@@ -6,6 +6,12 @@ const path = require('node:path')
 
 const PAGE_EXT = new Set(['.js', '.css', '.html', '.svg', '.png', '.webmanifest', '.json'])
 const IGNORED = /(^|\/)(\.|#)|~$|\.(swp|swx|tmp|orig)$|\.test\.js$/
+const WATCHED = [{ dir: 'public', recursive: true }, { dir: 'lib', recursive: true }, { dir: '.', recursive: false }]
+
+function changedFile(repo, dir, name) {
+  const full = path.join(repo, dir)
+  return name ? path.join(full, name) : full
+}
 
 function classify(repo, file) {
   const relative = path.relative(repo, file).split(path.sep).join('/')
@@ -34,4 +40,4 @@ function createBatcher(run, { waitPage = 150, waitServer = 500, setTimer = setTi
   }
 }
 
-module.exports = { classify, createBatcher }
+module.exports = { WATCHED, changedFile, classify, createBatcher }

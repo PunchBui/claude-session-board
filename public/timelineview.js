@@ -1,7 +1,7 @@
 import { attachTip, hideTip } from './tip.js'
 import { icon } from './icons.js'
 import { loopTip } from './loops.js'
-import { timelineLanes, nextEvent, splitWindow, countdown, dayBounds, HOUR_PRESETS } from './timeline.js'
+import { timelineLanes, nextEvent, splitWindow, tipEvent, countdown, dayBounds, HOUR_PRESETS } from './timeline.js'
 
 const KEY = 'board.timeline'
 const HOUR = 3_600_000
@@ -231,7 +231,7 @@ export function createTimeline(host, { projectColor, openSession, openSchedule }
     }
     track.classList.add('tl-clickable')
     track.onclick = () => openLane(lane)
-    attachTip(track, () => eventTip(lane, next ?? inside.at(-1)))
+    attachTip(track, () => eventTip(lane, tipEvent(lane.events, inside, now)))
   }
 
   function body(window) {

@@ -154,6 +154,11 @@ export function nextEvent(lanes, nowMs = Date.now()) {
   return best
 }
 
+export function tipEvent(events, inside, nowMs = Date.now()) {
+  const upcoming = (e) => !e.past && (e.running || e.at >= nowMs)
+  return inside.find(upcoming) ?? events.find(upcoming) ?? inside.at(-1) ?? events.at(-1) ?? null
+}
+
 export function splitWindow(events, from, to) {
   const inside = []
   const before = []

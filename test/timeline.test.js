@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseCron, cronTimes, timelineLanes, nextEvent, splitWindow, countdown } from '../public/timeline.js'
+import { parseCron, cronTimes, timelineLanes, nextEvent, splitWindow, tipEvent, countdown } from '../public/timeline.js'
 
 const at = (h, m = 0, d = 19) => new Date(2026, 10, d, h, m).getTime()
 const NOW = at(14, 6)
@@ -110,6 +110,22 @@ test('splitWindow sorts events into before, inside and after the hours', () => {
   const events = [at(7), at(9), at(17, 59), at(18), at(20)].map((t) => ({ at: t }))
   const { before, inside, after } = splitWindow(events, at(9), at(18))
   assert.deepEqual([before.length, inside.length, after.length], [1, 2, 2])
+})
+
+test('tipEvent falls back to the lane\'s real next run when none is inside the hours', () => {
+  const lanes = timelineLanes({ nowMs: NOW, prompts: [{ sessionId: 's', title: 'Evening', project: 'p', items: [{ sid: 'late', prompt: 'p', at: at(20), repeat: 'none' }] }] })
+  const { inside } = splitWindow(lanes[0].events, at(9), at(18))
+  assert.equal(inside.length, 0)
+  assert.equal(tipEvent(lanes[0].events, inside, NOW).at, at(20))
+})
+
+test('tipEvent prefers the next run inside the hours, then the last run shown', () => {
+  const events = [{ at: at(10), past: true }, { at: at(15), past: false }, { at: at(19), past: false }]
+  assert.equal(tipEvent(events, splitWindow(events, at(9), at(18)).inside, NOW).at, at(15))
+  assert.equal(tipEvent(events, splitWindow(events, at(9), at(14)).inside, NOW).at, at(15))
+  const past = [{ at: at(10), past: true }, { at: at(11), past: true }]
+  assert.equal(tipEvent(past, past, NOW).at, at(11))
+  assert.equal(tipEvent([], [], NOW), null)
 })
 
 test('countdown reads in seconds close up and minutes or hours further out', () => {
