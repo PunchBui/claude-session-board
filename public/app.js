@@ -19,9 +19,10 @@ import { addEvents, markAllRead, markRead, markSessionRead, unreadCount } from '
 import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from './sidechats.js'
 import { createTimeline } from './timelineview.js'
 import { coalesce } from './coalesce.js'
+import { createFlowView } from './flowview.js'
 
-const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
-const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
+const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/flow': 'flow', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
+const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', flow: 'Lifecycle', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
 const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
@@ -69,6 +70,7 @@ const state = {
   sideChats: { data: null, at: 0, cards: new Map(), fetched: new Map(), loading: new Set(), open: new Set(), starting: new Set(), drafts: new Map(), notes: new Map(), pending: new Map(), closedOpen: false },
   panel: { open: false, tab: 'background', scope: 'session', closed: new Set(), opened: new Set(), finishedOpen: false, endedOpen: false },
   mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
+  flow: { at: 0, timer: null },
 }
 
 try {
@@ -116,6 +118,7 @@ const projectColor = (name) => {
 }
 const home = (p) => (p ? p.replace(/^\/Users\/[^/]+/, '~') : '—')
 const timeline = createTimeline($('timeline'), { projectColor, openSession: (id) => openInFocus(id), openSchedule: editSchedule })
+const flowView = createFlowView($('flow-root'), { openSession: (id) => openInFocus(id), postJson: (path, body) => postJson(path, body), reload: () => loadFlow() })
 new ResizeObserver(([entry]) => {
   const height = entry.target.offsetHeight
   document.documentElement.style.setProperty('--tl-h', height ? `${height + 12}px` : '0px')
@@ -4796,6 +4799,16 @@ async function loadUsage() {
   } catch {}
 }
 
+async function loadFlow() {
+  clearTimeout(state.flow.timer)
+  try {
+    const data = await getJson('/api/flow')
+    state.flow.at = Date.now()
+    flowView.update(data)
+    if (data.refreshing) state.flow.timer = setTimeout(() => { if (state.tab === 'flow') loadFlow() }, 4000)
+  } catch {}
+}
+
 async function loadSkills() {
   try {
     state.skills.data = await getJson('/api/skills')
@@ -5053,6 +5066,8 @@ function applyRoute() {
   }
   if (tab === 'usage') loadUsage()
   if (tab === 'skills') loadSkills()
+  if (tab === 'flow') loadFlow()
+  else flowView.leave()
   if (tab === 'schedule') loadSchedule()
   if (tab === 'focus' && state.panel.open) loadTaskData()
   if (tab === 'mrs') loadMrs()
@@ -5111,6 +5126,7 @@ async function refreshBoard() {
     pollAgents()
     pollSideChats()
     if (state.tab === 'usage' && Date.now() - state.usage.at > 30_000) loadUsage()
+    if (state.tab === 'flow' && Date.now() - state.flow.at > 60_000 && !flowView.busy()) loadFlow()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
     if (Date.now() - state.mrs.at > 60_000) loadMrs()
@@ -5207,6 +5223,7 @@ $('tab-usage').onclick = (event) => { event.preventDefault(); navigate('/usage')
 $('tab-skills').onclick = (event) => { event.preventDefault(); navigate('/skills') }
 $('tab-schedule').onclick = (event) => { event.preventDefault(); navigate('/schedule') }
 $('tab-mrs').onclick = (event) => { event.preventDefault(); navigate('/mrs') }
+$('tab-flow').onclick = (event) => { event.preventDefault(); navigate('/flow') }
 window.onpopstate = applyRoute
 $('q').oninput = () => { renderRows(); writeFilters() }
 $('archived').onchange = () => { renderSummary(); renderRows(); writeFilters(); if (isMobile()) renderFocus() }
@@ -5437,7 +5454,7 @@ $('broadcast-open').replaceChildren(icon('megaphone', { size: 16 }), el('span', 
 $('focus-clear').replaceChildren(icon('list-x', { size: 16 }), el('span', 'lbl', 'Clean all'))
 $('side-collapse').replaceChildren(icon('panel-left', { size: 18 }))
 // Page menu: an icon per page, so the collapsed sidebar can show icons alone.
-for (const [name, shape] of Object.entries({ all: 'list', focus: 'star', mrs: 'git-pull-request', search: 'search', usage: 'bar-chart', skills: 'zap', schedule: 'calendar' })) {
+for (const [name, shape] of Object.entries({ all: 'list', focus: 'star', mrs: 'git-pull-request', flow: 'workflow', search: 'search', usage: 'bar-chart', skills: 'zap', schedule: 'calendar' })) {
   const tab = $(`tab-${name}`)
   tab.prepend(icon(shape, { size: 16 }))
   tab.title = tab.querySelector('.tab-label').textContent

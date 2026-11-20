@@ -57,10 +57,12 @@ For `failed`, read the failed job's log (`glab ci trace <job id> --repo <project
 
 Post the result with a one-line note naming the environments, for example `prod and staging deployed (pipeline 123)`, `staging running, prod waiting on a manual job`, or `deploy to prod failed: image pull error`. The note is capped at 300 characters.
 
+For `live`, also send `deployedAt`: when production got the change, as an ISO 8601 time. Use the `finished_at` of the production deploy job that succeeded (the latest one when there are several), or the time of the Slack message when Slack was the evidence. The board's Lifecycle page uses it for the MR deployed step; without it the page falls back to the time of the check.
+
 ```bash
 curl -s -X POST http://localhost:4747/api/mrs/deploy \
   -H 'content-type: application/json' -H 'origin: http://localhost:4747' \
-  -d '{"url":"<mr url>","state":"live","note":"prod and staging deployed (pipeline 123)"}'
+  -d '{"url":"<mr url>","state":"live","note":"prod and staging deployed (pipeline 123)","deployedAt":"2026-05-04T09:12:00Z"}'
 ```
 
 ## 4. Tell the user

@@ -1,6 +1,6 @@
-const CACHE = 'board-shell-v42'
-const SHELL = ['/', '/app.css', '/app.js', '/alerts.js', '/autofocus.js', '/warmth.js', '/skills.js', '/mrs.js', '/loops.js', '/timeline.js', '/timelineview.js', '/calendar.js', '/tip.js', '/drafts.js', '/history.js', '/icons.js', '/mobile.js', '/richtext.js', '/filepaths.js', '/linkmenu.js', '/sidebar.js', '/sidechats.js', '/attachments.js', '/patch.js', '/coalesce.js', '/favicon.svg', '/icon-192.png', '/icon-512.png']
-const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage', '/skills', '/schedule'])
+const CACHE = 'board-shell-v43'
+const SHELL = ['/', '/app.css', '/app.js', '/alerts.js', '/autofocus.js', '/warmth.js', '/skills.js', '/mrs.js', '/loops.js', '/timeline.js', '/timelineview.js', '/calendar.js', '/tip.js', '/drafts.js', '/history.js', '/icons.js', '/mobile.js', '/richtext.js', '/filepaths.js', '/linkmenu.js', '/sidebar.js', '/sidechats.js', '/attachments.js', '/patch.js', '/coalesce.js', '/flow.js', '/flowview.js', '/favicon.svg', '/icon-192.png', '/icon-512.png']
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/flow', '/search', '/usage', '/skills', '/schedule'])
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()))

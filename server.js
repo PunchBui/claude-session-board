@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createReadStream } from 'node:fs'
-import { readdir, readFile, stat, writeFile, mkdir, rm, open } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile, mkdir, rm, open, chmod, rename } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,6 +44,9 @@ import { createTitler } from './lib/autotitle.js'
 import { readJsonBody, BodyTooLargeError } from './lib/body.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 import { sideChatParent, isSideChat, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
+import { jiraConfig, cleanBaseUrl, createJiraClient, mrUrlOf } from './lib/jira.js'
+import { buildFlow, reviewPattern, branchKeys, parseMilestoneInput, recordMilestone, recordLink } from './lib/flow.js'
+import { createFlowSync } from './lib/flowsync.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -69,6 +72,11 @@ const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const RUNS_FILE = join(DATA_DIR, 'runs.json')
 const BOARD_SESSIONS_FILE = join(DATA_DIR, 'board-sessions.json')
 const SIDE_CHATS_FILE = join(DATA_DIR, 'side-chats.json')
+const JIRA_FILE = join(DATA_DIR, 'jira.json')
+const FLOW_CACHE_FILE = join(DATA_DIR, 'flow-cache.json')
+const MR_EVENTS_FILE = join(DATA_DIR, 'mr-events.json')
+const FLOW_MILESTONES_FILE = join(DATA_DIR, 'flow-milestones.json')
+const FLOW_LINKS_FILE = join(DATA_DIR, 'flow-links.json')
 const ADOPT_POLL_MS = 2000
 const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: homedir() })
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
@@ -83,7 +91,7 @@ for (const host of REMOTE_HOSTS) ALLOWED_ORIGINS.add(`https://${host}`)
 const loginLimiter = createLoginLimiter()
 // Static files the browser fetches without cookies (install prompt, icons). They hold nothing private.
 const PUBLIC_ASSETS = new Set(['/manifest.webmanifest', '/favicon.ico', '/favicon.png', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png'])
-const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/search', '/usage', '/skills', '/schedule'])
+const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/flow', '/search', '/usage', '/skills', '/schedule'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
 const ACTIVE_WINDOW_MS = 20_000
@@ -538,6 +546,88 @@ async function mrSessionLinks() {
   return linked
 }
 
+const readJiraSaved = () => readJson(JIRA_FILE, null)
+
+async function writeSecretJson(file, value) {
+  await mkdir(DATA_DIR, { recursive: true })
+  const temp = `${file}.${process.pid}.tmp`
+  await writeFile(temp, JSON.stringify(value, null, 2), { mode: 0o600 })
+  await chmod(temp, 0o600)
+  await rename(temp, file)
+}
+const readJiraConfig = async () => jiraConfig(process.env, await readJiraSaved())
+
+async function flowSessions() {
+  const sessions = []
+  for (const raw of await readRawSessions()) {
+    if (isSideChat(raw)) continue
+    const path = transcriptPaths.get(raw.cliSessionId)
+    const state = path ? scanStore.states.get(path) : null
+    if (!state) continue
+    const summary = toSummary(raw)
+    sessions.push({
+      id: raw.sessionId,
+      title: summary.title,
+      project: summary.project,
+      status: summary.status,
+      archived: summary.archived,
+      createdAt: summary.createdAt,
+      lastActivityAt: summary.lastActivityAt,
+      branches: [...state.branches].map(([name, info]) => ({ name, firstAt: info.firstAt })),
+      tickets: [...state.tickets].map(([key, count]) => ({ key, count, firstAt: state.ticketFirstAt.get(key) ?? null })),
+      mrUrls: [...new Set([...state.links.keys()].map(mrUrlOf).filter(Boolean))],
+    })
+  }
+  return sessions
+}
+
+const FLOW_KEY_DAYS = 180
+const FLOW_KEY_MENTIONS = 3
+
+async function flowExtraKeys() {
+  const since = Date.now() - FLOW_KEY_DAYS * 86_400_000
+  const keys = []
+  for (const session of (await flowSessions()).filter((item) => (item.lastActivityAt ?? 0) >= since).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))) {
+    for (const branch of session.branches) keys.push(...branchKeys(branch.name))
+    keys.push(...session.tickets.filter((item) => item.count >= FLOW_KEY_MENTIONS).sort((a, b) => b.count - a.count).slice(0, 3).map((item) => item.key))
+  }
+  return [...new Set(keys)]
+}
+
+const flowSync = createFlowSync({
+  readConfig: readJiraConfig,
+  readCache: () => readJson(FLOW_CACHE_FILE, null),
+  writeCache: (data) => writeJson(FLOW_CACHE_FILE, data),
+  readEvents: () => readJson(MR_EVENTS_FILE, {}),
+  writeEvents: (data) => writeJson(MR_EVENTS_FILE, data),
+  extraKeys: flowExtraKeys,
+  run: glab,
+  host: GITLAB_HOST,
+})
+
+async function flowPage({ force = false } = {}) {
+  const [config, saved] = await Promise.all([readJiraConfig(), readJiraSaved()])
+  const data = await flowSync.get({ force })
+  const [events, deploys, milestones, links, sessions] = await Promise.all([
+    readJson(MR_EVENTS_FILE, {}),
+    readMrDeploy(),
+    readJson(FLOW_MILESTONES_FILE, {}),
+    readJson(FLOW_LINKS_FILE, {}),
+    flowSessions(),
+  ])
+  const flow = buildFlow({ jira: data.jira, mrs: data.mrs ?? [], events, deploys, sessions, milestones, links, me: data.me, review: reviewPattern(saved?.reviewStatus) })
+  return {
+    configured: config.ready,
+    jira: config.ready ? { baseUrl: config.baseUrl, email: config.email, jql: config.jql, fromEnv: Boolean(process.env.JIRA_API_TOKEN) } : null,
+    gitlab: Boolean(GITLAB_HOST),
+    fetchedAt: data.fetchedAt || null,
+    error: data.error ?? null,
+    gitlabError: data.gitlabError ?? null,
+    refreshing: Boolean(data.refreshing) || flowSync.syncing(),
+    ...flow,
+  }
+}
+
 const FOLDER_WAIT_MS = 1500
 const remoteOf = createRemoteCache({ read: originUrl })
 const canonicalProject = createCanonicalCache({
@@ -669,7 +759,8 @@ async function changesFor(id) {
   const files = state
     ? [...state.files].map(([path, info]) => ({ path, rel: relative(path), count: info.count, lastAt: info.lastAt, tools: [...info.tools] })).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, 80)
     : []
-  const tickets = state ? [...state.tickets].map(([key, count]) => ({ key, count, url: JIRA_BASE_URL ? `${JIRA_BASE_URL.replace(/\/$/, '')}/browse/${key}` : null })).sort((a, b) => b.count - a.count).slice(0, 12) : []
+  const jiraBase = JIRA_BASE_URL ? JIRA_BASE_URL.replace(/\/$/, '') : (await readJiraConfig()).baseUrl
+  const tickets = state ? [...state.tickets].map(([key, count]) => ({ key, count, url: jiraBase ? `${jiraBase}/browse/${key}` : null })).sort((a, b) => b.count - a.count).slice(0, 12) : []
   const links = state ? [...state.links].map(([url, info]) => ({ url, count: info.count, lastAt: info.lastAt })).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt))).slice(0, 12) : []
   return { id, cwd, files, tickets, links, git: await gitInfo(cwd) }
 }
@@ -887,6 +978,50 @@ const postRoutes = {
     const store = recordDeploy(await readMrDeploy(), body.url, body, Date.now())
     await writeJson(MR_DEPLOY_FILE, store)
     return json(res, 200, { ok: true, deploy: store[body.url] })
+  },
+  async '/api/flow/sync'(body, res) {
+    await flowSync.refresh()
+    return json(res, 200, await flowPage())
+  },
+  async '/api/flow/jira'(body, res) {
+    if (body.disconnect === true) {
+      await rm(JIRA_FILE, { force: true })
+      flowSync.refresh().catch(() => {})
+      return json(res, 200, { ok: true })
+    }
+    const saved = await readJiraSaved()
+    const baseUrl = cleanBaseUrl(body.baseUrl)
+    const email = typeof body.email === 'string' ? body.email.trim().slice(0, 200) : ''
+    const token = typeof body.token === 'string' && body.token.trim() ? body.token.trim().slice(0, 500) : saved?.token ?? ''
+    const jql = typeof body.jql === 'string' ? body.jql.trim().slice(0, 2000) : saved?.jql ?? ''
+    const reviewStatus = typeof body.reviewStatus === 'string' ? body.reviewStatus.trim().slice(0, 200) : saved?.reviewStatus ?? ''
+    if (!baseUrl || !email || !token) return json(res, 400, { error: 'Fill in the Jira site, your email and an API token.' })
+    const config = jiraConfig({}, { baseUrl, email, token, jql })
+    let me
+    try {
+      me = await createJiraClient(config).myself()
+    } catch (error) {
+      return json(res, 400, { error: String(error.message ?? error) })
+    }
+    await writeSecretJson(JIRA_FILE, { baseUrl, email, token, jql, reviewStatus })
+    flowSync.refresh().catch(() => {})
+    return json(res, 200, { ok: true, name: me?.displayName ?? email })
+  },
+  async '/api/flow/milestone'(body, res) {
+    const parsed = parseMilestoneInput(body)
+    if (parsed.error) return json(res, 400, { error: parsed.error })
+    const store = recordMilestone(await readJson(FLOW_MILESTONES_FILE, {}), parsed, Date.now())
+    await writeJson(FLOW_MILESTONES_FILE, store)
+    return json(res, 200, { ok: true, milestones: store[parsed.key] ?? {} })
+  },
+  async '/api/flow/link'(body, res) {
+    const kind = body.kind === 'mr' || body.kind === 'session' ? body.kind : null
+    const ticket = body.ticket === null ? null : typeof body.ticket === 'string' ? body.ticket.trim().toUpperCase() : undefined
+    const validId = kind === 'mr' ? isMrUrl(body.id) : kind === 'session' && SESSION_ID.test(body.id ?? '')
+    if (!kind || !validId || ticket === undefined || (ticket && !/^[A-Z][A-Z0-9]{1,9}-\d{1,7}$/.test(ticket))) return json(res, 400, { error: 'bad request' })
+    const store = recordLink(await readJson(FLOW_LINKS_FILE, {}), { kind, id: body.id, ticket })
+    await writeJson(FLOW_LINKS_FILE, store)
+    return json(res, 200, { ok: true })
   },
   async '/api/mrs/ping'(body, res) {
     if (!isMrUrl(body.url) || typeof body.reviewer !== 'string') return json(res, 400, { error: 'bad request' })
@@ -1168,6 +1303,9 @@ const getRoutes = {
     const folders = await settleWithin(mrFolders(withLinks, linked), FOLDER_WAIT_MS)
     const shown = folders ? withFolders(withLinks, folders) : { ...withLinks, refreshing: true }
     return json(res, 200, withDeploy(withBabysit(withPings(withFocus(shown, next.urls), await readMrPings()), await readMrBabysit()), await readMrDeploy()))
+  },
+  async '/api/flow'(url, res) {
+    return json(res, 200, await flowPage())
   },
   async '/api/loops'(url, res) {
     return json(res, 200, await loopHistory())
