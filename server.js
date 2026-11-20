@@ -33,7 +33,7 @@ import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, settleMerged, withBabysit, babysitSessions, needsKick } from './lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, babysitCaller, createBabysitStore, watchBabysits } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
 import { resolveLocal, resolveWithBase, imageType, isHtmlFile, isPdfFile, contentDisposition, parseRange, withSizeReporter, MAX_IMAGE_BYTES, MAX_HTML_BYTES, MAX_PDF_BYTES } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
@@ -357,10 +357,8 @@ async function readMrPings() {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
 }
 
-async function readMrBabysit() {
-  const parsed = await readJson(MR_BABYSIT_FILE, {})
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-}
+const babysitStore = createBabysitStore({ file: MR_BABYSIT_FILE, readJson, writeJson, onChange: (store) => { babysitBySession = babysitSessions(store) } })
+const readMrBabysit = babysitStore.read
 
 async function readMrDeploy() {
   const parsed = await readJson(MR_DEPLOY_FILE, {})
@@ -447,29 +445,22 @@ async function fireDueSchedules() {
 const babysitKicked = new Map()
 
 async function kickIdleBabysits() {
-  const now = Date.now()
-  const saved = await readMrBabysit()
-  const store = settleMerged(saved, (await mergeRequests()).merged ?? [], now)
-  if (store !== saved) {
-    await writeJson(MR_BABYSIT_FILE, store)
-    babysitBySession = babysitSessions(store)
-  }
-  let kicked = false
-  for (const [url, entry] of Object.entries(store)) {
-    const sid = entry.sessionId
-    const idle = needsKick(entry, {
-      now,
+  const kicked = await watchBabysits(babysitStore, {
+    loadMerged: async () => (await mergeRequests()).merged ?? [],
+    contextFor: (sid) => ({
       running: manager.runFor(sid)?.state === 'running',
       scheduled: schedules.some((item) => item.id === sid && isBabysitPrompt(item.prompt)),
       queued: Boolean(queues.get(sid)?.items.some((item) => isBabysitPrompt(item.prompt))),
+      paused: Boolean(queues.get(sid)?.paused),
       kickedAt: babysitKicked.get(sid) ?? 0,
-    })
-    if (!idle || !(await findRaw(sid))) continue
-    if (await enqueue(sid, `/csb-babysit ${url}`)) {
-      babysitKicked.set(sid, now)
-      kicked = true
-    }
-  }
+    }),
+    exists: async (sid) => Boolean(await findRaw(sid)),
+    enqueueCheck: async (sid, url) => {
+      if (!(await enqueue(sid, `/csb-babysit ${url}`))) return false
+      babysitKicked.set(sid, Date.now())
+      return true
+    },
+  })
   if (kicked) pump()
 }
 
@@ -868,19 +859,16 @@ const postRoutes = {
   async '/api/mrs/babysit'(body, res) {
     const badSession = body.sessionId !== undefined && !SESSION_ID.test(body.sessionId)
     if (!isMrUrl(body.url) || !isBabysitState(body.state) || badSession) return json(res, 400, { error: 'bad request' })
-    const store = recordBabysit(await readMrBabysit(), body.url, body, Date.now())
-    await writeJson(MR_BABYSIT_FILE, store)
-    babysitBySession = babysitSessions(store)
-    return json(res, 200, { ok: true, babysit: store[body.url] })
+    const update = { ...body, ...babysitCaller(body, (id) => boardStore.find(id)) }
+    const { after } = await babysitStore.update((current) => recordBabysit(current, body.url, update, Date.now()))
+    return json(res, 200, { ok: true, babysit: after[body.url] })
   },
   async '/api/mrs/babysit/stop'(body, res) {
     if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
-    const current = await readMrBabysit()
-    const entry = current[body.url]
+    const stop = (current) => (isBabysitActive(current[body.url]?.state) ? recordBabysit(current, body.url, { state: 'stopped', note: 'Stopped by you' }, Date.now()) : current)
+    const { before, after: store } = await babysitStore.update(stop)
+    const entry = before[body.url]
     if (!entry || !isBabysitActive(entry.state)) return json(res, 409, { error: 'no active babysit on this merge request' })
-    const store = recordBabysit(current, body.url, { state: 'stopped', note: 'Stopped by you' }, Date.now())
-    await writeJson(MR_BABYSIT_FILE, store)
-    babysitBySession = babysitSessions(store)
     if (entry.sessionId) {
       schedules = schedules.filter((item) => !(item.id === entry.sessionId && isBabysitPrompt(item.prompt)))
       await persistSchedules()

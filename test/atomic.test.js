@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeJsonAtomic, readJsonQuarantine } from '../lib/atomic.js'
+import { writeJsonAtomic, readJsonQuarantine, withFileLock } from '../lib/atomic.js'
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), 'board-atomic-'))
@@ -97,4 +97,24 @@ test('after quarantine a fresh write does not touch the kept copy', async (t) =>
   await writeJsonAtomic(file, { items: [] })
   assert.equal(readFileSync(`${file}.corrupt-9`, 'utf8'), '{"items": [')
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { items: [] })
+})
+
+test('locked tasks on one file run one at a time in call order, and a failure does not block the next', async () => {
+  const order = []
+  const task = (name, ms) => async () => {
+    order.push(`${name} start`)
+    await new Promise((resolve) => setTimeout(resolve, ms))
+    order.push(`${name} end`)
+    return name
+  }
+  const first = withFileLock('/virtual/lock.json', task('a', 20))
+  const failing = withFileLock('/virtual/./lock.json', async () => { order.push('b'); throw new Error('boom') })
+  const last = withFileLock('/virtual/lock.json', task('c', 1))
+  const other = withFileLock('/virtual/other.json', task('x', 1))
+  assert.equal(await first, 'a')
+  await assert.rejects(failing, /boom/)
+  assert.equal(await last, 'c')
+  await other
+  assert.deepEqual(order.filter((step) => !step.startsWith('x')), ['a start', 'a end', 'b', 'c start', 'c end'])
+  assert.ok(order.indexOf('x end') < order.indexOf('a end'))
 })

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, needsKick, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, settleMerged, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, watchAction, PAUSED_NOTE, babysitCaller, createBabysitStore, watchBabysits, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, settleMerged, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
 
 const URL_1 = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const URL_2 = 'https://gitlab.example.com/t/r/-/merge_requests/2'
@@ -15,14 +15,14 @@ test('only the known states are accepted', () => {
 
 test('starting records the session and a fresh start time', () => {
   const store = recordBabysit({}, URL_1, { state: 'starting', sessionId: SESSION }, 1000)
-  assert.deepEqual(store[URL_1], { state: 'starting', note: '', attempts: 0, sessionId: SESSION, startedAt: 1000, at: 1000 })
+  assert.deepEqual(store[URL_1], { state: 'starting', note: '', attempts: 0, sessionId: SESSION, cliSessionId: null, startedAt: 1000, at: 1000 })
 })
 
 test('later updates keep the session, the start time and the attempts while the babysit is active', () => {
   let store = recordBabysit({}, URL_1, { state: 'starting', sessionId: SESSION }, 1000)
   store = recordBabysit(store, URL_1, { state: 'fixing', note: 'Fixing lint', attempts: 1 }, 2000)
   store = recordBabysit(store, URL_1, { state: 'watching', note: 'Pipeline 9 running' }, 3000)
-  assert.deepEqual(store[URL_1], { state: 'watching', note: 'Pipeline 9 running', attempts: 1, sessionId: SESSION, startedAt: 1000, at: 3000 })
+  assert.deepEqual(store[URL_1], { state: 'watching', note: 'Pipeline 9 running', attempts: 1, sessionId: SESSION, cliSessionId: null, startedAt: 1000, at: 3000 })
 })
 
 test('clicking Babysit again after a stop starts over', () => {
@@ -112,23 +112,23 @@ const idleCtx = (over = {}) => ({ now: 100 * 60_000, running: false, scheduled: 
 const live = (over = {}) => ({ state: 'watching', sessionId: SESSION, at: 100 * 60_000 - KICK_GRACE_MS - 1, ...over })
 
 test('a live babysit with nothing running, scheduled or queued is kicked after a short grace', () => {
-  assert.equal(needsKick(live(), idleCtx()), true)
-  assert.equal(needsKick(live({ state: 'in-review' }), idleCtx()), true)
-  assert.equal(needsKick(live({ at: 100 * 60_000 - KICK_GRACE_MS + 1 }), idleCtx()), false)
+  assert.equal(watchAction(live(), idleCtx()), 'kick')
+  assert.equal(watchAction(live({ state: 'in-review' }), idleCtx()), 'kick')
+  assert.equal(watchAction(live({ at: 100 * 60_000 - KICK_GRACE_MS + 1 }), idleCtx()), null)
 })
 
 test('a babysit that has a run, a schedule or a queued check is left alone', () => {
-  assert.equal(needsKick(live(), idleCtx({ running: true })), false)
-  assert.equal(needsKick(live(), idleCtx({ scheduled: true })), false)
-  assert.equal(needsKick(live(), idleCtx({ queued: true })), false)
+  assert.equal(watchAction(live(), idleCtx({ running: true })), null)
+  assert.equal(watchAction(live(), idleCtx({ scheduled: true })), null)
+  assert.equal(watchAction(live(), idleCtx({ queued: true })), null)
 })
 
 test('final states, missing sessions and recently kicked babysits are not kicked', () => {
-  for (const state of ['needs-you', 'stopped', 'ready-to-merge']) assert.equal(needsKick(live({ state }), idleCtx()), false)
-  assert.equal(needsKick(live({ sessionId: null }), idleCtx()), false)
-  assert.equal(needsKick(undefined, idleCtx()), false)
-  assert.equal(needsKick(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS + 1 })), false)
-  assert.equal(needsKick(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS - 1 })), true)
+  for (const state of ['needs-you', 'stopped', 'ready-to-merge']) assert.equal(watchAction(live({ state }), idleCtx()), null)
+  assert.equal(watchAction(live({ sessionId: null }), idleCtx()), null)
+  assert.equal(watchAction(undefined, idleCtx()), null)
+  assert.equal(watchAction(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS + 1 })), null)
+  assert.equal(watchAction(live(), idleCtx({ kickedAt: 100 * 60_000 - KICK_RETRY_MS - 1 })), 'kick')
 })
 
 test('a live babysit whose merge request merged is stopped as merged', () => {
@@ -137,7 +137,7 @@ test('a live babysit whose merge request merged is stopped as merged', () => {
   assert.equal(settled[URL_1].state, 'stopped')
   assert.equal(settled[URL_1].note, 'Merged')
   assert.equal(settled[URL_1].sessionId, SESSION)
-  assert.equal(needsKick(settled[URL_1], idleCtx()), false)
+  assert.equal(watchAction(settled[URL_1], idleCtx()), null)
 })
 
 test('settling leaves open, final and unrelated entries alone and is idempotent', () => {
@@ -148,4 +148,174 @@ test('settling leaves open, final and unrelated entries alone and is idempotent'
   assert.equal(settleMerged(store, [], 500), store)
   const once = settleMerged(store, [mr(URL_1, { mergedAt: 9 })], 500)
   assert.equal(settleMerged(once, [mr(URL_1, { mergedAt: 9 })], 600), once)
+})
+
+const SESSION_2 = 'local_board-5dd7e1f0-0000-4000-8000-000000000002'
+const CLI_A = '5dd7e1f0-0000-4000-8000-00000000000a'
+const CLI_B = '5dd7e1f0-0000-4000-8000-00000000000b'
+
+function stoppedByBoard() {
+  let store = recordBabysit({}, URL_1, { state: 'starting', sessionId: SESSION, cliSessionId: CLI_A }, 1000)
+  store = recordBabysit(store, URL_1, { state: 'fixing', attempts: 2, cliSessionId: CLI_A }, 2000)
+  return recordBabysit(store, URL_1, { state: 'stopped', note: 'Stopped by you' }, 3000)
+}
+
+test('a run by hand in another session restarts a babysit the board stopped, under its own session', () => {
+  const store = recordBabysit(stoppedByBoard(), URL_1, { state: 'watching', note: 'Pipeline 7 running', sessionId: null, cliSessionId: CLI_B }, 4000)
+  assert.deepEqual(store[URL_1], { state: 'watching', note: 'Pipeline 7 running', attempts: 0, sessionId: null, cliSessionId: CLI_B, startedAt: 4000, at: 4000 })
+})
+
+test('after a stop, late updates from the stopped session or from an unknown caller are still ignored', () => {
+  const stopped = stoppedByBoard()
+  assert.equal(recordBabysit(stopped, URL_1, { state: 'watching', sessionId: SESSION, cliSessionId: CLI_A }, 4000), stopped)
+  assert.equal(recordBabysit(stopped, URL_1, { state: 'watching' }, 4000), stopped)
+  assert.equal(stopped[URL_1].cliSessionId, CLI_A)
+})
+
+test('the reporting session id wins over the one the entry had', () => {
+  let store = recordBabysit({}, URL_1, { state: 'starting', sessionId: SESSION, cliSessionId: CLI_A }, 1000)
+  store = recordBabysit(store, URL_1, { state: 'needs-you', note: 'Runner is down', cliSessionId: CLI_A }, 2000)
+  const byHand = recordBabysit(store, URL_1, { state: 'watching', sessionId: null, cliSessionId: CLI_B }, 3000)
+  assert.equal(byHand[URL_1].sessionId, null)
+  assert.equal(babysitSessions(byHand).has(SESSION), false)
+  assert.equal(watchAction(byHand[URL_1], idleCtx()), null)
+  const otherBoard = recordBabysit(store, URL_1, { state: 'watching', sessionId: SESSION_2, cliSessionId: CLI_B }, 3000)
+  assert.equal(otherBoard[URL_1].sessionId, SESSION_2)
+})
+
+test('attempts and the start time carry over a needs-you the user answers in the same session', () => {
+  let store = recordBabysit({}, URL_1, { state: 'starting', sessionId: SESSION, cliSessionId: CLI_A }, 1000)
+  store = recordBabysit(store, URL_1, { state: 'fixing', attempts: 2, cliSessionId: CLI_A }, 2000)
+  store = recordBabysit(store, URL_1, { state: 'needs-you', note: '2 review threads: reply plan ready', cliSessionId: CLI_A }, 3000)
+  store = recordBabysit(store, URL_1, { state: 'watching', cliSessionId: CLI_A }, 4000)
+  assert.equal(store[URL_1].attempts, 2)
+  assert.equal(store[URL_1].startedAt, 1000)
+  assert.equal(store[URL_1].sessionId, SESSION)
+  const legacy = recordBabysit(recordBabysit(store, URL_1, { state: 'needs-you' }, 5000), URL_1, { state: 'in-review' }, 6000)
+  assert.equal(legacy[URL_1].attempts, 2)
+  assert.equal(legacy[URL_1].startedAt, 1000)
+  const again = recordBabysit(store, URL_1, { state: 'starting', sessionId: SESSION_2, cliSessionId: CLI_B }, 7000)
+  assert.equal(again[URL_1].attempts, 0)
+  assert.equal(again[URL_1].startedAt, 7000)
+})
+
+test('the caller is resolved from its CLI session id, and only board sessions get a session id', () => {
+  const boards = new Map([[SESSION_2, { sessionId: SESSION_2, cliSessionId: '5dd7e1f0-0000-4000-8000-000000000002' }]])
+  const find = (id) => boards.get(id) ?? null
+  assert.deepEqual(babysitCaller({ cliSessionId: '5dd7e1f0-0000-4000-8000-000000000002' }, find), { cliSessionId: '5dd7e1f0-0000-4000-8000-000000000002', sessionId: SESSION_2 })
+  assert.deepEqual(babysitCaller({ cliSessionId: CLI_B }, find), { cliSessionId: CLI_B, sessionId: null })
+  assert.deepEqual(babysitCaller({ sessionId: SESSION_2 }, find), { cliSessionId: '5dd7e1f0-0000-4000-8000-000000000002', sessionId: SESSION_2 })
+  assert.deepEqual(babysitCaller({ cliSessionId: '${CLAUDE_SESSION_ID}' }, find), { cliSessionId: undefined, sessionId: undefined })
+  assert.deepEqual(babysitCaller({}, find), { cliSessionId: undefined, sessionId: undefined })
+})
+
+test('a babysit behind a paused queue is surfaced once its grace has passed, even with a check queued', () => {
+  assert.equal(watchAction(live(), idleCtx({ paused: true })), 'paused')
+  assert.equal(watchAction(live(), idleCtx({ paused: true, queued: true, scheduled: true, kickedAt: 100 * 60_000 })), 'paused')
+  assert.equal(watchAction(live(), idleCtx({ paused: true, running: true })), null)
+  assert.equal(watchAction(live({ at: 100 * 60_000 - KICK_GRACE_MS + 1 }), idleCtx({ paused: true })), null)
+  assert.equal(watchAction(live({ state: 'needs-you' }), idleCtx({ paused: true })), null)
+})
+
+let virtualFiles = 0
+
+function memoryStore(initial) {
+  const file = `/virtual/mr-babysit-${virtualFiles++}.json`
+  const files = { [file]: structuredClone(initial) }
+  const tick = () => new Promise((resolve) => setImmediate(resolve))
+  const store = createBabysitStore({
+    file,
+    readJson: async (path, fallback) => { await tick(); return structuredClone(files[path] ?? fallback) },
+    writeJson: async (path, value) => { await tick(); files[path] = structuredClone(value) },
+  })
+  return { store, saved: () => files[file] }
+}
+
+const quiet = { running: false, scheduled: false, queued: false, paused: false, kickedAt: 0 }
+const wait = () => new Promise((resolve) => setTimeout(resolve, 10))
+
+function watchOptions(over = {}) {
+  const kicks = []
+  return {
+    kicks,
+    options: {
+      loadMerged: async () => [],
+      now: () => 100 * 60_000,
+      contextFor: () => quiet,
+      exists: async () => true,
+      enqueueCheck: async (sid, url) => { kicks.push(url); return true },
+      ...over,
+    },
+  }
+}
+
+test('the watchdog kicks an idle babysit and settles merged ones', async () => {
+  let seed = recordBabysit({}, URL_1, { state: 'watching', sessionId: SESSION }, 1)
+  seed = recordBabysit(seed, URL_2, { state: 'watching', sessionId: SESSION_2 }, 2)
+  const { store, saved } = memoryStore(seed)
+  const { kicks, options } = watchOptions({ loadMerged: async () => [mr(URL_1, { mergedAt: 9 })] })
+  assert.equal(await watchBabysits(store, options), true)
+  assert.deepEqual(kicks, [URL_2])
+  assert.equal(saved()[URL_1].note, 'Merged')
+  assert.equal(saved()[URL_2].state, 'watching')
+})
+
+test('a stop pressed while the watchdog waits for GitLab is neither overwritten nor kicked', async () => {
+  let seed = recordBabysit({}, URL_1, { state: 'watching', sessionId: SESSION }, 1)
+  seed = recordBabysit(seed, URL_2, { state: 'watching', sessionId: SESSION_2 }, 2)
+  const { store, saved } = memoryStore(seed)
+  let release
+  const merged = new Promise((resolve) => { release = resolve })
+  const { kicks, options } = watchOptions({ loadMerged: () => merged })
+  const watching = watchBabysits(store, options)
+  await store.update((current) => recordBabysit(current, URL_2, { state: 'stopped', note: 'Stopped by you' }, 100 * 60_000 - 1))
+  release([mr(URL_1, { mergedAt: 9 })])
+  assert.equal(await watching, false)
+  assert.deepEqual(kicks, [])
+  assert.equal(saved()[URL_2].state, 'stopped')
+  assert.equal(saved()[URL_2].note, 'Stopped by you')
+  assert.equal(saved()[URL_1].note, 'Merged')
+})
+
+test('a status posted while the watchdog is deciding waits for it and lands on top of its write', async () => {
+  let seed = recordBabysit({}, URL_1, { state: 'watching', sessionId: SESSION }, 1)
+  seed = recordBabysit(seed, URL_2, { state: 'watching', sessionId: SESSION_2 }, 2)
+  const { store, saved } = memoryStore(seed)
+  let unblock
+  const blocked = new Promise((resolve) => { unblock = resolve })
+  const { kicks, options } = watchOptions({
+    loadMerged: async () => [mr(URL_1, { mergedAt: 9 })],
+    exists: async (sid) => { if (sid === SESSION_2) await blocked; return true },
+  })
+  const watching = watchBabysits(store, options)
+  await wait()
+  let landed = false
+  const posted = store.update((current) => recordBabysit(current, URL_2, { state: 'needs-you', note: 'MR is a draft' }, 100 * 60_000 + 1)).then(() => { landed = true })
+  await wait()
+  assert.equal(landed, false)
+  unblock()
+  await watching
+  await posted
+  assert.deepEqual(kicks, [URL_2])
+  assert.equal(saved()[URL_1].note, 'Merged')
+  assert.equal(saved()[URL_2].state, 'needs-you')
+  assert.equal(saved()[URL_2].note, 'MR is a draft')
+})
+
+test('a babysit stuck behind a paused queue turns into needs-you, with a check queued for Resume to send', async () => {
+  let seed = recordBabysit({}, URL_1, { state: 'fixing', attempts: 1, sessionId: SESSION }, 1)
+  seed = recordBabysit(seed, URL_2, { state: 'watching', sessionId: SESSION_2 }, 2)
+  const { store, saved } = memoryStore(seed)
+  const contexts = { [SESSION]: { ...quiet, paused: true, queued: true }, [SESSION_2]: { ...quiet, paused: true } }
+  const { kicks, options } = watchOptions({ contextFor: (sid) => contexts[sid] })
+  await watchBabysits(store, options)
+  assert.deepEqual(kicks, [URL_2])
+  for (const url of [URL_1, URL_2]) {
+    assert.equal(saved()[url].state, 'needs-you')
+    assert.equal(saved()[url].note, PAUSED_NOTE)
+  }
+  assert.equal(saved()[URL_1].sessionId, SESSION)
+  assert.equal(saved()[URL_1].attempts, 1)
+  await watchBabysits(store, options)
+  assert.deepEqual(kicks, [URL_2])
 })

@@ -38,8 +38,10 @@ The board shows the status on the MR row. POST it at every step, including each 
 ```bash
 curl -s -X POST http://localhost:4747/api/mrs/babysit \
   -H 'content-type: application/json' -H 'origin: http://localhost:4747' \
-  -d '{"url":"<mr url>","state":"watching","note":"Pipeline 123 running","attempts":0}'
+  -d '{"url":"<mr url>","state":"watching","note":"Pipeline 123 running","attempts":0,"cliSessionId":"${CLAUDE_SESSION_ID}"}'
 ```
+
+Send `cliSessionId` exactly as shown on every post. It tells the board which session is reporting, so a run in a different session (for example one you started by hand in the desktop app) takes the babysit over, with its own session id, even if the board stopped it earlier.
 
 | `state` | When |
 |---|---|
@@ -50,7 +52,7 @@ curl -s -X POST http://localhost:4747/api/mrs/babysit \
 | `needs-you` | A human is needed. Final until the user resumes. `note` says exactly what you need. |
 | `stopped` | The MR was closed, or the user pressed Stop on the board. Final. |
 
-`attempts` and `note` (max 300 chars) are optional. The response is `{"ok":true,"babysit":{...,"sessionId":"local_..."}}`: keep `sessionId`, it is this session's id on the board and **5. Wait** needs it. If the response shows `babysit.state` `stopped` and you did not post `stopped` yourself, the user pressed Stop on the board and the board ignored your update. End at once: no labels, no pushes, no comments, no scheduled check. Say in one line that the babysit was stopped.
+`attempts` and `note` (max 300 chars) are optional. The board keeps `attempts` and `startedAt` while this session carries on, including after a `needs-you` the user answers here; clicking Babysit again starts both over. The response is `{"ok":true,"babysit":{...,"sessionId":"local_...","startedAt":...}}`: keep `sessionId`, it is this session's id on the board and **5. Wait** needs it. It is `null` when this is not a board session. If the response shows `babysit.state` `stopped` and you did not post `stopped` yourself, the user pressed Stop on the board and the board ignored your update. End at once: no labels, no pushes, no comments, no scheduled check. Say in one line that the babysit was stopped.
 
 If the board is not running (connection refused), carry on without reporting and say so once at the end.
 
