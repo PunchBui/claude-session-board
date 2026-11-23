@@ -1,40 +1,45 @@
   :root {
-    --bg: #faf9f5;
+    --bg: #fcfcfb;
+    --sidebar: #fbfbf9;
     --surface: #ffffff;
-    --surface-2: #f3f1e9;
-    --text: #1f1e1d;
-    --muted: #73726c;
-    --faint: #a3a198;
-    --line: #e6e3d8;
-    --accent: #c96442;
+    --surface-2: #f3f3f3;
+    --surface-3: #ffffff;
+    --text: #0b0b0b;
+    --muted: #52514e;
+    --faint: #898781;
+    --line: rgba(11, 11, 11, .1);
+    --accent: #ba5b3c;
     --accent-ink: #ffffff;
-    --ok: #4f8a5b;
-    --info: #3b78c4;
-    --idle: #a3a198;
-    --caution: #e6a800;
+    --ok: #009300;
+    --info: #2a78d6;
+    --idle: #898781;
+    --caution: #fab219;
     --caution-ink: #3d2f00;
-    --danger: #c0392b;
-    --shadow: 0 1px 2px rgba(31, 30, 29, .05), 0 6px 24px rgba(31, 30, 29, .06);
+    --danger: #d03b3b;
+    --shadow: 0 2px 4px rgba(11, 11, 11, .07), 0 6px 16px rgba(11, 11, 11, .08);
     --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
     --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #262624;
-      --surface: #30302e;
-      --surface-2: #3a3a37;
-      --text: #f4f3ee;
-      --muted: #a8a69e;
-      --faint: #77756e;
-      --line: #43423e;
+      --bg: #151515;
+      --sidebar: #111111;
+      --surface: #1a1a19;
+      --surface-2: #252524;
+      --surface-3: #20201f;
+      --text: #f0efec;
+      --muted: #c3c2b7;
+      --faint: #898781;
+      --line: rgba(255, 255, 255, .1);
       --accent: #d97757;
-      --ok: #7bbf88;
-      --info: #7fb0ec;
-      --caution: #f0c040;
+      --ok: #0ca30c;
+      --info: #6da7ec;
+      --idle: #898781;
+      --caution: #db9300;
       --caution-ink: #2b2100;
-      --danger: #e5604f;
-      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 28px rgba(0, 0, 0, .28);
+      --danger: #ec7e7e;
+      --shadow: 0 2px 4px rgba(11, 11, 11, .07), 0 6px 16px rgba(0, 0, 0, .24);
     }
   }
   * { box-sizing: border-box; }
@@ -89,11 +94,11 @@
   .spacer { flex: 1; min-width: 0; }
   .field { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; outline: none; }
   .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-  select.field { -webkit-appearance: none; appearance: none; cursor: pointer; padding-right: 34px; text-overflow: ellipsis; white-space: nowrap; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2373726c' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 16px; }
+  select.field { -webkit-appearance: none; appearance: none; cursor: pointer; padding-right: 34px; text-overflow: ellipsis; white-space: nowrap; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2352514e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 16px; }
   select.field:hover { border-color: var(--faint); }
   select.field option { background: var(--surface); color: var(--text); }
   @media (prefers-color-scheme: dark) {
-    select.field { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a8a69e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+    select.field { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23c3c2b7' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
   }
   @supports (appearance: base-select) {
     select.field, select.field::picker(select) { appearance: base-select; }
@@ -398,7 +403,7 @@
   .chat-empty { margin: auto; color: var(--muted); font: 400 16px/1.5 var(--serif); text-align: center; }
 
   .dock { padding: 12px 24px 20px; }
-  .composer { max-width: var(--col, 820px); margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); padding: 8px 8px 8px 18px; display: flex; align-items: flex-end; gap: 8px; }
+  .composer { max-width: var(--col, 820px); margin: 0 auto; background: var(--surface-3); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); padding: 8px 8px 8px 18px; display: flex; align-items: flex-end; gap: 8px; }
   .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent), var(--shadow); }
   .composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: none; min-height: 36px; max-height: 180px; padding: 7px 0; line-height: 22px; font-size: 15px; display: block; }
   .composer textarea::placeholder { color: var(--faint); }
@@ -1089,7 +1094,7 @@
   @media (min-width: 721px) {
     body { --side-w: 300px; padding-left: var(--side-w); }
     .topbar { display: none; }
-    .drawer { width: var(--side-w); z-index: 20; background: color-mix(in srgb, var(--surface-2) 40%, var(--bg)); }
+    .drawer { width: var(--side-w); z-index: 20; background: var(--sidebar); }
     #drawer-close { display: none; }
     .drawer-head { padding: 14px 12px 8px 18px; }
     .drawer-head-slot > #history { margin-left: auto; width: 32px; height: 32px; }

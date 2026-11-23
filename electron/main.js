@@ -138,7 +138,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'Claude Session Board',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#262624' : '#faf9f5',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151515' : '#fcfcfb',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
     webPreferences: { contextIsolation: true, sandbox: true, spellcheck: false },
@@ -164,7 +164,7 @@ async function showBoard() {
   if (!win) createWindow()
   if (up) return void win.loadURL(`${ORIGIN}/focus`)
   const message = `Could not reach the board at ${ORIGIN}. Start it with "npm start" in ${repo}, then reopen this app.`
-  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<body style="font:16px system-ui;padding:64px;background:#262624;color:#eee">${message}</body>`)}`)
+  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<body style="font:16px system-ui;padding:64px;background:#151515;color:#f0efec">${message}</body>`)}`)
 }
 
 function buildMenu() {
