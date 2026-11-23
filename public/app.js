@@ -20,6 +20,7 @@ import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from './sidec
 import { createTimeline } from './timelineview.js'
 import { coalesce } from './coalesce.js'
 import { createFlowView } from './flowview.js'
+import { renderWidget, installWidgetHost } from './widgets.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/flow': 'flow', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', flow: 'Lifecycle', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
@@ -1289,7 +1290,18 @@ function burstRefresh() {
   }, 600)
 }
 
+function sendWidgetPrompt(frame, prompt) {
+  if (frame.closest('.agent-log, .sc-log')) return false
+  const id = frame.closest('.card')?.dataset.id
+  if (!id) return false
+  const box = document.createElement('textarea')
+  box.value = prompt
+  submitPrompt(id, box)
+  return true
+}
+
 function renderMessage(m) {
+  if (m.role === 'widget') return renderWidget(m)
   if (m.role === 'command') {
     const wrap = el('div', 'msg command')
     const box = el('div', 'cmd-output')
@@ -5469,6 +5481,7 @@ $('drawer-close').replaceChildren(icon('x', { size: 20 }))
 $('drawer-brand').replaceChildren(icon('asterisk', { size: 20, strokeWidth: 2.4 }), text('Sessions'))
 loadSnippets()
 initMobile({ onChange: () => { state.signature = ''; applyRoute() } })
+installWidgetHost({ sendPrompt: sendWidgetPrompt, mobile: isMobile })
 initLinkMenu((ok, target) => toast(ok
   ? { id: 'copy-link', title: target.label === 'Copy path' ? 'Path copied' : 'Link copied', kind: 'finished', message: target.value }
   : { id: 'copy-link', title: 'Could not copy', kind: 'failed', message: 'The browser blocked clipboard access.' }))

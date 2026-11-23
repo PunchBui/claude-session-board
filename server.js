@@ -47,6 +47,8 @@ import { sideChatParent, isSideChat, ownChat, forkedAt, firstQuestion, parseClos
 import { jiraConfig, cleanBaseUrl, createJiraClient, mrUrlOf } from './lib/jira.js'
 import { buildFlow, reviewPattern, branchKeys, parseMilestoneInput, recordMilestone, recordLink } from './lib/flow.js'
 import { createFlowSync } from './lib/flowsync.js'
+import { createImagineCache, findAsar, widgetPage } from './lib/imagine.js'
+import { runArgs } from './lib/visualize-mcp.js'
 
 const PORT = Number(process.env.PORT ?? 4747)
 const HOST = '127.0.0.1'
@@ -885,10 +887,13 @@ const manager = createRunManager({
   runsFile: RUNS_FILE,
   transcriptPaths,
   openHandoff,
+  extraArgs: () => runArgs(Boolean(findAsar())),
 })
 const pump = manager.pump
+const imagine = createImagineCache()
 
 const reply = (res, { status, body }) => json(res, status, body)
+const WIDGET_MISSING_PAGE = '<!doctype html><meta charset="utf-8"><body style="font:13px system-ui;color:#888;margin:8px">This visualization needs the Claude desktop app installed on this Mac.</body>'
 
 const postRoutes = {
   async '/api/reveal'(body, res) {
@@ -1230,6 +1235,11 @@ const postRoutes = {
 }
 
 const getRoutes = {
+  async '/visualize/widget.html'(url, res) {
+    const html = await imagine()?.widgetHtml()
+    if (!html) return send(res, 404, WIDGET_MISSING_PAGE, 'text/html; charset=utf-8')
+    send(res, 200, widgetPage(html), 'text/html; charset=utf-8')
+  },
   async '/api/file'(url, res, req) {
     const rawPath = url.searchParams.get('path') ?? ''
     const base = url.searchParams.get('base')

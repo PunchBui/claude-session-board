@@ -142,3 +142,25 @@ test('a local command output ends the turn, so the run is not stalled and the ca
   const live = liveOf(state, { nowMs: Date.parse('2026-11-11T10:05:00Z'), mtimeMs: Date.parse('2026-11-11T10:00:01Z'), running: false })
   assert.equal(live.working, false)
 })
+
+test('a show_widget call becomes a widget in the chat and read_me stays hidden', () => {
+  const state = newScanState()
+  absorbLine(state, assistant('w', [
+    { type: 'tool_use', id: 'r', name: 'mcp__visualize__read_me', input: { modules: ['diagram'] } },
+    { type: 'tool_use', id: 'v', name: 'mcp__visualize__show_widget', input: { title: 'login_flow', loading_messages: ['x'], widget_code: '<svg viewBox="0 0 10 10"></svg>' } },
+    { type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'ls' } },
+  ], { output_tokens: 1 }))
+  assert.deepEqual(state.chat.map((item) => item.role), ['widget', 'tools'])
+  assert.deepEqual(state.chat[0], { role: 'widget', at: '2026-10-27T08:00:00.000Z', title: 'login_flow', code: '<svg viewBox="0 0 10 10"></svg>' })
+  assert.deepEqual(state.chat[1].tools.map((tool) => tool.name), ['Bash'])
+  assert.equal(state.toolCalls, 3)
+})
+
+test('an oversized or empty widget keeps its place without the code', () => {
+  const state = newScanState()
+  absorbLine(state, assistant('w', [
+    { type: 'tool_use', id: 'v', name: 'mcp__visualize__show_widget', input: { title: 'huge', widget_code: 'x'.repeat(400_001) } },
+    { type: 'tool_use', id: 'e', name: 'mcp__visualize__show_widget', input: { title: 'empty' } },
+  ], { output_tokens: 1 }))
+  assert.deepEqual(state.chat.map(({ code, size }) => ({ code, size })), [{ code: null, size: 400_001 }, { code: null, size: 0 }])
+})

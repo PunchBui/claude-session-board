@@ -97,6 +97,7 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     runsFile: h.runsFile,
     transcriptPaths: h.transcriptPaths,
     openHandoff: (raw, file) => h.opened.push([raw.sessionId, file]),
+    extraArgs: () => ['--mcp-config', '{"mcpServers":{}}'],
     probe: {
       isAlive: (pid) => h.alive.has(pid),
       commandOf: async (pid) => h.alive.get(pid) ?? '',
@@ -847,4 +848,13 @@ test('questions are dropped when the run ends and cannot be answered afterwards'
   await until(settled(run))
   assert.deepEqual(run.pending, [])
   assert.equal(h.manager.answerPrompt(SID, { requestId: 'r1', action: 'accept' }).status, 404)
+})
+
+test('every run gets the extra arguments the board adds, such as the visualize server', async (t) => {
+  const h = harness(t)
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'draw it' })
+  const [child] = h.spawned
+  const at = child.args.indexOf('--mcp-config')
+  assert.ok(at > 0)
+  assert.deepEqual(child.args.slice(at, at + 2), ['--mcp-config', '{"mcpServers":{}}'])
 })
