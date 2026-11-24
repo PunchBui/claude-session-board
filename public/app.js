@@ -4,7 +4,7 @@ import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
-import { mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
+import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
@@ -70,7 +70,7 @@ const state = {
   background: { data: null, at: 0, output: new Map(), loading: new Set() },
   sideChats: { data: null, at: 0, cards: new Map(), fetched: new Map(), loading: new Set(), open: new Set(), starting: new Set(), drafts: new Map(), notes: new Map(), pending: new Map(), closedOpen: false },
   panel: { open: false, tab: 'background', scope: 'session', closed: new Set(), opened: new Set(), finishedOpen: false, endedOpen: false },
-  mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false },
+  mrs: { data: null, filter: 'all', temp: null, at: 0, loading: false, manual: false, picked: [], scrolled: false },
   flow: { at: 0, timer: null },
 }
 
@@ -2218,6 +2218,32 @@ function pollAgents() {
   }
 }
 
+function mrLinks(c) {
+  if (!c.mrUrls?.length) return null
+  const box = el('div', 'mr-links')
+  for (const url of c.mrUrls) {
+    const [, repo, iid] = url.match(/\/([^/]+)\/-\/merge_requests\/(\d+)$/) ?? []
+    const a = el('a', 'mr-chip', repo ? `${repo} !${iid}` : url)
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    a.title = `Open ${url} in GitLab`
+    a.append(icon('arrow-up-right', { size: 12 }))
+    box.append(a)
+  }
+  const all = el('a', 'mr-chip mr-all', 'Merge requests')
+  const href = mrsHref(c.mrUrls)
+  all.href = href
+  all.title = 'Open the Merge requests page with this session\'s merge requests highlighted'
+  all.onclick = (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return
+    event.preventDefault()
+    navigate(href)
+  }
+  box.append(all)
+  return box
+}
+
 function renderCard(c) {
   const ui = uiOf(c.id)
   const heat = temperatureOf(c)
@@ -2239,6 +2265,8 @@ function renderCard(c) {
     else if (t) meta.append(el('span', 'dotted', t))
   }
   titleBox.append(el('div', 'title', c.title), meta)
+  const mrs = mrLinks(c)
+  if (mrs) titleBox.append(mrs)
   const live = el('span', 'live')
   live.append(el('span', 'dot'), text(c.active ? 'Working' : `Idle · ${relative(c.touchedAt)}`))
   const switcher = el('div', 'seg pane-switch')
@@ -2262,7 +2290,7 @@ function renderCard(c) {
   }
   const actions = el('div', 'head-actions')
   const phone = isMobile()
-  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, sideChatButton(c), tasksButton(c), step, openLink(c.id)].filter(Boolean))
+  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, sideChatButton(c), tasksButton(c), lifecycleButton(c), step, openLink(c.id)].filter(Boolean))
   row.append(starButton(c.id), titleBox)
   if (phone) {
     // Phone: the actions, including Chat/Changes, fold behind a ... button.
@@ -3501,6 +3529,17 @@ async function stopBabysit(mr, button) {
   button.title = data.error ?? 'Could not stop the babysit'
 }
 
+async function approveReplies(mr, button) {
+  if (button.disabled) return
+  button.disabled = true
+  button.textContent = 'Sending…'
+  const { ok, data } = await postJson('/api/mrs/babysit/approve', { url: mr.url })
+  if (ok) return setMrBabysit(mr.url, data.babysit)
+  button.disabled = false
+  button.textContent = 'Approve and post'
+  button.title = data.error ?? 'Could not send the approval'
+}
+
 function mrBabysit(mr) {
   const box = el('div', 'mr-babysit')
   const view = mr.mergedAt ? null : babysitView(mr.babysit)
@@ -3524,6 +3563,12 @@ function mrBabysit(mr) {
     const note = el('div', 'dim mr-babysit-note', view.note)
     note.title = view.note
     box.append(note)
+  }
+  if (replyPlanOffered(mr)) {
+    const approve = el('button', 'btn mr-babysit-start', 'Approve and post')
+    approve.title = 'Tell the babysit session to post the replies and push the changes exactly as its plan says. Open the session first to edit a reply.'
+    approve.onclick = () => approveReplies(mr, approve)
+    box.append(approve)
   }
   if (babysitStoppable(mr)) {
     const stop = el('button', 'btn mr-babysit-stop', 'Stop')
@@ -3645,6 +3690,7 @@ function pingTip(mr, name, button) {
   const who = mr.reviewerNames?.[name] ?? name
   const at = mr.pinged?.[name]
   if (button.pingError) return { heading: 'Ping failed', text: button.pingError, rows: [] }
+  if (button.classList.contains('due')) return { heading: `Ping ${who} again`, text: at ? 'No approval since the last ping. A day has passed.' : 'No ping and no approval since this was ready for review. A day has passed.', rows: at ? [['Last ping', `${shortSpan(Date.now() - at)} ago`]] : [] }
   if (!at) return { heading: 'Ping on Slack', text: `Sends ${who} a Slack message asking them to review this merge request.`, rows: [] }
   return {
     heading: `Pinged ${who}`,
@@ -3653,21 +3699,74 @@ function pingTip(mr, name, button) {
   }
 }
 
+async function pingMrChannel(mr, button) {
+  const before = button.textContent
+  button.disabled = true
+  button.textContent = 'Sending…'
+  const { ok, data } = await postJson('/api/mrs/ping-channel', { url: mr.url })
+  button.disabled = false
+  if (!ok) {
+    button.textContent = before
+    button.pingError = data.error ?? 'Could not send the Slack message'
+    return
+  }
+  mr.channelPinged = data.pingedAt
+  const mark = (list) => list.map((item) => (item.url === mr.url ? { ...item, channelPinged: data.pingedAt } : item))
+  state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing), merged: mark(state.mrs.data.merged ?? []) }
+  button.textContent = pingedLabel(data.pingedAt)
+  button.pingError = null
+}
+
+function channelTip(mr, button) {
+  const channel = `#${state.mrs.data.reviewChannel}`
+  if (button.pingError) return { heading: 'Ask failed', text: button.pingError, rows: [] }
+  if (!mr.channelPinged) return { heading: `Ask ${channel}`, text: `Posts a Slack message in ${channel} asking the team to review this merge request.`, rows: [] }
+  return {
+    heading: `Asked ${channel}`,
+    text: 'A review request was already posted in the channel. Clicking again posts another message straight away.',
+    rows: [['Sent', new Date(mr.channelPinged).toLocaleString()], ['Ago', shortSpan(Date.now() - mr.channelPinged)]],
+  }
+}
+
+function mrChannelAsk(mr) {
+  const button = el('button', mr.pingDue?.team ? 'btn mr-ping mr-ask-team due' : 'btn mr-ping mr-ask-team', mr.channelPinged ? pingedLabel(mr.channelPinged) : 'Ask team')
+  button.onclick = () => pingMrChannel(mr, button)
+  return attachTip(button, () => channelTip(mr, button))
+}
+
 function mrReviewers(mr) {
   const box = el('span', 'mr-reviewers')
-  if (!mr.reviewers.length) return el('span', 'dim', 'None')
+  const askTeam = mr.role === 'authored' && !mr.mergedAt && state.mrs.data?.reviewChannel
+  if (!mr.reviewers.length) {
+    if (!askTeam) return el('span', 'dim', 'None')
+    box.append(el('span', 'dim', 'None'), mrChannelAsk(mr))
+    return box
+  }
+  const dueButtons = []
   for (const name of mr.reviewers) {
     const approved = mr.approvedBy.includes(name)
     const item = el('span', 'mr-reviewer-item')
     item.append(el('span', approved ? 'mr-reviewer approved' : 'mr-reviewer', approved ? `${name} ✓` : name))
     if (mr.role === 'authored' && !approved) {
       const pingedAt = mr.pinged?.[name]
-      const button = el('button', 'btn mr-ping', pingedAt ? pingedLabel(pingedAt) : 'Ping')
+      const due = mr.pingDue?.reviewers?.includes(name)
+      const button = el('button', due ? 'btn mr-ping due' : 'btn mr-ping', pingedAt ? pingedLabel(pingedAt) : 'Ping')
       button.onclick = () => pingMrReviewer(mr, name, button)
+      if (due) dueButtons.push([name, button])
       item.append(attachTip(button, () => pingTip(mr, name, button)))
     }
     box.append(item)
   }
+  if (dueButtons.length > 1) {
+    const all = el('button', 'btn mr-ping-all', `Ping ${dueButtons.length} due`)
+    all.onclick = async () => {
+      all.disabled = true
+      for (const [name, button] of dueButtons) await pingMrReviewer(mr, name, button)
+      all.remove()
+    }
+    box.append(all)
+  }
+  if (askTeam) box.append(mrChannelAsk(mr))
   return box
 }
 
@@ -3688,6 +3787,12 @@ function focusButton(id, title) {
   return link
 }
 
+function mrHasWorking() {
+  const data = state.mrs.data
+  if (!data) return false
+  return [...data.authored, ...data.reviewing, ...(data.merged ?? [])].some((mr) => mr.sessions?.some((session) => session.working))
+}
+
 function mrSession(mr) {
   if (!mr.sessions.length) return el('span', 'dim', '—')
   const list = el('div', 'mr-session')
@@ -3695,7 +3800,15 @@ function mrSession(mr) {
     const item = el('div', 'mr-session-item')
     const name = el('span', 'mr-session-title', session.title.startsWith('/csb-babysit') ? 'Babysit' : session.title)
     name.title = session.title
-    item.append(name, focusButton(session.sessionId, 'Open as a Focus item'))
+    item.append(name)
+    if (session.working) {
+      const dot = el('span', 'mr-working')
+      dot.title = 'Working now'
+      dot.setAttribute('role', 'img')
+      dot.setAttribute('aria-label', 'Working now')
+      item.append(dot)
+    }
+    item.append(focusButton(session.sessionId, 'Open as a Focus item'))
     list.append(item)
   }
   if (mr.sessions.length === 1) return list
@@ -3703,21 +3816,58 @@ function mrSession(mr) {
   details.className = 'mr-sessions'
   details.open = mrSessionsOpen.has(mr.url)
   details.ontoggle = () => (details.open ? mrSessionsOpen.add(mr.url) : mrSessionsOpen.delete(mr.url))
-  details.append(el('summary', 'dim', `${mr.sessions.length} sessions`), list)
+  const summary = el('summary', 'dim', `${mr.sessions.length} sessions`)
+  const working = workingCount(mr)
+  if (working) {
+    const dot = el('span', 'mr-working')
+    dot.setAttribute('role', 'img')
+    dot.setAttribute('aria-label', `${working} working now`)
+    summary.title = `${working} working now`
+    summary.append(dot, el('span', 'mr-working-count', `${working} working`))
+  }
+  details.append(summary, list)
   return details
+}
+
+function startChatAboutMr(mr) {
+  openNewChat()
+  if (!draft) return
+  if (mr.folder) {
+    addPickedFolder(mr.folder)
+    state.lastFolder = mr.folder
+    syncDraftFolder()
+  }
+  draft.text.value = withMrReference(draft.text.value, mr)
+  autosize(draft.text)
+  draft.text.focus()
+  setDraftNote(`Prefilled with !${mr.url.match(/\/merge_requests\/(\d+)/)?.[1] ?? ''} as a reference. Add what Claude should do.`)
+}
+
+function mrSessionCell(mr) {
+  const box = el('div', 'mr-session-cell')
+  box.append(mrSession(mr))
+  const button = el('button', 'btn mr-new-chat')
+  button.append(icon('plus', { size: 12 }), text(' New chat'))
+  button.title = 'Open a new chat with this merge request prefilled as a reference'
+  button.onclick = () => startChatAboutMr(mr)
+  box.append(button)
+  return box
 }
 
 function buildMrRow(mr) {
   const tr = document.createElement('tr')
   tr.dataset.url = mr.url
   if (mrTemperature(mr).group === 'cool') tr.className = 'cool'
+  if (state.mrs.picked.includes(mr.url)) tr.classList.add('picked')
   const title = el('div', 'mr-title')
   const link = el('a', 'row-title mr-link', mr.title)
   link.href = mr.url
   link.target = '_blank'
   link.rel = 'noopener noreferrer'
   const repo = el('div', 'mr-project')
-  repo.append(projectChip({ project: mr.project.split('/').pop() }), el('span', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
+  repo.append(projectChip({ project: mr.project.split('/').pop() }), mapButton(`m:${mr.url}`, 'Show this merge request on the Lifecycle map', 'icon-only mr-map', 13), el('span', 'dim mr-ref', `${mr.ref} · ${mr.source} → ${mr.target}`))
+  const iid = mr.url.match(/\/merge_requests\/(\d+)/)?.[1]
+  if (iid) title.append(el('span', 'mr-iid', `!${iid}`), text(' '))
   title.append(link, repo)
   tr.append(
     cell(mrStarButton(mr)),
@@ -3730,7 +3880,7 @@ function buildMrRow(mr) {
     cell(mrThreads(mr)),
     cell(mrTempBadge(mr)),
     cell(el('span', 'num', relative(mr.updatedAt))),
-    cell(mrSession(mr))
+    cell(mrSessionCell(mr))
   )
   return tr
 }
@@ -3775,6 +3925,24 @@ function renderMrsPage() {
   const rows = visibleMrs(all, state.mrs)
   renderMrsSummary(all, rows)
   $('mrs-rows').replaceChildren(...rows.map(buildMrRow))
+  scrollToPicked()
+}
+
+function scrollToPicked() {
+  if (state.mrs.scrolled || !state.mrs.picked.length) return
+  const row = $('mrs-rows').querySelector('tr.picked')
+  if (!row) return
+  state.mrs.scrolled = true
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+
+function pickMrs(picked) {
+  state.mrs.picked = picked
+  state.mrs.scrolled = false
+  const data = state.mrs.data
+  if (!data || !picked.length) return
+  const { filter, temp } = viewShowing(mergeMrs(data), picked, state.mrs)
+  Object.assign(state.mrs, { filter, temp })
 }
 
 function updateMrRow(url) {
@@ -3788,6 +3956,30 @@ function updateMrRow(url) {
   if (!mr || rows.length !== shown.length || rows.some((item, index) => item.url !== shown[index])) return renderMrsPage()
   current.replaceWith(buildMrRow(mr))
   renderMrsSummary(all, rows)
+}
+
+function renderMrsChannel() {
+  const data = state.mrs.data
+  const button = $('mrs-channel')
+  button.hidden = !data
+  if (!data) return
+  button.textContent = data.reviewChannel ? `Review channel: #${data.reviewChannel}` : 'Set review channel'
+  button.disabled = Boolean(data.reviewChannelLocked)
+  button.title = data.reviewChannelLocked
+    ? 'Set by the REVIEW_SLACK_CHANNEL environment variable'
+    : 'The Slack channel the Ask team button posts review requests in'
+}
+
+async function editReviewChannel() {
+  const data = state.mrs.data
+  const answer = window.prompt('Slack channel to ask for reviews in (name only, for example team-reviews). Leave empty to turn Ask team off.', data.reviewChannel ?? '')
+  if (answer === null) return
+  const { ok, data: result } = await postJson('/api/mrs/review-channel', { channel: answer })
+  if (!ok) {
+    window.alert(result.error ?? 'Could not save the channel')
+    return
+  }
+  await loadMrs(true)
 }
 
 function renderMrsLoading() {
@@ -3810,7 +4002,9 @@ async function loadMrs(force = false) {
   renderMrsLoading()
   try {
     state.mrs.data = await getJson(`/api/mrs${force ? '?force=1' : ''}`)
+    if (!state.mrs.scrolled) pickMrs(state.mrs.picked)
     renderMrsBadge()
+    renderMrsChannel()
     renderMrsPage()
   } catch {
     if (!state.mrs.data) {
@@ -4310,6 +4504,24 @@ function tasksButton(c) {
   b.setAttribute('aria-label', 'Background tasks and loops')
   b.setAttribute('aria-pressed', String(state.panel.open && state.panel.tab !== 'sidechats'))
   b.onclick = () => openPanelTab('background')
+  return b
+}
+
+function lifecycleButton(c) {
+  return mapButton(`s:${c.id}`, 'Show this session on the Lifecycle map', 'icon-only tasks-btn', 16)
+}
+
+function mapButton(focus, title, className, size) {
+  const b = el('button', className)
+  b.type = 'button'
+  b.append(icon('workflow', { size }))
+  b.title = title
+  b.setAttribute('aria-label', title)
+  b.onclick = (event) => {
+    event.stopPropagation()
+    flowView.show(focus)
+    navigate('/flow')
+  }
   return b
 }
 
@@ -5082,7 +5294,13 @@ function applyRoute() {
   else flowView.leave()
   if (tab === 'schedule') loadSchedule()
   if (tab === 'focus' && state.panel.open) loadTaskData()
-  if (tab === 'mrs') loadMrs()
+  if (tab === 'mrs') {
+    pickMrs(pickedMrs(location.search))
+    renderMrsPage()
+    loadMrs()
+  } else if (state.mrs.picked.length) {
+    state.mrs.picked = []
+  }
   refresh()
 }
 
@@ -5141,7 +5359,7 @@ async function refreshBoard() {
     if (state.tab === 'flow' && Date.now() - state.flow.at > 60_000 && !flowView.busy()) loadFlow()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
-    if (Date.now() - state.mrs.at > 60_000) loadMrs()
+    if (Date.now() - state.mrs.at > (mrHasWorking() ? 10_000 : 60_000)) loadMrs()
     if (!isMobile() && Date.now() - state.timeline.at > 15_000) loadTimeline()
     if (state.tab === 'focus' && state.panel.open) {
       if (Date.now() - state.background.at > 4_000) loadBackground()
@@ -5299,6 +5517,7 @@ document.querySelectorAll('#mrs-temp button').forEach((b) => {
   b.onclick = () => { state.mrs.temp = state.mrs.temp === b.dataset.temp ? null : b.dataset.temp; renderMrsPage() }
 })
 $('mrs-refresh').onclick = () => loadMrs(true)
+$('mrs-channel').onclick = editReviewChannel
 document.querySelectorAll('#usage-metric button').forEach((b) => {
   b.onclick = () => { state.usage.metric = b.dataset.metric; remember('board.usageMetric', state.usage.metric); renderUsagePage() }
 })

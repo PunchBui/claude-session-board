@@ -6,7 +6,7 @@ import { readdir, readFile, stat, writeFile, mkdir, rm, open, chmod, rename } fr
 import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createScanStore, transcriptTitle } from './lib/scan.js'
+import { createScanStore, transcriptTitle, isHandoffFile } from './lib/scan.js'
 import { shownSettings } from './lib/sessionsettings.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
@@ -23,17 +23,18 @@ import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
-import { pingReviewer } from './lib/ping.js'
+import { pingReviewer, pingChannel, reviewChannelFrom, resolveReviewChannel } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
-import { createMrCache, withSessions, withFocus, withPings, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, setAutoMerge, withAutoMerge, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
+import { createMrCache, withSessions, withFocus, withPings, withPingDue, PING_AFTER_MS, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from './lib/background.js'
-import { writeJsonAtomic, readJsonQuarantine } from './lib/atomic.js'
+import { writeJsonAtomic, readJsonQuarantine, withFileLock } from './lib/atomic.js'
+import { actionFrom, isTrackedRoute, recordAction, summarizeActions } from './lib/actions.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
 import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, withBabysit, babysitSessions, babysitCaller, createBabysitStore, watchBabysits } from './lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, replyPlanReady, APPROVE_REPLIES_PROMPT, REPLIES_APPROVED_NOTE, withBabysit, babysitSessions, babysitCaller, createBabysitStore, watchBabysits } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
 import { resolveLocal, resolveWithBase, imageType, isHtmlFile, isPdfFile, contentDisposition, parseRange, withSizeReporter, MAX_IMAGE_BYTES, MAX_HTML_BYTES, MAX_PDF_BYTES } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
@@ -43,7 +44,7 @@ import { createBoardStore, boardRaw, keptBoardIds, evictionOrder } from './lib/b
 import { createTitler } from './lib/autotitle.js'
 import { readJsonBody, BodyTooLargeError } from './lib/body.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
-import { sideChatParent, isSideChat, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
+import { sideChatParent, isSideChat, isSpawnedTask, spawnedParent, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
 import { jiraConfig, cleanBaseUrl, createJiraClient, mrUrlOf } from './lib/jira.js'
 import { buildFlow, reviewPattern, branchKeys, parseMilestoneInput, recordMilestone, recordLink } from './lib/flow.js'
 import { createFlowSync } from './lib/flowsync.js'
@@ -64,6 +65,8 @@ const UPLOAD_TTL_MS = 7 * 86_400_000
 const FOCUS_FILE = join(DATA_DIR, 'focus.json')
 const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
+const ACTIONS_FILE = join(DATA_DIR, 'actions.json')
+const PING_DUE_MS = (Number(process.env.PING_DUE_HOURS) > 0 ? Number(process.env.PING_DUE_HOURS) : PING_AFTER_MS / 3_600_000) * 3_600_000
 const MR_CACHE_FILE = join(DATA_DIR, 'mr-cache.json')
 const MR_BABYSIT_FILE = join(DATA_DIR, 'mr-babysit.json')
 const MR_DEPLOY_FILE = join(DATA_DIR, 'mr-deploy.json')
@@ -81,6 +84,8 @@ const FLOW_MILESTONES_FILE = join(DATA_DIR, 'flow-milestones.json')
 const FLOW_LINKS_FILE = join(DATA_DIR, 'flow-links.json')
 const ADOPT_POLL_MS = 2000
 const CLAUDE_BIN = resolveClaudeBin({ configured: process.env.CLAUDE_BIN, home: homedir() })
+const REVIEW_CHANNEL_ENV = reviewChannelFrom(process.env.REVIEW_SLACK_CHANNEL)
+const REVIEW_CHANNEL_FILE = join(DATA_DIR, 'review-channel.json')
 const PROMPT_PERMISSION_MODE = process.env.PROMPT_PERMISSION_MODE ?? 'bypassPermissions'
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL ?? null
 const SESSION_FILE = /^local_[A-Za-z0-9-]+\.json$/
@@ -110,6 +115,8 @@ const DEFAULT_SNIPPETS = [
   { sid: 'default-wrap', label: 'Wrap up', text: 'Summarize what you did and what is left, then stop.' },
   { sid: 'default-tests', label: 'Run tests', text: 'Run the relevant tests and report the result.' },
   { sid: 'default-compact', label: 'Compact context', text: '/compact' },
+  { sid: 'default-ship-push', label: 'Commit and push', text: 'Run the repository\'s format step, commit the finished changes with specific files only, and push the branch.' },
+  { sid: 'default-ship-mr', label: 'Commit and create MR', text: 'Run the repository\'s format step, commit the finished changes with specific files only, push the branch and create a merge request with glab.' },
 ]
 
 const scanStore = createScanStore()
@@ -254,6 +261,15 @@ async function scanSession(raw) {
 
 let babysitBySession = new Map()
 
+function sessionMrUrls(state) {
+  const seen = new Map()
+  for (const [url, info] of state.links) {
+    const mrUrl = mrUrlOf(url)
+    if (mrUrl && !(seen.get(mrUrl) >= String(info.lastAt))) seen.set(mrUrl, String(info.lastAt))
+  }
+  return [...seen].sort((a, b) => b[1].localeCompare(a[1])).slice(0, 5).map(([url]) => url)
+}
+
 async function buildCard(raw) {
   const { cliSessionId, ...base } = toSummary(raw)
   const scanned = await scanSession(raw)
@@ -274,6 +290,7 @@ async function buildCard(raw) {
     subagents: scanned ? await subagentStore.summary(scanned.path) : null,
     backgroundTasks: scanned ? sessionBackground(scanned.state.background, { nowMs: Date.now(), idleMs: Date.now() - scanned.info.mtimeMs }) : null,
     babysit: babysitBySession.get(raw.sessionId) ?? null,
+    mrUrls: scanned ? sessionMrUrls(scanned.state) : [],
     live,
     loop: scanned ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,
   }
@@ -361,6 +378,8 @@ async function sideChatCard(id) {
   const card = await buildCard(raw)
   return { ...card, run: manager.publicRun(id), queue: publicQueue(id) }
 }
+
+const currentReviewChannel = async () => resolveReviewChannel({ env: REVIEW_CHANNEL_ENV, saved: await readJson(REVIEW_CHANNEL_FILE, null) })
 
 async function readMrPings() {
   const parsed = await readJson(MR_PINGS_FILE, {})
@@ -453,6 +472,7 @@ async function fireDueSchedules() {
 }
 
 const babysitKicked = new Map()
+const babysitLookedUp = new Map()
 
 async function kickIdleBabysits() {
   const kicked = await watchBabysits(babysitStore, {
@@ -465,6 +485,8 @@ async function kickIdleBabysits() {
       kickedAt: babysitKicked.get(sid) ?? 0,
     }),
     exists: async (sid) => Boolean(await findRaw(sid)),
+    lookup: (url) => mrState(url),
+    checkedAt: babysitLookedUp,
     enqueueCheck: async (sid, url) => {
       if (!(await enqueue(sid, `/csb-babysit ${url}`))) return false
       babysitKicked.set(sid, Date.now())
@@ -539,9 +561,12 @@ async function mrSessionLinks() {
     const state = path ? scanStore.states.get(path) : null
     if (!state) continue
     const { title, project, archived, cwd } = toSummary(raw)
+    const mtimeMs = (await stat(path).catch(() => null))?.mtimeMs ?? 0
+    const run = manager.runFor(raw.sessionId)
+    const working = Boolean(liveOf(state, { nowMs: Date.now(), mtimeMs, running: run?.state === 'running', runEndedAt: run?.endedAt ?? null }).working)
     for (const url of state.links.keys()) {
       const sessions = linked.get(url) ?? []
-      sessions.push({ sessionId: raw.sessionId, title, project, archived, cwd, lastActivityAt: raw.lastActivityAt ?? 0 })
+      sessions.push({ sessionId: raw.sessionId, title, project, archived, cwd, working, lastActivityAt: raw.lastActivityAt ?? 0 })
       linked.set(url, sessions)
     }
   }
@@ -562,12 +587,16 @@ const readJiraConfig = async () => jiraConfig(process.env, await readJiraSaved()
 async function flowSessions() {
   const sessions = []
   for (const raw of await readRawSessions()) {
-    if (isSideChat(raw)) continue
+    if (isSideChat(raw) && !isSpawnedTask(raw)) continue
     const path = transcriptPaths.get(raw.cliSessionId)
     const state = path ? scanStore.states.get(path) : null
     if (!state) continue
     const summary = toSummary(raw)
     sessions.push({
+      parent: spawnedParent(raw),
+      peers: [...new Set((Array.isArray(raw.peerReceipts) ? raw.peerReceipts : []).map((receipt) => receipt?.targetSessionId).filter((id) => typeof id === 'string'))],
+      handoffReads: [...(state.handoffReads ?? [])],
+      handoffWrites: [...state.files].filter(([file, info]) => info.tools.has('Write') && isHandoffFile(file)).map(([file]) => file),
       id: raw.sessionId,
       title: summary.title,
       project: summary.project,
@@ -578,6 +607,8 @@ async function flowSessions() {
       branches: [...state.branches].map(([name, info]) => ({ name, firstAt: info.firstAt })),
       tickets: [...state.tickets].map(([key, count]) => ({ key, count, firstAt: state.ticketFirstAt.get(key) ?? null })),
       mrUrls: [...new Set([...state.links.keys()].map(mrUrlOf).filter(Boolean))],
+      slack: [...state.slack.values()].map(({ key, host, channel, ts, firstAt, via, title, author }) => ({ key, host, channel, ts, firstAt, via, title: title ?? null, author: author ?? null })),
+      slackChannels: [...state.slackChannels],
     })
   }
   return sessions
@@ -617,7 +648,8 @@ async function flowPage({ force = false } = {}) {
     readJson(FLOW_LINKS_FILE, {}),
     flowSessions(),
   ])
-  const flow = buildFlow({ jira: data.jira, mrs: data.mrs ?? [], events, deploys, sessions, milestones, links, me: data.me, review: reviewPattern(saved?.reviewStatus) })
+  const slackChannels = Object.fromEntries(sessions.flatMap((session) => session.slackChannels ?? []))
+  const flow = buildFlow({ jira: data.jira, mrs: data.mrs ?? [], events, deploys, sessions, milestones, links, slackChannels, me: data.me, review: reviewPattern(saved?.reviewStatus) })
   return {
     configured: config.ready,
     jira: config.ready ? { baseUrl: config.baseUrl, email: config.email, jql: config.jql, fromEnv: Boolean(process.env.JIRA_API_TOKEN) } : null,
@@ -977,6 +1009,18 @@ const postRoutes = {
     }
     return json(res, 200, { ok: true, babysit: store[body.url] })
   },
+  async '/api/mrs/babysit/approve'(body, res) {
+    if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
+    const entry = (await readMrBabysit())[body.url]
+    if (!replyPlanReady(entry)) return json(res, 409, { error: 'no reply plan is waiting on this merge request' })
+    if (!(await findRaw(entry.sessionId))) return json(res, 404, { error: 'the babysit session no longer exists' })
+    if (!(await enqueue(entry.sessionId, APPROVE_REPLIES_PROMPT))) return json(res, 429, { error: 'that session\'s queue is full' })
+    const { after } = await babysitStore.update((current) => (replyPlanReady(current[body.url])
+      ? recordBabysit(current, body.url, { state: 'watching', note: REPLIES_APPROVED_NOTE }, Date.now())
+      : current))
+    pump()
+    return json(res, 200, { ok: true, babysit: after[body.url] })
+  },
   async '/api/mrs/deploy'(body, res) {
     const badSession = body.sessionId !== undefined && !SESSION_ID.test(body.sessionId)
     if (!isMrUrl(body.url) || !isDeployState(body.state) || badSession) return json(res, 400, { error: 'bad request' })
@@ -1041,6 +1085,32 @@ const postRoutes = {
     } catch (error) {
       return json(res, 502, { error: String(error.message ?? error) })
     }
+  },
+  async '/api/mrs/ping-channel'(body, res) {
+    if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
+    const reviewChannel = await currentReviewChannel()
+    if (!reviewChannel) return json(res, 409, { error: 'set the Slack channel to ask for reviews in first' })
+    const data = await mergeRequests()
+    const mr = data.authored.find((item) => item.url === body.url)
+    if (!mr) return json(res, 404, { error: 'merge request not found' })
+    try {
+      const { channel } = await pingChannel({ mr, channel: reviewChannel, bin: CLAUDE_BIN, env: spawnEnv })
+      const pingedAt = Date.now()
+      await writeJson(MR_PINGS_FILE, recordPing(await readMrPings(), body.url, `#${channel}`, pingedAt))
+      return json(res, 200, { ok: true, channel, pingedAt })
+    } catch (error) {
+      console.error(`ask team failed for ${body.url}: ${error.message ?? error}`)
+      return json(res, 502, { error: String(error.message ?? error) })
+    }
+  },
+  async '/api/mrs/review-channel'(body, res) {
+    if (REVIEW_CHANNEL_ENV) return json(res, 409, { error: 'REVIEW_SLACK_CHANNEL is set, so it overrides this setting' })
+    if (typeof body.channel !== 'string') return json(res, 400, { error: 'bad request' })
+    const channel = reviewChannelFrom(body.channel)
+    if (body.channel.trim() && !channel) return json(res, 400, { error: 'Use a Slack channel name: lowercase letters, numbers, hyphens and underscores.' })
+    if (channel) await writeJson(REVIEW_CHANNEL_FILE, { channel })
+    else await rm(REVIEW_CHANNEL_FILE, { force: true })
+    return json(res, 200, { ok: true, channel: channel || null })
   },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
@@ -1234,7 +1304,15 @@ const postRoutes = {
   },
 }
 
+function logAction(entry) {
+  withFileLock(ACTIONS_FILE, async () => writeJson(ACTIONS_FILE, recordAction(await readJson(ACTIONS_FILE, []), entry))).catch(() => {})
+}
+
 const getRoutes = {
+  async '/api/actions'(url, res) {
+    const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365)
+    return json(res, 200, { days, actions: summarizeActions(await readJson(ACTIONS_FILE, []), { now: Date.now(), days }) })
+  },
   async '/visualize/widget.html'(url, res) {
     const html = await imagine()?.widgetHtml()
     if (!html) return send(res, 404, WIDGET_MISSING_PAGE, 'text/html; charset=utf-8')
@@ -1312,7 +1390,8 @@ const getRoutes = {
     const withLinks = withSessions(data, linked)
     const folders = await settleWithin(mrFolders(withLinks, linked), FOLDER_WAIT_MS)
     const shown = folders ? withFolders(withLinks, folders) : { ...withLinks, refreshing: true }
-    return json(res, 200, withDeploy(withBabysit(withPings(withFocus(shown, next.urls), await readMrPings()), await readMrBabysit()), await readMrDeploy()))
+    const reviewChannel = await currentReviewChannel()
+    return json(res, 200, withDeploy(withBabysit({ ...withPingDue(withPings(withFocus(shown, next.urls), await readMrPings(), reviewChannel), { events: await readJson(MR_EVENTS_FILE, {}), now: Date.now(), afterMs: PING_DUE_MS }), reviewChannel: reviewChannel || null, reviewChannelLocked: Boolean(REVIEW_CHANNEL_ENV) }, await readMrBabysit()), await readMrDeploy()))
   },
   async '/api/flow'(url, res) {
     return json(res, 200, await flowPage())
@@ -1430,7 +1509,12 @@ createServer(async (req, res) => {
       if (url.pathname === '/api/upload') return await saveUpload(req, res, url)
       const route = postRoutes[url.pathname]
       if (!route) return send(res, 404, 'not found', 'text/plain')
-      return await route(await readBody(req), res)
+      const body = await readBody(req)
+      try {
+        return await route(body, res)
+      } finally {
+        if (isTrackedRoute(url.pathname)) logAction(actionFrom({ route: url.pathname, body, status: res.statusCode, userAgent: req.headers['user-agent'], now: Date.now() }))
+      }
     }
     if (req.method !== 'GET') return send(res, 405, 'method not allowed', 'text/plain')
     if (url.pathname === '/api/upload') return await serveUpload(res, url)

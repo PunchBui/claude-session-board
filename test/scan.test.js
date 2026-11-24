@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle } from '../lib/scan.js'
+import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle, isHandoffFile } from '../lib/scan.js'
 import { usageOf, liveOf } from '../lib/live.js'
 
 const line = (value) => JSON.stringify(value)
@@ -141,6 +141,17 @@ test('a local command output ends the turn, so the run is not stalled and the ca
   assert.equal(state.lastStop, 'end_turn')
   const live = liveOf(state, { nowMs: Date.parse('2026-11-11T10:05:00Z'), mtimeMs: Date.parse('2026-11-11T10:00:01Z'), running: false })
   assert.equal(live.working, false)
+})
+
+test('a prompt that points at a handoff document is recorded, and only handoff markdown counts as one', () => {
+  const state = newScanState({ ownId: 'own' })
+  absorbLine(state, user('Read the handoff document at /var/folders/T/handoff-elmo-20261119-134841.md and continue.', { sessionId: 'own' }))
+  absorbLine(state, user('Look at /tmp/notes.md and ~/handoff-x.md', { sessionId: 'own' }))
+  absorbLine(state, user('Inherited /tmp/handoff-old.md', { sessionId: 'parent' }))
+  assert.deepEqual([...state.handoffReads], ['/var/folders/T/handoff-elmo-20261119-134841.md', '~/handoff-x.md'])
+  assert.equal(isHandoffFile('/tmp/handoff-34f7807b-1795059846934.md'), true)
+  assert.equal(isHandoffFile('/tmp/handoff/notes.md'), false)
+  assert.equal(isHandoffFile('/tmp/handoff.txt'), false)
 })
 
 test('a show_widget call becomes a widget in the chat and read_me stays hidden', () => {

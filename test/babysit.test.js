@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, watchAction, PAUSED_NOTE, babysitCaller, createBabysitStore, watchBabysits, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, settleMerged, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, watchAction, PAUSED_NOTE, babysitCaller, createBabysitStore, watchBabysits, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, replyPlanReady, APPROVE_REPLIES_PROMPT, REPLIES_APPROVED_NOTE, settleMerged, settleLooked, lookupCandidates, MERGED_WINDOW_MS, MAX_LOOKUPS, LOOKUP_RECHECK_MS, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
 
 const URL_1 = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const URL_2 = 'https://gitlab.example.com/t/r/-/merge_requests/2'
+const URL_3 = 'https://gitlab.example.com/t/r/-/merge_requests/3'
 const SESSION = 'local_5dd7e1f0-0000-4000-8000-000000000001'
 
 test('only the known states are accepted', () => {
@@ -140,9 +141,19 @@ test('a live babysit whose merge request merged is stopped as merged', () => {
   assert.equal(watchAction(settled[URL_1], idleCtx()), null)
 })
 
-test('settling leaves open, final and unrelated entries alone and is idempotent', () => {
+test('a ready-to-merge or needs-you babysit whose merge request merged is stopped as merged', () => {
+  let store = recordBabysit({}, URL_1, { state: 'ready-to-merge', sessionId: SESSION }, 10)
+  store = recordBabysit(store, URL_2, { state: 'needs-you', note: '2 review threads: reply plan ready', sessionId: SESSION_2 }, 20)
+  const settled = settleMerged(store, [mr(URL_1, { mergedAt: 9 }), mr(URL_2, { mergedAt: 9 })], 500)
+  assert.equal(settled[URL_1].state, 'stopped')
+  assert.equal(settled[URL_1].note, 'Merged')
+  assert.equal(settled[URL_2].state, 'stopped')
+  assert.equal(settled[URL_2].sessionId, SESSION_2)
+})
+
+test('settling leaves open, stopped and unrelated entries alone and is idempotent', () => {
   let store = recordBabysit({}, URL_1, { state: 'watching', sessionId: SESSION }, 10)
-  store = recordBabysit(store, URL_2, { state: 'ready-to-merge' }, 20)
+  store = recordBabysit(store, URL_2, { state: 'stopped', note: 'Stopped by you' }, 20)
   assert.equal(settleMerged(store, [mr(URL_1, { mergedAt: null })], 500), store)
   assert.equal(settleMerged(store, [mr(URL_2, { mergedAt: 9 })], 500), store)
   assert.equal(settleMerged(store, [], 500), store)
@@ -318,4 +329,81 @@ test('a babysit stuck behind a paused queue turns into needs-you, with a check q
   assert.equal(saved()[URL_1].attempts, 1)
   await watchBabysits(store, options)
   assert.deepEqual(kicks, [URL_2])
+})
+
+const DAY = 24 * 60 * 60_000
+
+test('only unsettled babysits older than the merged window and missing from it are looked up', () => {
+  const now = 100 * DAY
+  const old = now - MERGED_WINDOW_MS - 1
+  let store = recordBabysit({}, URL_1, { state: 'ready-to-merge' }, old)
+  store = recordBabysit(store, URL_2, { state: 'needs-you' }, now - DAY)
+  store = recordBabysit(store, URL_3, { state: 'stopped' }, old)
+  assert.deepEqual(lookupCandidates(store, { now, merged: [] }), [URL_1])
+  assert.deepEqual(lookupCandidates(store, { now, merged: [mr(URL_1, { mergedAt: 9 })] }), [])
+  assert.deepEqual(lookupCandidates(store, { now, merged: [], checkedAt: new Map([[URL_1, now - LOOKUP_RECHECK_MS + 1]]) }), [])
+  assert.deepEqual(lookupCandidates(store, { now, merged: [], checkedAt: new Map([[URL_1, now - LOOKUP_RECHECK_MS - 1]]) }), [URL_1])
+})
+
+test('lookups are capped per pass and take the oldest first', () => {
+  const now = 100 * DAY
+  let store = {}
+  for (let i = 0; i < MAX_LOOKUPS + 3; i += 1) store = recordBabysit(store, `https://gitlab.example.com/t/r/-/merge_requests/${i + 10}`, { state: 'ready-to-merge' }, now - 20 * DAY + i)
+  const picked = lookupCandidates(store, { now, merged: [] })
+  assert.equal(picked.length, MAX_LOOKUPS)
+  assert.equal(picked[0].endsWith('/10'), true)
+})
+
+test('a looked-up merged or closed merge request stops its babysit, an open one is left alone', () => {
+  let store = recordBabysit({}, URL_1, { state: 'ready-to-merge' }, 1)
+  store = recordBabysit(store, URL_2, { state: 'needs-you' }, 2)
+  store = recordBabysit(store, URL_3, { state: 'ready-to-merge' }, 3)
+  const settled = settleLooked(store, new Map([[URL_1, 'merged'], [URL_2, 'closed']]), 900)
+  assert.equal(settled[URL_1].note, 'Merged')
+  assert.equal(settled[URL_2].note, 'Closed')
+  assert.equal(settled[URL_3].state, 'ready-to-merge')
+  assert.equal(settleLooked(store, new Map([[URL_3, 'opened']]), 900), store)
+  assert.equal(settleLooked(settled, new Map([[URL_1, 'merged']]), 950), settled)
+})
+
+test('the watchdog looks up old babysits once and stops the ones GitLab says are merged', async () => {
+  const now = 100 * DAY
+  let seed = recordBabysit({}, URL_1, { state: 'ready-to-merge' }, now - 20 * DAY)
+  seed = recordBabysit(seed, URL_2, { state: 'ready-to-merge' }, now - 20 * DAY + 1)
+  const { store, saved } = memoryStore(seed)
+  const asked = []
+  const checkedAt = new Map()
+  const { options } = watchOptions({
+    now: () => now,
+    checkedAt,
+    lookup: async (url) => { asked.push(url); return url === URL_1 ? 'merged' : 'opened' },
+  })
+  await watchBabysits(store, options)
+  assert.deepEqual(asked, [URL_1, URL_2])
+  assert.equal(saved()[URL_1].note, 'Merged')
+  assert.equal(saved()[URL_2].state, 'ready-to-merge')
+  await watchBabysits(store, options)
+  assert.deepEqual(asked, [URL_1, URL_2])
+})
+
+test('a failing lookup is skipped and does not stop the watchdog', async () => {
+  const now = 100 * DAY
+  const { store, saved } = memoryStore(recordBabysit({}, URL_1, { state: 'ready-to-merge' }, now - 20 * DAY))
+  const { options } = watchOptions({ now: () => now, lookup: async () => { throw new Error('glab down') } })
+  await watchBabysits(store, options)
+  assert.equal(saved()[URL_1].state, 'ready-to-merge')
+})
+
+test('a reply plan is ready only for a needs-you babysit with a session and that note', () => {
+  const plan = { state: 'needs-you', note: '2 review threads: reply plan ready', sessionId: SESSION }
+  assert.equal(replyPlanReady(plan), true)
+  assert.equal(replyPlanReady({ ...plan, note: '4 Review Threads: Reply Plan Ready' }), true)
+  assert.equal(replyPlanReady({ ...plan, sessionId: null }), false)
+  assert.equal(replyPlanReady({ ...plan, state: 'watching' }), false)
+  assert.equal(replyPlanReady({ ...plan, note: 'Merge conflicts with main' }), false)
+  assert.equal(replyPlanReady(undefined), false)
+  assert.equal(APPROVE_REPLIES_PROMPT.startsWith('/'), false)
+  assert.equal(isBabysitPrompt(APPROVE_REPLIES_PROMPT), false)
+  assert.equal(isBabysitActive('watching'), true)
+  assert.equal(REPLIES_APPROVED_NOTE.length < MAX_NOTE, true)
 })

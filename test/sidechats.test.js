@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { sideChatParent, isSideChat, ownChat, forkedAt, sideChatTitle, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow, MAX_CLOSED } from '../lib/sidechats.js'
+import { sideChatParent, isSideChat, isSpawnedTask, spawnedParent, ownChat, forkedAt, sideChatTitle, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow, MAX_CLOSED } from '../lib/sidechats.js'
 import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from '../public/sidechats.js'
 import { newSessionIds } from '../public/autofocus.js'
 import { newScanState, absorbLine, createScanStore } from '../lib/scan.js'
@@ -226,4 +226,18 @@ test('a side chat is refused for side chats, missing parents, empty prompts and 
   const empty = sideHarness(t, { transcript: false })
   assert.equal((await empty.manager.requestSideChat({ id: PARENT, prompt: 'q' })).status, 409)
   assert.equal(h.spawned.length + nested.spawned.length + empty.spawned.length, 0)
+})
+
+test('a task Claude desktop spawned into its own session is not a side chat for the flow, and points at its parent', () => {
+  const task = { sessionId: 'local_child', spawnedFrom: { sessionId: 'local_parent', taskId: 'task_1', sideSession: true, title: 'CHILD-1 log' } }
+  const btw = { sessionId: 'local_btw', spawnedFrom: { sessionId: 'local_parent', sideSession: true, userFork: true, btw: true } }
+  const fork = { sessionId: 'local_fork', forkedFromSessionId: 'local_parent' }
+  assert.equal(isSpawnedTask(task), true)
+  assert.equal(isSpawnedTask(btw), false)
+  assert.deepEqual(spawnedParent(task), { id: 'local_parent', kind: 'task' })
+  assert.deepEqual(spawnedParent(btw), { id: 'local_parent', kind: 'fork' })
+  assert.deepEqual(spawnedParent(fork), { id: 'local_parent', kind: 'fork' })
+  assert.equal(spawnedParent({ sessionId: 'local_a', spawnedFrom: { sessionId: 'local_a' } }), null)
+  assert.equal(spawnedParent({ sessionId: 'local_a', spawnedFrom: { sessionId: '../etc' } }), null)
+  assert.equal(spawnedParent({ sessionId: 'local_a' }), null)
 })

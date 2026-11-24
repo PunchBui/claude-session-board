@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, setAutoMerge, withAutoMerge, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingKey, MAX_PINGS } from '../lib/mrs.js'
+import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingDueFor, withPingDue, PING_AFTER_MS, pingKey, MAX_PINGS } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -454,6 +454,43 @@ test('pinging a reviewer sends the review request message and reports the Slack 
   await assert.rejects(() => pingReviewer({ mr, username: 'other', run: async () => 'SENT' }), /not a reviewer/)
 })
 
+test('asking the team posts the review request to the configured channel', async () => {
+  const { pingChannel, channelPingMessage, reviewChannelFrom } = await import('../lib/ping.js')
+  const mr = normalizeMr(node({ title: 'Fix it' }), 'me')
+  let prompt
+  let tools
+  const sent = await pingChannel({ mr, channel: '#team-x', bin: 'claude', run: async (bin, p, env, t) => { prompt = p; tools = t; return 'SENT' } })
+  assert.equal(sent.channel, 'team-x')
+  assert.equal(sent.message, `Hi team, Please help review Fix it, ${mr.url}`)
+  assert.equal(sent.message, channelPingMessage('Fix it', mr.url))
+  assert.ok(prompt.includes(JSON.stringify(sent.message)) && prompt.includes('"team-x"') && prompt.includes('public_channel,private_channel'))
+  assert.ok(tools.includes('mcp__slack__slack_search_channels') && tools.includes('mcp__slack__slack_send_message'))
+  await assert.rejects(() => pingChannel({ mr, channel: 'team-x', run: async () => 'NOT_FOUND' }), /no Slack channel named #team-x/)
+  await assert.rejects(() => pingChannel({ mr, channel: 'team-x', run: async () => 'hmm' }), /did not confirm/)
+  await assert.rejects(() => pingChannel({ mr, channel: '', run: async () => 'SENT' }), /no review channel/)
+  await assert.rejects(() => pingChannel({ mr: { ...mr, mergedAt: 1 }, channel: 'team-x', run: async () => 'SENT' }), /open merge requests/)
+  assert.equal(reviewChannelFrom(' #Bad Name '), '')
+  assert.equal(reviewChannelFrom('#team-x'), 'team-x')
+  assert.equal(reviewChannelFrom(undefined), '')
+})
+
+test('the review channel comes from the environment first, then the saved setting', async () => {
+  const { resolveReviewChannel } = await import('../lib/ping.js')
+  assert.equal(resolveReviewChannel({ env: 'from-env', saved: { channel: 'from-file' } }), 'from-env')
+  assert.equal(resolveReviewChannel({ env: '', saved: { channel: 'from-file' } }), 'from-file')
+  assert.equal(resolveReviewChannel({ env: undefined, saved: { channel: 'Bad Name' } }), '')
+  assert.equal(resolveReviewChannel({ env: undefined, saved: null }), '')
+})
+
+test('withPings marks when the configured channel was asked for each merge request', async () => {
+  const data = await loadMergeRequests({ run: async () => payload({ authored: [node({})] }), now: NOW })
+  const url = data.authored[0].url
+  const asked = recordPing({}, url, '#team-x', 500)
+  assert.equal(withPings(data, asked, 'team-x').authored[0].channelPinged, 500)
+  assert.equal(withPings(data, asked, 'other').authored[0].channelPinged, null)
+  assert.equal(withPings(data, asked).authored[0].channelPinged, null)
+})
+
 test('recordPing stores the time per merge request and reviewer and keeps the newest', () => {
   const first = recordPing({}, 'u1', 'alice', 100)
   const second = recordPing(first, 'u1', 'alice', 200)
@@ -498,4 +535,72 @@ test('conflicts stay visible on the MR while a higher-priority verdict wins', ()
   const result = verdictOf(normalizeMr(node({ conflicts: true, headPipeline: { status: 'FAILED' } }), 'dkunweeroj'), 'authored', NOW)
   assert.equal(result.code, 'ci-failed')
   assert.equal(normalizeMr(node({ conflicts: true, headPipeline: { status: 'FAILED' } }), 'dkunweeroj').conflicts, true)
+})
+
+test('mrState reads the merge request state through the project API', async () => {
+  let args
+  const run = async (a) => { args = a; return JSON.stringify({ state: 'merged' }) }
+  assert.equal(await mrState(`https://${GITLAB_HOST}/team/sub/repo/-/merge_requests/42`, run), 'merged')
+  assert.deepEqual(args, ['api', '--hostname', GITLAB_HOST, 'projects/team%2Fsub%2Frepo/merge_requests/42'])
+  assert.equal(await mrState(`https://${GITLAB_HOST}/a/b/-/merge_requests/1`, async () => JSON.stringify({ state: 'closed' })), 'closed')
+  assert.equal(await mrState(`https://${GITLAB_HOST}/a/b/-/merge_requests/1`, async () => JSON.stringify({ state: 'locked' })), null)
+  await assert.rejects(() => mrState('https://elsewhere.example/a/b/-/merge_requests/1', async () => '{}'))
+})
+
+const waiting = (over = {}) => ({
+  url: `https://${GITLAB_HOST}/a/b/-/merge_requests/1`,
+  reviewers: ['ann', 'bob'],
+  approvedBy: [],
+  approved: false,
+  draft: false,
+  conflicts: false,
+  pipeline: 'success',
+  reviewLabel: 'Ready for review',
+  createdAt: 0,
+  mergedAt: null,
+  pinged: {},
+  channelPinged: null,
+  ...over,
+})
+
+test('a ping is due once a reviewer has had a day with no ping and no approval', () => {
+  const now = 30 * HOUR
+  assert.deepEqual(pingDueFor(waiting(), { waitingSince: 2 * HOUR, now }), { reviewers: ['ann', 'bob'], team: false })
+  assert.deepEqual(pingDueFor(waiting(), { waitingSince: 7 * HOUR, now }), { reviewers: [], team: false })
+  assert.deepEqual(pingDueFor(waiting(), { now: 23 * HOUR }), { reviewers: [], team: false })
+  assert.deepEqual(pingDueFor(waiting(), { now: 24 * HOUR }), { reviewers: ['ann', 'bob'], team: false })
+  assert.equal(PING_AFTER_MS, 24 * HOUR)
+})
+
+test('a recent ping or an approval takes that reviewer off the due list', () => {
+  const now = 60 * HOUR
+  const mr = waiting({ approvedBy: ['ann'], pinged: { bob: 50 * HOUR } })
+  assert.deepEqual(pingDueFor(mr, { now }), { reviewers: [], team: false })
+  assert.deepEqual(pingDueFor(waiting({ pinged: { bob: 30 * HOUR } }), { now }), { reviewers: ['ann', 'bob'], team: false })
+  assert.deepEqual(pingDueFor(waiting({ pinged: { bob: 20 * HOUR } }), { now: 40 * HOUR }), { reviewers: ['ann'], team: false })
+})
+
+test('nothing is due on a merged, draft, approved, conflicted or failing merge request', () => {
+  const now = 100 * HOUR
+  for (const over of [{ mergedAt: 1 }, { draft: true }, { approved: true }, { conflicts: true }, { pipeline: 'failed' }]) {
+    assert.deepEqual(pingDueFor(waiting(over), { now }), { reviewers: [], team: false })
+  }
+})
+
+test('the team ask is due only without reviewers, with a review label and no recent ask', () => {
+  const now = 100 * HOUR
+  assert.equal(pingDueFor(waiting({ reviewers: [] }), { now }).team, true)
+  assert.equal(pingDueFor(waiting({ reviewers: [], reviewLabel: null }), { now }).team, false)
+  assert.equal(pingDueFor(waiting({ reviewers: [], channelPinged: 90 * HOUR }), { now }).team, false)
+  assert.equal(pingDueFor(waiting(), { now }).team, false)
+})
+
+test('withPingDue marks authored merge requests using the review label time from events', () => {
+  const a = waiting()
+  const data = { authored: [a], reviewing: [waiting({ url: 'x' })], merged: [] }
+  const out = withPingDue(data, { events: { [a.url]: { reviewLabelAt: 80 * HOUR } }, now: 90 * HOUR })
+  assert.deepEqual(out.authored[0].pingDue, { reviewers: [], team: false })
+  assert.equal('pingDue' in out.reviewing[0], false)
+  assert.deepEqual(withPingDue(data, { now: 90 * HOUR }).authored[0].pingDue.reviewers, ['ann', 'bob'])
+  assert.deepEqual(withPingDue(data, { now: 90 * HOUR, afterMs: 100 * HOUR }).authored[0].pingDue.reviewers, [])
 })

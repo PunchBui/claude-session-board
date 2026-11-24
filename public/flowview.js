@@ -1,9 +1,10 @@
-import { STEPS, STEP_LABEL, PHASES, phaseOf, SOURCE_LABEL, deriveTicket, gapRows, kpiValues, inRange, matchesFilter, fmtSpan, DAY_MS } from './flow.js'
+import { STEPS, STEP_LABEL, PHASES, phaseOf, SOURCE_LABEL, deriveTicket, gapRows, kpiValues, inRange, matchesFilter, isMyWorkingTicket, fmtSpan, isWorking, DAY_MS } from './flow.js'
+import { mapGraph, induced, foldLeaves, lineage, columns, hiddenNeighbours, flowRows, shape, kindName, KIND_ORDER, SESSION_LINK_LABEL } from './flowmap.js'
 import { attachTip, hideTip } from './tip.js'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const RANGES = [30, 90, 180]
-const STATUSES = [['all', 'All'], ['active', 'In flight'], ['done', 'Done']]
+const STATUSES = [['working', 'My working'], ['active', 'In flight'], ['done', 'Done'], ['all', 'All']]
 const VIEWS = [['overview', 'Overview'], ['map', 'Map'], ['how', 'How it works']]
 const MILESTONE_STEPS = STEPS.filter((step) => step.id !== 'created')
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -54,8 +55,8 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 const tone = (state) => ({ merged: 'ok', opened: 'info', closed: 'dim' }[state] ?? 'dim')
 
 export function createFlowView(root, { openSession, postJson, reload }) {
-  const ui = { range: 30, epic: 'all', status: 'all', work: false, query: '', view: 'overview', open: null, hl: null, setup: false, adding: false, linking: null, collapsed: [], busy: false, message: null }
-  try { Object.assign(ui, JSON.parse(localStorage.getItem(STORE_KEY) || '{}'), { open: null, hl: null, setup: false, adding: false, linking: null, busy: false, message: null }) } catch {}
+  const ui = { range: 30, epic: 'all', status: 'working', work: false, query: '', view: 'overview', open: null, focus: null, trail: [], folds: new Set(), setup: false, adding: false, linking: null, collapsed: [], busy: false, message: null }
+  try { const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); Object.assign(ui, saved, saved.v >= 2 ? {} : { status: 'working' }, { open: null, focus: null, trail: [], folds: new Set(), setup: false, adding: false, linking: null, busy: false, message: null }) } catch {}
   let data = null
   let derived = []
   let graph = null
@@ -63,7 +64,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
 
   const save = () => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ range: ui.range, epic: ui.epic, status: ui.status, work: ui.work, view: ui.view, collapsed: ui.collapsed }))
+      localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, range: ui.range, epic: ui.epic, status: ui.status, work: ui.work, view: ui.view, collapsed: ui.collapsed }))
     } catch {}
   }
   const set = (patch) => {
@@ -84,11 +85,28 @@ export function createFlowView(root, { openSession, postJson, reload }) {
   const epicOf = (key) => data?.epics.find((epic) => epic.key === key) ?? null
   const mrOf = (url) => data?.mrs.find((mr) => mr.url === url) ?? null
   const sessionOf = (id) => data?.sessions.find((item) => item.id === id) ?? null
+  const channelOf = (id) => data?.channels?.find((channel) => channel.id === id) ?? { id, name: null }
+  const channelLabel = (channel) => (channel?.name ? `#${channel.name}` : /^D/.test(channel?.id ?? '') ? 'Direct message' : channel?.id ? `Channel ${channel.id}` : 'Slack')
+
+  function slackThreads() {
+    if (ui.status === 'done' || !(ui.epic === 'all' || ui.epic.startsWith('slack:'))) return []
+    const since = Date.now() - ui.range * DAY_MS
+    const q = ui.query.trim().toLowerCase()
+    return (data.threads ?? []).filter((thread) => Math.max(thread.lastActivityAt ?? 0, thread.at ?? 0) >= since
+      && (ui.epic === 'all' || ui.epic === `slack:${thread.channel}`)
+      && (!q || `${thread.title ?? ''} ${thread.author ?? ''} ${channelLabel(channelOf(thread.channel))}`.toLowerCase().includes(q)))
+  }
 
   function shown() {
     const now = Date.now()
     derived = tickets().map((ticket) => deriveTicket(ticket, { now, work: ui.work }))
-    return derived.filter((ticket) => inRange(ticket, ui.range, now) && matchesFilter(ticket, { epic: ui.epic, status: ui.status, query: ui.query }))
+    return derived.filter((ticket) => inRange(ticket, ui.range, now) && matchesFilter(ticket, { epic: ui.epic, status: ui.status, query: ui.query, since: now - ui.range * DAY_MS }))
+  }
+
+  function statsFor(list) {
+    if (ui.status !== 'working') return list
+    const now = Date.now()
+    return derived.filter((ticket) => ticket.mine && inRange(ticket, ui.range, now) && matchesFilter(ticket, { epic: ui.epic, query: ui.query }))
   }
 
   function seg(items, current, onPick, label) {
@@ -178,7 +196,8 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     const epicSelect = h('select', { class: 'field', 'aria-label': 'Epic', onchange: (event) => set({ epic: event.target.value }) },
       h('option', { value: 'all' }, 'All epics'),
       epics.map((epic) => h('option', { value: epic.key }, `${epic.key} · ${epic.title}`)),
-      tickets().some((ticket) => !ticket.epic) ? h('option', { value: 'null' }, 'No epic') : null)
+      tickets().some((ticket) => !ticket.epic) ? h('option', { value: 'null' }, 'No epic') : null,
+      (data.channels ?? []).length ? h('optgroup', { label: 'Slack channels' }, data.channels.map((channel) => h('option', { value: `slack:${channel.id}` }, `Slack · ${channelLabel(channel)}`))) : null)
     epicSelect.value = ui.epic
     const query = h('input', { class: 'field', type: 'search', placeholder: 'Filter by key or title', value: ui.query, 'aria-label': 'Filter tickets' })
     query.addEventListener('input', () => {
@@ -194,7 +213,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     return h('div', { class: 'fl-filters' },
       seg(RANGES.map((days) => [days, `${days} days`]), ui.range, (value) => set({ range: Number(value) }), 'Range'),
       epicSelect,
-      ui.epic === 'all' ? null : h('button', { class: 'fl-pill', type: 'button', title: 'Show every epic', onclick: () => set({ epic: 'all' }) }, ui.epic === 'null' ? 'No epic' : `Epic: ${ui.epic}${epicOf(ui.epic) ? ` · ${epicOf(ui.epic).title}` : ''}`, h('span', { class: 'fl-pill-x', 'aria-hidden': 'true' }, '×')),
+      ui.epic === 'all' ? null : h('button', { class: 'fl-pill', type: 'button', title: 'Show every epic', onclick: () => set({ epic: 'all' }) }, ui.epic === 'null' ? 'No epic' : ui.epic.startsWith('slack:') ? `Slack: ${channelLabel(channelOf(ui.epic.slice(6)))}` : `Epic: ${ui.epic}${epicOf(ui.epic) ? ` · ${epicOf(ui.epic).title}` : ''}`, h('span', { class: 'fl-pill-x', 'aria-hidden': 'true' }, '×')),
       seg(STATUSES, ui.status, (value) => set({ status: value }), 'Status'),
       h('label', { class: 'fl-check' }, h('input', { type: 'checkbox', checked: ui.work || null, onchange: (event) => set({ work: event.target.checked }) }), 'Working days only'),
       query,
@@ -202,7 +221,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
   }
 
   function views() {
-    return h('nav', { class: 'fl-views' }, VIEWS.map(([value, text]) => h('button', { type: 'button', 'aria-pressed': String(ui.view === value), onclick: () => set({ view: value, hl: null }) }, text)))
+    return h('nav', { class: 'fl-views' }, VIEWS.map(([value, text]) => h('button', { type: 'button', 'aria-pressed': String(ui.view === value), onclick: () => set({ view: value }) }, text)))
   }
 
   function kpis(list) {
@@ -216,7 +235,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     const host = h('div', { class: 'fl-gapchart' })
     const card = h('div', { class: 'fl-card' },
       h('h3', {}, 'Where the time goes'),
-      h('p', { class: 'fl-sub' }, 'Median time to reach each step from the step before it. The thin line runs to the 75th percentile, and the slowest step is highlighted. Steps a ticket skipped or did not need fall through to the step before.'),
+      h('p', { class: 'fl-sub' }, 'Median time to reach each step from the step before it. The thin line runs to the 75th percentile, and the slowest step is highlighted. Steps a ticket skipped or did not need fall through to the step before.', ui.status === 'working' ? ` With My working, the numbers above and this chart use all your tickets in the last ${ui.range} days, done ones included, so there is history to measure.` : ''),
       host)
     requestAnimationFrame(() => drawGapChart(host, gapRows(list)))
     return card
@@ -337,7 +356,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
   }
 
   function ticketRows(list, width) {
-    if (!list.length) return [h('p', { class: 'fl-sub' }, data.tickets.length ? 'No tickets match these filters.' : 'No tickets yet.')]
+    if (!list.length) return [h('p', { class: 'fl-sub' }, !data.tickets.length ? 'No tickets yet.' : ui.status === 'working' ? 'None of your tickets is in progress. In flight or All shows the rest.' : 'No tickets match these filters.')]
     const groups = new Map()
     for (const ticket of list) {
       const key = ticket.epic ?? 'null'
@@ -362,7 +381,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
         out.push(h('div', { class: `fl-tk-row${ui.open === ticket.key ? ' sel' : ''}`, role: 'button', tabindex: 0, onclick: () => openDetail(ticket.key), onkeydown: (event) => { if (event.key === 'Enter') openDetail(ticket.key) } },
           h('div', { class: 'fl-tk-main' },
             h('div', { class: 'fl-tk-title' }, h('span', { class: 'fl-key' }, ticket.key), ticket.title),
-            h('div', { class: 'fl-tk-flags' }, ticket.flags.length ? ticket.flags.join(' · ') : `${ticket.type} · Jira: ${ticket.status}`)),
+            h('div', { class: 'fl-tk-flags' }, ticket.flags.length ? ticket.flags.join(' · ') : [ticket.type, `Jira: ${ticket.status}`, !ticket.mine && ticket.assignee ? ticket.assignee : null].filter(Boolean).join(' · '))),
           h('div', { class: 'fl-now' }, h('span', { class: `fl-state ${ticket.state.tone}` }, ticket.state.label), ticket.done ? null : h('span', { class: 'fl-state-sub' }, ticket.state.sub)),
           h('div', {}, width ? journey(ticket, list, width) : null),
           h('div', { class: 'num' }, fmtSpan(ticket.lead)),
@@ -480,7 +499,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
         h('span', { class: 'fl-chip' }, `Jira: ${ticket.status}`),
         h('span', { class: 'fl-chip' }, `${ticket.done ? 'Lead' : 'Age'} ${fmtSpan(ticket.lead)}`),
         ticket.url ? h('a', { class: 'btn small', href: ticket.url, target: '_blank', rel: 'noopener' }, 'Open in Jira ↗') : null,
-        h('button', { class: 'btn small', type: 'button', onclick: () => { closeDetail(); set({ view: 'map', hl: `t:${ticket.key}` }) } }, 'Show in Map')),
+        h('button', { class: 'btn small', type: 'button', onclick: () => { closeDetail(); set({ view: 'map', focus: `t:${ticket.key}`, trail: [] }) } }, 'Show in Map')),
       ...ticket.flags.map((flag) => h('div', { class: 'fl-callout' }, flag)),
       h('div', { class: 'fl-d-sec' }, h('h4', {}, 'Lifecycle'), stepRows(ticket), h('div', { class: 'fl-add-wrap' }, addForm(ticket))),
       h('div', { class: 'fl-d-sec' }, h('h4', {}, `Sessions (${sessions.length})`),
@@ -503,82 +522,290 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     detail.classList.add('open')
   }
 
-  function mapView(list) {
-    const keys = new Set(list.map((ticket) => ticket.key))
-    const epics = []
-    for (const ticket of list) if (!epics.includes(ticket.epic ?? null)) epics.push(ticket.epic ?? null)
-    epics.sort((a, b) => (a === null) - (b === null) || String(a).localeCompare(String(b)))
-    const ordered = [...list].sort((a, b) => epics.indexOf(a.epic ?? null) - epics.indexOf(b.epic ?? null) || (a.steps.created?.at ?? 0) - (b.steps.created?.at ?? 0))
-    const ticketIndex = new Map(ordered.map((ticket, i) => [ticket.key, i]))
-    const mrUrls = []
-    for (const ticket of ordered) for (const url of ticket.mrs) if (!mrUrls.includes(url) && mrOf(url)) mrUrls.push(url)
-    const sessions = data.sessions.filter((item) => item.tickets.some((link) => keys.has(link.key)))
-    const firstTicket = (item) => Math.min(...item.tickets.filter((link) => keys.has(link.key)).map((link) => ticketIndex.get(link.key)))
-    const firstMr = (item) => Math.min(mrUrls.length, ...item.mrs.map((url) => mrUrls.indexOf(url)).filter((i) => i >= 0))
-    sessions.sort((a, b) => firstTicket(a) - firstTicket(b) || firstMr(a) - firstMr(b))
-    const links = []
-    for (const ticket of ordered) links.push([`e:${ticket.epic ?? 'none'}`, `t:${ticket.key}`])
-    const viaSession = new Set()
-    for (const item of sessions) {
-      for (const link of item.tickets) if (keys.has(link.key)) links.push([`t:${link.key}`, `s:${item.id}`])
-      for (const url of item.mrs) if (mrUrls.includes(url)) {
-        links.push([`s:${item.id}`, `m:${url}`])
-        viaSession.add(url)
-      }
-    }
-    for (const ticket of ordered) for (const url of ticket.mrs) if (mrUrls.includes(url) && !viaSession.has(url)) links.push([`t:${ticket.key}`, `m:${url}`])
-    const parents = new Map()
-    const children = new Map()
-    for (const [a, b] of links) {
-      if (!children.has(a)) children.set(a, [])
-      children.get(a).push(b)
-      if (!parents.has(b)) parents.set(b, [])
-      parents.get(b).push(a)
-    }
-    graph = { links, parents, children }
+  const capital = (text) => text.charAt(0).toUpperCase() + text.slice(1)
+  const mrState = (mr) => (mr?.draft ? 'Draft' : mr?.state === 'opened' ? 'Open' : mr?.state === 'merged' ? (mr.deploy?.state === 'live' ? 'Deployed' : 'Merged') : mr?.state === 'closed' ? 'Closed' : 'Unknown')
 
-    const node = (id, cls, key, title, meta, onclick) => h('div', { class: `fl-node ${cls}`, 'data-id': id, onmouseenter: () => highlight(id), onmouseleave: () => highlight(ui.hl), onclick },
-      key ? h('div', { class: 'fl-nk' }, key) : null, h('div', { class: 'fl-nt' }, title), meta ? h('div', { class: 'fl-nm' }, meta) : null)
-    const col = (title, ...kids) => h('div', { class: 'fl-map-col' }, h('h4', {}, title), ...kids)
-    const linkBox = (kind, id) => {
-      if (ui.linking !== `${kind}:${id}`) return h('button', { class: 'btn small', type: 'button', onclick: (event) => { event.stopPropagation(); set({ linking: `${kind}:${id}` }) } }, 'Link…')
-      const select = h('select', { class: 'field', onclick: (event) => event.stopPropagation() }, data.tickets.map((ticket) => h('option', { value: ticket.key }, `${ticket.key} · ${ticket.title}`)))
-      return h('div', { class: 'fl-linkbox', onclick: (event) => event.stopPropagation() }, select,
-        h('button', { class: 'btn primary small', type: 'button', onclick: async () => { await postJson('/api/flow/link', { kind, id, ticket: select.value }); ui.linking = null; await reload() } }, 'Link'),
-        h('button', { class: 'btn small', type: 'button', onclick: () => set({ linking: null }) }, 'Cancel'))
+  const INBOUND = { task: 'Started from', fork: 'Forked from', handoff: 'Picked up the handoff of', message: 'Messaged by' }
+  const OUTBOUND = { task: 'Started sessions', fork: 'Forked into', handoff: 'Handed off to', message: 'Messaged' }
+  function nodeText(g, node) {
+    const ref = node.ref
+    if (node.kind === 'epic') {
+      const epic = ref ? epicOf(ref) : null
+      const count = (g.children.get(node.id) ?? []).length
+      return { key: epic?.key ?? ref, title: epic?.title ?? ref, meta: plural(count, 'ticket'), short: epic?.key ?? ref, open: epic?.url ? ['Open in Jira', () => window.open(epic.url, '_blank', 'noopener')] : null }
     }
-    const looseMrs = data.loose.mrs
-    const looseSessions = data.loose.sessions
-    const cols = h('div', { class: 'fl-map-cols' },
-      col('Epics', epics.map((key) => {
-        const epic = key ? epicOf(key) : null
-        const count = ordered.filter((ticket) => (ticket.epic ?? null) === key).length
-        const value = String(key ?? 'null')
-        const picked = ui.epic === value
-        const card = node(`e:${key ?? 'none'}`, `epic${picked ? ' on' : ''}`, epic?.key ?? null, epic?.title ?? 'No epic', plural(count, 'ticket'), () => set({ epic: picked ? 'all' : value }))
-        card.title = picked ? 'Click to show every epic again' : 'Click to show only this epic'
-        return card
-      })),
-      col('Tickets', ordered.map((ticket) => node(`t:${ticket.key}`, '', ticket.key, ticket.title, ticket.done ? `Done in ${fmtSpan(ticket.lead)}` : `${ticket.state.label} · ${ticket.state.sub}`, () => openDetail(ticket.key)))),
-      col('Sessions', sessions.map((item) => node(`s:${item.id}`, '', null, item.title, [item.project, item.tickets.find((link) => keys.has(link.key))?.why].filter(Boolean).join(' · '), () => openSession(item.id))),
-        looseSessions.length ? h('div', { class: 'fl-map-sep' }, 'Recent sessions with no ticket') : null,
-        looseSessions.map((item) => node(`s:${item.id}`, 'loose', null, item.title, `${item.project ?? ''} · ${ago(item.lastActivityAt)}`, null)).map((el, i) => { el.append(linkBox('session', looseSessions[i].id)); return el })),
-      col('Merge requests', mrUrls.map((url) => {
-        const mr = mrOf(url)
-        return node(`m:${url}`, '', mr.ref, mr.title || mrShort(mr.ref), mr.draft ? 'Draft' : mr.state === 'opened' ? 'Open' : mr.state === 'merged' ? (mr.deploy?.state === 'live' ? 'Deployed' : 'Merged') : mr.state, () => window.open(url, '_blank', 'noopener'))
-      }),
-      looseMrs.length ? h('div', { class: 'fl-map-sep' }, 'Your MRs with no ticket') : null,
-      looseMrs.map((mr) => node(`m:${mr.url}`, 'loose', mr.ref, mr.title, mr.state === 'opened' ? 'Open' : mr.state, null)).map((el, i) => { el.append(linkBox('mr', looseMrs[i].url)); return el })))
+    if (node.kind === 'channel') {
+      const channel = channelOf(ref)
+      const count = (g.children.get(node.id) ?? []).length
+      return { key: 'Slack', title: channelLabel(channel), meta: plural(count, 'thread'), short: channelLabel(channel), open: channel.url ? ['Open in Slack', () => window.open(channel.url, '_blank', 'noopener')] : null }
+    }
+    if (node.kind === 'ticket') return { key: ref.key, title: ref.title, meta: ref.done ? `Done in ${fmtSpan(ref.lead)}` : `${ref.state.label} · ${ref.state.sub}`, short: ref.key, open: ['Ticket details', () => openDetail(ref.key)] }
+    if (node.kind === 'thread') {
+      const title = ref.title || `Thread from ${stamp(ref.at)}`
+      return { key: `Slack · ${channelLabel(channelOf(ref.channel))}`, title, meta: [ref.author, `posted ${day(ref.at)}`].filter(Boolean).join(' · '), short: title, open: ref.url ? ['Open in Slack', () => window.open(ref.url, '_blank', 'noopener')] : null }
+    }
+    if (node.kind === 'session') {
+      const edge = g.edges.find((item) => item.to === node.id && INBOUND[item.kind])
+      const from = edge ? g.nodes.get(edge.from)?.ref?.title : null
+      const why = edge ? `${INBOUND[edge.kind]} ${from ?? 'another session'}` : ref.tickets?.[0]?.why ?? ref.threads?.[0]?.why
+      return { key: null, title: ref.title, meta: [ref.project, why].filter(Boolean).join(' · '), short: ref.title, open: ['Open session', () => openSession(ref.id)] }
+    }
+    return { key: ref.ref, title: ref.title || mrShort(ref.ref), meta: node.loose ? (ref.state === 'opened' ? 'Open' : ref.state) : mrState(ref), short: mrShort(ref.ref), open: ['Open in GitLab', () => window.open(ref.url, '_blank', 'noopener')] }
+  }
+
+  const MAX_LIST = 8
+  const listOf = (items) => (items.length > MAX_LIST ? [...items.slice(0, MAX_LIST), `and ${items.length - MAX_LIST} more`] : items).join('\n')
+  const when = (ms) => (ms ? `${stamp(ms)} (${ago(ms)})` : null)
+  const nameOf = (g, id) => {
+    const node = g.nodes.get(id)
+    if (!node) return null
+    const text = nodeText(g, node)
+    return node.kind === 'session' ? text.title : text.key && text.key !== text.title && !String(text.key).startsWith('Slack') ? `${text.key} ${text.title}` : text.title
+  }
+
+  function detailOf(g, node, shown = null) {
+    const ref = node.ref
+    const text = nodeText(g, node)
+    const rows = []
+    const add = (label, value) => { if (value != null && value !== '' && !(Array.isArray(value) && !value.length)) rows.push([label, Array.isArray(value) ? listOf(value) : String(value)]) }
+    const ups = g.edges.filter((edge) => edge.to === node.id)
+    const downs = g.edges.filter((edge) => edge.from === node.id)
+    let heading = text.title
+    let line = capital(kindName(node.kind, 1))
+    if (node.kind === 'epic') {
+      const epic = epicOf(ref)
+      line = `Epic ${ref}`
+      add('Jira status', epic?.status)
+      add('Tickets here', downs.map((edge) => g.nodes.get(edge.to)?.ref?.key).filter(Boolean))
+    } else if (node.kind === 'channel') {
+      line = 'Slack channel'
+      add('Channel id', ref)
+      add('Threads', downs.length)
+    } else if (node.kind === 'ticket') {
+      line = [ref.key, ref.type].filter(Boolean).join(' · ')
+      add('Jira status', ref.status)
+      add('Now', ref.done ? `Done in ${fmtSpan(ref.lead)}` : [ref.state.label, ref.state.sub].filter(Boolean).join(' · '))
+      add('Assignee', ref.assignee)
+      add('Epic', ref.epic ? [ref.epic, epicOf(ref.epic)?.title].filter(Boolean).join(' · ') : 'None')
+      add('Created', when(ref.steps?.created?.at))
+      add('Steps reached', (ref.reached ?? []).map((step) => STEP_LABEL[step.id] ?? step.id).join(', '))
+      add('Flags', ref.flags)
+      add('Sessions', (ref.sessions ?? []).length)
+      add('MRs', (ref.mrs ?? []).map((url) => mrOf(url)?.ref ?? url))
+    } else if (node.kind === 'thread') {
+      heading = ref.title || `Thread from ${stamp(ref.at)}`
+      line = `Slack thread in ${channelLabel(channelOf(ref.channel))}`
+      add('Started by', ref.author)
+      add('Posted', when(ref.at))
+      add('Sessions', (ref.sessions ?? []).length)
+    } else if (node.kind === 'session') {
+      line = ['Session', ref.project, node.loose ? 'no ticket' : null].filter(Boolean).join(' · ')
+      add('Status', isWorking(node.at) ? 'Working now' : ref.status)
+      add('Started', when(ref.createdAt))
+      add('Linked to tickets by', (ref.tickets ?? []).map((link) => `${link.key}: ${link.why}`))
+      add('Slack', (ref.threads ?? []).map((link) => link.why))
+      for (const edge of ups.filter((item) => INBOUND[item.kind])) add(INBOUND[edge.kind], nameOf(g, edge.from))
+      for (const kind of Object.keys(OUTBOUND)) add(OUTBOUND[kind], downs.filter((edge) => edge.kind === kind).map((edge) => nameOf(g, edge.to)))
+      add('MRs', (ref.mrs ?? []).map((url) => mrOf(url)?.ref ?? url))
+    } else if (node.kind === 'mr') {
+      line = ref.ref
+      add('State', node.loose ? ref.state : mrState(ref))
+      add('Author', ref.author)
+      add('Created', when(ref.createdAt))
+      add('Approved', when(ref.approvedAt))
+      add('Merged', when(ref.mergedAt))
+      add('Deployed', ref.deploy ? (ref.deploy.state === 'live' ? `${when(ref.deploy.at)}${ref.deploy.exact ? '' : ' (time of the check)'}` : `${ref.deploy.state}${ref.deploy.note ? `, ${ref.deploy.note}` : ''}`) : null)
+      add('Tickets', (ref.tickets ?? []).map((link) => `${link.key}: ${link.why.join(', ')}`))
+      add('Worked on by', ups.filter((edge) => g.nodes.get(edge.from)?.kind === 'session').map((edge) => nameOf(g, edge.from)))
+    }
+    add('Last activity', when(node.at))
+    if (shown) add('Not on this path', [...(g.parents.get(node.id) ?? []), ...(g.children.get(node.id) ?? [])].filter((id) => !shown.has(id)).map((id) => nameOf(g, id)))
+    return { heading, text: line, rows, wide: true }
+  }
+
+  function timeBadge(node, live = node.kind === 'session') {
+    if (!node.at) return null
+    const working = live && isWorking(node.at)
+    const tip = node.kind === 'session' && node.ref.createdAt ? `Started ${stamp(node.ref.createdAt)} · Last activity ${stamp(node.at)}` : `Last activity ${stamp(node.at)}`
+    return h('span', { class: `fl-ntime${working ? ' live' : ''}`, title: tip }, working ? 'Working now' : ago(node.at))
+  }
+
+  const focusOn = (id) => {
+    if (id === ui.focus) return
+    set({ trail: ui.focus ? [...ui.trail, ui.focus].slice(-20) : [], focus: id, linking: null })
+  }
+  const keyed = (fn) => (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); fn() } }
+
+  function linkBox(kind, id) {
+    if (ui.linking !== `${kind}:${id}`) return h('button', { class: 'btn small', type: 'button', onclick: (event) => { event.stopPropagation(); set({ linking: `${kind}:${id}` }) } }, 'Link…')
+    const select = h('select', { class: 'field', onclick: (event) => event.stopPropagation() }, data.tickets.map((ticket) => h('option', { value: ticket.key }, `${ticket.key} · ${ticket.title}`)))
+    return h('div', { class: 'fl-linkbox', onclick: (event) => event.stopPropagation(), onkeydown: (event) => event.stopPropagation() }, select,
+      h('button', { class: 'btn primary small', type: 'button', onclick: async () => { await postJson('/api/flow/link', { kind, id, ticket: select.value }); ui.linking = null; await reload() } }, 'Link'),
+      h('button', { class: 'btn small', type: 'button', onclick: () => set({ linking: null }) }, 'Cancel'))
+  }
+  const looseLink = (node) => (!node.loose ? null : node.kind === 'session' ? linkBox('session', node.ref.id) : node.kind === 'mr' ? linkBox('mr', node.ref.url) : null)
+
+  function mapCard(g, node, hidden, shown) {
+    const text = nodeText(g, node)
+    const time = timeBadge(node)
+    const focused = node.id === ui.focus
+    const go = () => focusOn(node.id)
+    const open = text.open ? h('button', { class: 'fl-open', type: 'button', title: text.open[0], 'aria-label': text.open[0], onclick: (event) => { event.stopPropagation(); text.open[1]() } }, '↗') : null
+    const more = hidden ? h('span', { class: 'fl-more', title: `${plural(hidden, 'linked item')} not on this path. Click the card to follow from here.` }, `+${hidden} more`) : null
+    const card = h('div', { class: `fl-node k-${node.kind}${focused ? ' focus' : ''}${node.loose ? ' loose' : ''}${time?.classList.contains('live') ? ' working' : ''}`, 'data-id': node.id, role: 'button', tabindex: 0, onmouseenter: () => highlight(node.id), onmouseleave: () => highlight(null), onclick: go, onkeydown: keyed(go) },
+      h('div', { class: 'fl-nhead' }, h('span', { class: `fl-kind k-${node.kind}` }, capital(kindName(node.kind, 1))), text.key && text.key !== 'Slack' ? h('span', { class: 'fl-nk' }, text.key) : null, open),
+      h('div', { class: 'fl-nrow' }, h('div', { class: 'fl-nt' }, text.title), time),
+      text.meta || more ? h('div', { class: 'fl-nrow' }, h('div', { class: 'fl-nm' }, text.meta), more) : null,
+      focused ? looseLink(node) : null)
+    return attachTip(card, () => detailOf(g, node, shown))
+  }
+
+  function focusView(g, wide = false) {
+    const ids = lineage(g, ui.focus)
+    const hidden = hiddenNeighbours(g, ids)
+    const folded = foldLeaves(induced(g, ids), columns(g, ids), { keep: new Set([ui.focus]), open: new Set([...ui.folds].filter((key) => key.startsWith(`${ui.focus}|`)).map((key) => key.slice(ui.focus.length + 1))) })
+    const cols = folded.cols
+    const links = folded.edges
+    graph = { links, parents: folded.parents, children: folded.children }
+    const foldKey = (stack) => `${ui.focus}|${stack.id}`
+    const toggleFold = (stack) => {
+      ui.folds.has(foldKey(stack)) ? ui.folds.delete(foldKey(stack)) : ui.folds.add(foldKey(stack))
+      ui.mapScroll = null
+      render()
+    }
+    const foldCard = (stack) => {
+      const members = stack.ids.map((id) => g.nodes.get(id))
+      const newest = members.reduce((a, b) => (b.at > a.at ? b : a))
+      const counts = new Map()
+      if (stack.kind === 'mr') for (const node of members) counts.set(mrState(node.ref), (counts.get(mrState(node.ref)) ?? 0) + 1)
+      const meta = stack.kind === 'mr' ? [...counts].sort((a, b) => b[1] - a[1]).map(([state, n]) => `${state} ${n}`).join(' · ') : `Latest: ${nodeText(g, newest).title}`
+      const go = () => toggleFold(stack)
+      const card = h('div', { class: `fl-node fl-fold k-${stack.kind}`, 'data-id': stack.id, role: 'button', tabindex: 0, onmouseenter: () => highlight(stack.id), onmouseleave: () => highlight(null), onclick: go, onkeydown: keyed(go) },
+        h('div', { class: 'fl-nhead' }, h('span', { class: `fl-kind k-${stack.kind}` }, capital(kindName(stack.kind, members.length))), h('span', { class: 'fl-more fl-fold-open' }, 'Show all')),
+        h('div', { class: 'fl-nrow' }, h('div', { class: 'fl-nt' }, `${members.length} ${kindName(stack.kind, members.length)} with nothing after them`), timeBadge({ ...newest, at: newest.at }, stack.kind === 'session')),
+        h('div', { class: 'fl-nm' }, meta))
+      return attachTip(card, () => ({ heading: `${members.length} ${kindName(stack.kind, members.length)} with nothing after them`, text: 'Show all lays them out one by one.', rows: [...members].sort((a, b) => b.at - a.at).slice(0, 12).map((member) => [ago(member.at), nameOf(g, member.id)]).concat(members.length > 12 ? [['', `and ${members.length - 12} more`]] : []), wide: true }))
+    }
+    const opened = (col) => [...folded.stacks.values()].filter((stack) => stack.open && stack.ids.some((id) => col.includes(id)))
+    const colTitle = (col) => {
+      const counts = new Map()
+      for (const id of col) {
+        const stack = folded.stacks.get(id)
+        const kind = stack?.kind ?? g.nodes.get(id).kind
+        counts.set(kind, (counts.get(kind) ?? 0) + (stack ? stack.ids.length : 1))
+      }
+      return KIND_ORDER.filter((kind) => counts.has(kind)).map((kind) => capital(kindName(kind, counts.get(kind)))).join(' · ')
+    }
+    const focusNode = g.nodes.get(ui.focus)
+    const back = ui.trail.filter((id) => g.nodes.has(id)).at(-1)
+    const kinds = new Set(links.map((edge) => edge.kind))
+    const bar = h('div', { class: 'fl-focusbar' },
+      h('button', { class: 'btn small', type: 'button', onclick: () => set({ focus: null, trail: [], linking: null }) }, '← All flows'),
+      back ? h('button', { class: 'btn small', type: 'button', title: nodeText(g, g.nodes.get(back)).title, onclick: () => set({ focus: back, trail: ui.trail.slice(0, ui.trail.lastIndexOf(back)), linking: null }) }, `Back to ${nodeText(g, g.nodes.get(back)).short}`) : null,
+      h('span', { class: 'fl-focus-name' }, `Following ${kindName(focusNode.kind, 1)} `, h('b', {}, nodeText(g, focusNode).short)),
+      wide ? h('span', { class: 'fl-wide', title: 'The range, epic, status and text filters would hide it, so this view ignores them' }, 'Filters off for this one') : null,
+      h('span', { class: 'fl-legend' }, Object.keys(SESSION_LINK_LABEL).filter((kind) => kinds.has(kind)).map((kind) => h('span', { class: 'fl-leg' }, s('svg', { width: 26, height: 8 }, s('path', { class: `fl-link k-${kind}`, d: 'M1,4 L25,4' })), `${capital(SESSION_LINK_LABEL[kind])}`))))
     const svg = s('svg', { class: 'fl-map-svg' })
-    const wrap = h('div', { class: 'fl-map-wrap' }, svg, cols)
+    const flow = h('div', { class: 'fl-flowmap', style: `grid-template-columns: repeat(${cols.length}, 236px)` },
+      cols.map((col) => h('div', { class: 'fl-fcol' }, h('h4', {}, colTitle(col)),
+        h('div', { class: 'fl-fcol-body' },
+          opened(col).map((stack) => h('button', { class: 'btn small fl-fold-btn', type: 'button', onclick: () => toggleFold(stack) }, `Fold the ${stack.ids.length} ${kindName(stack.kind, stack.ids.length)} with nothing after them`)),
+          col.map((id) => (folded.stacks.has(id) ? foldCard(folded.stacks.get(id)) : mapCard(g, g.nodes.get(id), hidden.get(id), ids)))))))
+    const wrap = h('div', { class: 'fl-map-wrap' }, svg, flow)
+    const scroller = h('div', { class: 'fl-map-scroll' }, wrap)
+    const at = ui.mapScroll?.focus === ui.focus ? ui.mapScroll : null
+    scroller.addEventListener('scroll', () => { ui.mapScroll = { focus: ui.focus, top: scroller.scrollTop, left: scroller.scrollLeft } })
     requestAnimationFrame(() => {
       drawLinks(wrap, svg)
-      highlight(ui.hl)
+      if (at) {
+        scroller.scrollTop = at.top
+        scroller.scrollLeft = at.left
+      } else {
+        const card = wrap.querySelector(`[data-id="${CSS.escape(ui.focus)}"]`)
+        if (card) {
+          scroller.scrollLeft = Math.max(0, card.offsetLeft - (scroller.clientWidth - card.offsetWidth) / 2)
+          scroller.scrollTop = Math.max(0, card.offsetTop - (scroller.clientHeight - card.offsetHeight) / 2)
+        }
+      }
     })
+    return [bar, scroller]
+  }
+
+  function flowList(g) {
+    graph = null
+    const rows = flowRows(g)
+    if (!rows.length) return [h('p', { class: 'fl-sub' }, ui.status === 'working' ? 'None of your tickets is in progress. In flight or All shows the rest.' : 'No tickets match these filters.')]
+    const stepLabel = (step) => (step.ids.length === 1 ? nodeText(g, g.nodes.get(step.ids[0])).short : step.kinds.map(([kind, n]) => `${n} ${kindName(kind, n)}`).join(', '))
+    const lone = rows.filter((row) => row.loose && row.ids.size === 1)
+    const loneRow = (row) => {
+      const node = g.nodes.get(row.anchor)
+      const text = nodeText(g, node)
+      return attachTip(h('div', { class: 'fl-lone', 'data-id': node.id },
+        h('span', { class: `fl-kind k-${node.kind}` }, capital(kindName(node.kind, 1))),
+        text.key ? h('span', { class: 'fl-nk' }, text.key) : null,
+        h('span', { class: 'fl-flow-t' }, text.title),
+        timeBadge(node),
+        text.open ? h('button', { class: 'fl-open', type: 'button', title: text.open[0], 'aria-label': text.open[0], onclick: () => text.open[1]() }, '↗') : null,
+        looseLink(node)), () => detailOf(g, node))
+    }
+    const list = h('div', { class: 'fl-flows' }, rows.filter((row) => !lone.includes(row)).map((row) => {
+      const anchor = g.nodes.get(row.anchor)
+      const text = nodeText(g, anchor)
+      const live = [...row.ids].some((id) => g.nodes.get(id).kind === 'session' && isWorking(g.nodes.get(id).at))
+      const steps = shape(g, row.ids)
+      const go = () => focusOn(row.anchor)
+      return attachTip(h('div', { class: `fl-flow${row.loose ? ' loose' : ''}${live ? ' working' : ''}`, role: 'button', tabindex: 0, onclick: go, onkeydown: keyed(go) },
+        h('div', { class: 'fl-flow-top' }, h('span', { class: `fl-kind k-${anchor.kind}` }, capital(kindName(anchor.kind, 1))), text.key && text.key !== 'Slack' ? h('span', { class: 'fl-nk' }, text.key) : null, h('span', { class: 'fl-flow-t' }, text.title), timeBadge({ ...anchor, at: row.at }, live)),
+        h('div', { class: 'fl-flow-shape' }, steps.map((step, i) => [i ? h('span', { class: 'fl-arrow', 'aria-hidden': 'true' }, '→') : null, h('span', { class: `fl-chip k-${step.kinds.length === 1 ? step.kinds[0][0] : 'mixed'}` }, stepLabel(step))]),
+          h('span', { class: 'fl-flow-tags' },
+            row.groups.map((id) => h('button', { class: 'fl-tag', type: 'button', title: `Follow everything under ${nodeText(g, g.nodes.get(id)).title}`, onclick: (event) => { event.stopPropagation(); focusOn(id) } }, `${capital(kindName(g.nodes.get(id).kind, 1))} ${nodeText(g, g.nodes.get(id)).short}`)),
+            anchor.loose ? looseLink(anchor) : null))), () => detailOf(g, anchor))
+    }), lone.length ? [h('div', { class: 'fl-map-sep' }, 'Recent sessions and your MRs with no ticket'), h('div', { class: 'fl-lones' }, lone.map(loneRow))] : null)
+    const scroller = h('div', { class: 'fl-map-scroll' }, list)
+    const at = ui.mapScroll?.focus === null ? ui.mapScroll : null
+    scroller.addEventListener('scroll', () => { ui.mapScroll = { focus: null, top: scroller.scrollTop, left: 0 } })
+    if (at) requestAnimationFrame(() => { scroller.scrollTop = at.top })
+    return [scroller]
+  }
+
+  function mapView(list) {
+    const graphOf = (tickets, threads) => mapGraph({ tickets, threads, sessions: data.sessions, sessionLinks: data.sessionLinks ?? [], mrs: data.mrs, looseSessions: data.loose.sessions, looseMrs: data.loose.mrs })
+    let g = graphOf(list, slackThreads())
+    let wide = false
+    if (ui.focus && !g.nodes.has(ui.focus)) {
+      const all = graphOf(derived, data.threads ?? [])
+      if (all.nodes.has(ui.focus)) [g, wide] = [all, true]
+    }
+    const focused = ui.focus && g.nodes.has(ui.focus)
+    if (ui.focus && !focused && /^[sm]:/.test(ui.focus)) return unmapped(ui.focus)
     return h('div', { class: 'fl-card' },
-      h('h3', {}, 'Epic → ticket → session → merge request'),
-      h('p', { class: 'fl-sub' }, 'Hover anything to light up its chain. Dashed cards have no ticket, and Link… attaches one by hand.'),
-      list.length ? wrap : h('p', { class: 'fl-sub' }, 'No tickets match these filters.'))
+      h('h3', {}, focused ? 'How this piece of work flowed' : 'Flows'),
+      h('p', { class: 'fl-sub' }, focused
+        ? 'What led here is to the left, what came from it to the right, in the order it happened. Sessions that started, forked, handed off to or messaged another session chain on to it. Click any card to follow the flow from there, or ↗ to open it. +N more means linked items that are not on this path.'
+        : 'One row per piece of work, latest first: the ticket or Slack thread it started from, then each step that came out of it. Click a row to follow it, or an epic or channel tag to see everything under it. Dashed rows have no ticket, and Link… attaches one by hand.'),
+      ...(focused ? focusView(g, wide) : flowList(g)))
+  }
+
+  function unmapped(focus) {
+    const session = focus.startsWith('s:')
+    const id = focus.slice(2)
+    return h('div', { class: 'fl-card' },
+      h('h3', {}, session ? 'This session is not on the map yet' : 'This merge request is not on the map yet'),
+      h('p', { class: 'fl-sub' }, session
+        ? 'It has no ticket, Slack thread or linked session, and it is not one of the recent sessions with no ticket. A session joins the map when its git branch has a ticket key, it works on a ticket\'s MR, it mentions a key at least twice, it reads a Slack thread, or another session started, forked, handed off to or messaged it.'
+        : 'No ticket, Slack thread or session leads to it, and it is not one of your ten newest open MRs with no ticket. An MR joins the map when Jira links it, its branch or title has a ticket key, or a session on the map worked on it.'),
+      h('div', { class: 'fl-focusbar' },
+        h('button', { class: 'btn small', type: 'button', onclick: () => set({ focus: null, trail: [], linking: null }) }, '← All flows'),
+        session ? h('button', { class: 'btn small', type: 'button', onclick: () => openSession(id) }, 'Back to the session') : h('a', { class: 'btn small', href: id, target: '_blank', rel: 'noopener' }, 'Open in GitLab ↗'),
+        linkBox(session ? 'session' : 'mr', id)))
+  }
+
+  function show(id) {
+    hideTip()
+    closeDetail()
+    Object.assign(ui, { view: 'map', focus: id, trail: [], linking: null, mapScroll: null })
+    save()
+    if (data) render()
   }
 
   function drawLinks(wrap, svg) {
@@ -587,17 +814,19 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     svg.setAttribute('width', box.width)
     svg.setAttribute('height', box.height)
     const rect = (id) => wrap.querySelector(`[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect()
-    svg.replaceChildren(...graph.links.map(([a, b]) => {
-      const ra = rect(a)
-      const rb = rect(b)
-      if (!ra || !rb) return null
+    svg.replaceChildren(...graph.links.flatMap(({ from, to, kind }) => {
+      const ra = rect(from)
+      const rb = rect(to)
+      if (!ra || !rb) return []
       const x1 = ra.right - box.left
       const y1 = ra.top + ra.height / 2 - box.top
       const x2 = rb.left - box.left
       const y2 = rb.top + rb.height / 2 - box.top
       const dx = Math.max(24, (x2 - x1) / 2)
-      return s('path', { class: 'fl-link', 'data-a': a, 'data-b': b, d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}` })
-    }).filter(Boolean))
+      const path = s('path', { class: `fl-link k-${kind}`, 'data-a': from, 'data-b': to, d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}` })
+      const label = SESSION_LINK_LABEL[kind]
+      return label ? [path, s('text', { class: `fl-link-label k-${kind}`, 'data-a': from, 'data-b': to, x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 5, 'text-anchor': 'middle' }, label)] : [path]
+    }))
   }
 
   function highlight(id) {
@@ -605,7 +834,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     if (!wrap || !graph) return
     if (!id) {
       wrap.querySelectorAll('.fl-node').forEach((node) => node.classList.remove('dim', 'hl'))
-      wrap.querySelectorAll('.fl-link').forEach((link) => link.classList.remove('dim', 'hl'))
+      wrap.querySelectorAll('.fl-link, .fl-link-label').forEach((link) => link.classList.remove('dim', 'hl'))
       return
     }
     const lit = new Set([id])
@@ -619,7 +848,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
       node.classList.toggle('dim', !lit.has(node.dataset.id))
       node.classList.toggle('hl', node.dataset.id === id)
     })
-    wrap.querySelectorAll('.fl-link').forEach((link) => {
+    wrap.querySelectorAll('.fl-link, .fl-link-label').forEach((link) => {
       const on = lit.has(link.dataset.a) && lit.has(link.dataset.b)
       link.classList.toggle('hl', on)
       link.classList.toggle('dim', !on)
@@ -651,6 +880,8 @@ export function createFlowView(root, { openSession, postJson, reload }) {
           row('Epic → ticket', 'The Jira parent'),
           row('Ticket → MR', 'MR links GitLab wrote on the ticket, then the key in the MR branch, then the first key in the MR title'),
           row('Ticket → session', 'The key in the session\'s git branch, then the session working on one of the ticket\'s MRs, then the key mentioned at least twice (top three keys only)'),
+          row('Session → session', 'Claude desktop\'s record that a session was started as a task from, or forked from, another one; a handoff document one session wrote and the next one was told to read; or messages one session sent to another. A ticket line to a session that is already reached through another session is left out, so the chain shows.'),
+          row('Slack thread → session', 'A Slack link you pasted into a prompt, or a thread the session read with the Slack tools. The thread title is its first message; channel names come from Slack text the sessions saw. MRs those sessions worked on follow the thread.'),
           row('Anything else', 'Link… on the Map, saved in data/flow-links.json')),
         h('h3', { style: 'margin-top:16px' }, 'Reporting a time from a skill'),
         h('pre', { class: 'fl-pre' }, `curl -s -X POST http://localhost:4747/api/flow/milestone \\
@@ -675,7 +906,7 @@ export function createFlowView(root, { openSession, postJson, reload }) {
     }
     const list = shown()
     const body = []
-    if (ui.view === 'overview') body.push(kpis(list), gapChart(list), ticketList(list))
+    if (ui.view === 'overview') body.push(kpis(statsFor(list)), gapChart(statsFor(list)), ticketList(list))
     if (ui.view === 'map') body.push(mapView(list))
     if (ui.view === 'how') body.push(howView())
     const empty = !data.tickets.length && !data.refreshing ? h('div', { class: 'fl-callout' }, 'Jira returned no tickets for your JQL. Check it in Jira settings.') : null
@@ -697,5 +928,5 @@ export function createFlowView(root, { openSession, postJson, reload }) {
   }
 
   render()
-  return { update, render, leave, busy: () => ui.busy || Boolean(data?.refreshing) }
+  return { update, render, leave, show, busy: () => ui.busy || Boolean(data?.refreshing) }
 }

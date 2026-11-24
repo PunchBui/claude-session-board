@@ -32,6 +32,7 @@ function place(target) {
 function fill(content) {
   const box = element()
   box.replaceChildren()
+  box.classList.toggle('wide', Boolean(content.wide))
   const heading = document.createElement('b')
   heading.textContent = content.heading
   const text = document.createElement('p')

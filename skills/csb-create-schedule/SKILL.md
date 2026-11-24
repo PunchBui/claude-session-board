@@ -69,6 +69,7 @@ Errors come back as `{"error": "..."}` (bad folder, past time, bad repeat, block
 
 ## Notes
 
+- Schedules often fire just after the laptop wakes, so the network, VPN or MCP servers may not be connected yet. When writing a prompt that depends on MCP tools, add a line telling the run: if a tool is unreachable, wait a few minutes, retry (up to three times), and only then report it.
 - A one-off switches itself off after it fires. A missed time fires once when the board is next running, then moves to the next slot.
 - Don't run the prompt now to "test" it: that is a real session and a real cost. Offer **Run now** on the Schedule tab instead.
 - Do not edit or delete other schedules from this skill.

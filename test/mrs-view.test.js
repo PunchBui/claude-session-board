@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FILTERS, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, deployOffered, deployView, deployFocusId, refreshStatus, MRS_POLL_MS, DEPLOY_STALL_MS, BABYSIT_STALL_MS } from '../public/mrs.js'
+import { FILTERS, workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, MRS_POLL_MS, DEPLOY_STALL_MS, BABYSIT_STALL_MS } from '../public/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -236,4 +236,55 @@ test('the refresh line says refreshing while a load is running and due once the 
 test('the refresh line says automatic refresh is off when the page interval is off', () => {
   assert.match(refreshStatus({ fetchedAt: NOW - 5_000, at: NOW - 5_000, loading: false, autoOff: true }, NOW, fmt), /\(5s ago\) · auto refresh off$/)
   assert.match(refreshStatus({ fetchedAt: NOW - 5_000, at: NOW - 5_000, loading: true, autoOff: true }, NOW, fmt), /refreshing now$/)
+})
+
+test('mrsHref carries each merge request url and falls back to the bare page', () => {
+  const a = 'https://gitlab.example/g/p/-/merge_requests/1'
+  const b = 'https://gitlab.example/g/q/-/merge_requests/2'
+  assert.equal(mrsHref([]), '/mrs')
+  assert.equal(mrsHref(), '/mrs')
+  assert.deepEqual(pickedMrs(mrsHref([a, b]).replace('/mrs', '')), [a, b])
+  assert.deepEqual(pickedMrs(''), [])
+})
+
+test('viewShowing keeps the view when every picked merge request is visible', () => {
+  const now = Date.now()
+  const all = [{ url: 'a', role: 'authored', updatedAt: now }, { url: 'b', role: 'reviewing', updatedAt: now }]
+  const view = { filter: 'authored', temp: null }
+  assert.equal(viewShowing(all, ['a'], view, now), view)
+  assert.equal(viewShowing(all, ['gone'], view, now), view)
+})
+
+test('viewShowing clears the filter and temperature when a picked merge request is hidden', () => {
+  const now = Date.now()
+  const all = [{ url: 'a', role: 'authored', updatedAt: now }, { url: 'b', role: 'reviewing', updatedAt: now }]
+  assert.deepEqual(viewShowing(all, ['b'], { filter: 'authored', temp: 'cool', at: 5 }, now), { filter: 'all', temp: null, at: 5 })
+})
+
+test('workingCount counts only the sessions working now', () => {
+  assert.equal(workingCount({ sessions: [{ working: true }, { working: false }, { working: true }, {}] }), 2)
+  assert.equal(workingCount({ sessions: [] }), 0)
+  assert.equal(workingCount({}), 0)
+})
+
+test('a new chat about an MR is prefilled with its link and title', () => {
+  const item = mr(7, { title: 'Fix child rate rounding' })
+  assert.equal(withMrReference('', item), `Merge request: ${item.url}\nFix child rate rounding\n\n`)
+})
+
+test('a reference is added after what was already typed, and never twice', () => {
+  const item = mr(7, { title: 'Fix it' })
+  const once = withMrReference('Review the tests\n', item)
+  assert.equal(once, `Review the tests\n\nMerge request: ${item.url}\nFix it\n\n`)
+  assert.equal(withMrReference(once, item), once)
+})
+
+test('the reply plan can be approved only while the babysit waits on one for an open merge request', () => {
+  const plan = { state: 'needs-you', note: '3 review threads: reply plan ready', sessionId: 'local_5dd7e1f0-0000-4000-8000-000000000001', at: NOW }
+  assert.equal(replyPlanOffered({ mergedAt: null, babysit: plan }), true)
+  assert.equal(replyPlanOffered({ mergedAt: 5, babysit: plan }), false)
+  assert.equal(replyPlanOffered({ mergedAt: null, babysit: { ...plan, note: 'Merge conflicts with main' } }), false)
+  assert.equal(replyPlanOffered({ mergedAt: null, babysit: { ...plan, state: 'watching' } }), false)
+  assert.equal(replyPlanOffered({ mergedAt: null, babysit: { ...plan, sessionId: null } }), false)
+  assert.equal(replyPlanOffered({ mergedAt: null }), false)
 })

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveTicket, outOfOrder, workingMs, fmtSpan, percentile, gapRows, kpiValues, inRange, matchesFilter, DAY_MS } from '../public/flow.js'
+import { deriveTicket, outOfOrder, workingMs, fmtSpan, percentile, gapRows, kpiValues, inRange, matchesFilter, mapActivity, isWorking, isMyWorkingTicket, WORKING_MS, DAY_MS } from '../public/flow.js'
 
 const H = 3_600_000
 const MON = new Date(2026, 10, 16, 9).getTime()
@@ -95,4 +95,50 @@ test('range keeps open tickets and tickets done inside it; filters match epic, s
   assert.equal(matchesFilter(open, { epic: 'null' }), true)
   assert.equal(matchesFilter(open, { status: 'done' }), false)
   assert.equal(matchesFilter(open, { query: 'open' }), true)
+})
+
+test('map activity is the latest thing that happened on a card, rolled up to its epic', () => {
+  const tickets = [
+    { key: 'A-1', epic: 'E-1', updatedAt: 100, sessions: ['s1'], mrs: [] },
+    { key: 'A-2', epic: 'E-2', updatedAt: 500, sessions: [], mrs: ['m1'] },
+    { key: 'A-3', epic: 'E-1', updatedAt: 50, sessions: [], mrs: [] },
+  ]
+  const sessions = [{ id: 's1', lastActivityAt: 900 }]
+  const mrs = [{ url: 'm1', updatedAt: 700, mergedAt: null, createdAt: 10 }]
+  const at = mapActivity({ tickets, sessions, mrs })
+  assert.equal(at.get('t:A-1'), 900)
+  assert.equal(at.get('t:A-2'), 700)
+  assert.equal(at.get('t:A-3'), 50)
+  assert.equal(at.get('e:E-1'), 900)
+  assert.equal(at.get('e:E-2'), 700)
+})
+
+test('map activity covers loose sessions and MRs, and a session counts as working for five minutes', () => {
+  const at = mapActivity({ looseSessions: [{ id: 's9', lastActivityAt: 40 }], looseMrs: [{ url: 'm9', createdAt: 5, mergedAt: 30 }] })
+  assert.deepEqual([at.get('s:s9'), at.get('m:m9')], [40, 30])
+  assert.equal(isWorking(1000, 1000 + WORKING_MS - 1), true)
+  assert.equal(isWorking(1000, 1000 + WORKING_MS), false)
+  assert.equal(isWorking(null, 5), false)
+})
+
+test('my working tickets are mine, not done, and started, even when Jira was never moved', () => {
+  const now = at(100)
+  const make = (over) => deriveTicket({ key: 'A-1', mine: true, steps: { created: jira(0), experiment: { na: true }, ...over.steps }, ...over, steps: { created: jira(0), experiment: { na: true }, ...over.steps } }, { now })
+  const started = make({ steps: { sprint: jira(1), progress: jira(2) } })
+  const viaMr = make({ steps: { sprint: jira(1), mr: gitlab(5) } })
+  const notStarted = make({ steps: { sprint: jira(1) } })
+  const done = make({ steps: { progress: jira(2), done: jira(9) } })
+  const theirs = make({ mine: false, steps: { progress: jira(2) } })
+  assert.deepEqual([started, viaMr, notStarted, done, theirs].map(isMyWorkingTicket), [true, true, false, false, false])
+  assert.equal(matchesFilter(started, { status: 'working' }), true)
+  assert.equal(matchesFilter(theirs, { status: 'working' }), false)
+})
+
+test('a working ticket untouched for longer than the range is left out', () => {
+  const now = at(24 * 60)
+  const stale = deriveTicket({ key: 'A-1', mine: true, updatedAt: at(1), steps: { created: jira(0), progress: jira(1), experiment: { na: true } } }, { now })
+  const fresh = deriveTicket({ key: 'A-2', mine: true, updatedAt: now - DAY_MS, steps: { created: jira(0), progress: jira(1), experiment: { na: true } } }, { now })
+  assert.equal(matchesFilter(stale, { status: 'working', since: now - 30 * DAY_MS }), false)
+  assert.equal(matchesFilter(fresh, { status: 'working', since: now - 30 * DAY_MS }), true)
+  assert.equal(matchesFilter(stale, { status: 'active', since: now - 30 * DAY_MS }), true)
 })

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFlow, ticketKeys, reviewPattern, parseMilestoneInput, recordMilestone, recordLink, DEFAULT_REVIEW_STATUS } from '../lib/flow.js'
+import { buildFlow, sessionGraph, ticketKeys, reviewPattern, parseMilestoneInput, recordMilestone, recordLink, DEFAULT_REVIEW_STATUS } from '../lib/flow.js'
 
 const H = 3_600_000
 const T0 = Date.UTC(2026, 10, 2, 3)
@@ -176,6 +176,13 @@ test('manual links and milestones override what was found', () => {
   assert.equal(flow.loose.mrs.length, 0)
 })
 
+test('a ticket is mine when its assignee is me, falling back to whether the search found it', () => {
+  const flow = buildFlow({ jira: { me: { id: 'me' }, issues: [issue('ABC-1', { assignee: { id: 'me', name: 'Me' } }), issue('ABC-2', { assignee: { id: 'ann', name: 'Ann' } }), issue('ABC-3', { assignee: null })], mrLinks: {} } })
+  assert.deepEqual(flow.tickets.map((row) => [row.key, row.mine, row.assignee]), [['ABC-1', true, 'Me'], ['ABC-2', false, 'Ann'], ['ABC-3', false, null]])
+  const old = buildFlow({ jira: { issues: [issue('ABC-4', { fromSearch: true }), issue('ABC-5', { fromSearch: false })], mrLinks: {} } })
+  assert.deepEqual(old.tickets.map((row) => row.mine), [true, false])
+})
+
 test('epics in the search results become epics, not tickets', () => {
   const flow = buildFlow({ jira: { issues: [issue('ABC-1', { isEpic: true, epic: null, type: 'Epic' }), issue('ABC-7')], mrLinks: {} } })
   assert.deepEqual(flow.tickets.map((row) => row.key), ['ABC-7'])
@@ -204,4 +211,34 @@ test('links are set and cleared', () => {
   assert.deepEqual(store, { mr: { [MR_A]: 'ABC-7' }, session: {} })
   store = recordLink(store, { kind: 'mr', id: MR_A, ticket: null })
   assert.deepEqual(store.mr, {})
+})
+
+test('sessions link to sessions they were spawned or forked from, picked up a handoff from, or messaged', () => {
+  const edges = sessionGraph([
+    session('a', { createdAt: at(1), handoffWrites: ['/tmp/handoff-a.md'] }),
+    session('b', { parent: { id: 'a', kind: 'fork' }, handoffReads: ['/tmp/handoff-a.md'] }),
+    session('c', { handoffReads: ['/tmp/handoff-a.md'], peers: ['a', 'gone'] }),
+    session('d', { parent: { id: 'missing', kind: 'task' } }),
+  ])
+  assert.deepEqual(edges, [{ from: 'a', to: 'b', kind: 'fork' }, { from: 'a', to: 'c', kind: 'handoff' }])
+})
+
+test('a session with no ticket joins the flow through the session it came from, with the MRs it worked on', () => {
+  const flow = buildFlow({
+    jira: { issues: [issue('ABC-12')], mrLinks: {} },
+    mrs: [mr(MR_A, { branch: 'abc-12-fix' }), mr(MR_B, { state: 'opened', mergedAt: null }), mr(MR_C, { state: 'closed', mergedAt: null })],
+    sessions: [
+      session('s1', { branches: [{ name: 'abc-12-fix', firstAt: at(2) }] }),
+      session('s2', { parent: { id: 's1', kind: 'task' }, mrUrls: [MR_B, MR_C] }),
+      session('s3', { parent: { id: 's2', kind: 'fork' } }),
+      session('lone', { lastActivityAt: Date.now() }),
+    ],
+  })
+  assert.deepEqual(flow.sessions.map((row) => row.id), ['s1', 's2', 's3'])
+  assert.deepEqual(flow.sessions[1].tickets, [])
+  assert.deepEqual(flow.sessions[1].mrs, [MR_B])
+  assert.ok(flow.mrs.some((row) => row.url === MR_B))
+  assert.ok(!flow.loose.mrs.some((row) => row.url === MR_B))
+  assert.deepEqual(flow.sessionLinks, [{ from: 's1', to: 's2', kind: 'task' }, { from: 's2', to: 's3', kind: 'fork' }])
+  assert.deepEqual(flow.loose.sessions.map((row) => row.id), ['lone'])
 })

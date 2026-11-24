@@ -57,6 +57,8 @@ test('an issue is normalized with sorted status changes, sprint changes, epic an
   assert.equal(issue.sprintChanges.length, 1)
   assert.equal(issue.sprints[0].startAt, Date.parse('2026-11-03T03:00:00.000Z'))
   assert.equal(issue.hasRemoteLinks, true)
+  assert.equal(issue.assignee, null)
+  assert.deepEqual(normalizeIssue(rawIssue('ABC-9', { fields: { assignee: { accountId: 'a1', displayName: 'Ann' } } })).assignee, { id: 'a1', name: 'Ann' })
   assert.equal(issue.createdAt, Date.parse('2026-11-02T10:00:00.000+0700'))
 })
 
@@ -76,6 +78,7 @@ function fakeClient({ search = [], bulk = [], links = {}, changelog = {} } = {})
     calls,
     statuses: async () => [{ id: '1', statusCategory: { key: 'new' } }, { id: '3', statusCategory: { key: 'indeterminate' } }, { id: '5', statusCategory: { key: 'done' } }],
     fields: async () => { calls.fields += 1; return [{ id: 'customfield_10020', schema: { custom: 'com.pyxis.greenhopper.jira:gh-sprint' } }] },
+    myself: async () => ({ accountId: 'acc-me', displayName: 'Me' }),
     search: async () => structuredClone(search),
     bulk: async (keys) => { calls.bulk.push(keys); return structuredClone(bulk.filter((raw) => keys.includes(raw.key))) },
     changelog: async (key) => changelog[key] ?? [],
@@ -97,6 +100,8 @@ test('a sync searches, fetches extra keys, and reads remote links only for issue
   assert.deepEqual(result.mrLinks, { 'ABC-7': ['https://gitlab.example.com/a/b/-/merge_requests/83'] })
   assert.equal(result.sprintField, 'customfield_10020')
   assert.equal(result.fetchedAt, 5)
+  assert.deepEqual(result.me, { id: 'acc-me', name: 'Me' })
+  assert.deepEqual(result.issues.map((issue) => issue.fromSearch), [true, true])
 })
 
 test('a second sync reuses remote links and the sprint field when the issue did not change', async () => {

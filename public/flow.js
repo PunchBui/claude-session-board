@@ -181,10 +181,44 @@ export function kpiValues(derived, work = false) {
   })
 }
 
-export function matchesFilter(derived, { epic = 'all', status = 'all', query = '' } = {}) {
+export const isMyWorkingTicket = (derived) => Boolean(derived.mine) && !derived.done && derived.reached.some((step) => step.id !== 'created' && step.id !== 'sprint')
+
+export const lastTouched = (derived) => Math.max(derived.updatedAt ?? 0, ...derived.reached.map((step) => derived.steps[step.id]?.at ?? 0))
+
+export function matchesFilter(derived, { epic = 'all', status = 'all', query = '', since = 0 } = {}) {
   if (epic !== 'all' && String(derived.epic) !== epic) return false
+  if (status === 'working' && (!isMyWorkingTicket(derived) || lastTouched(derived) < since)) return false
   if (status === 'active' && derived.done) return false
   if (status === 'done' && !derived.done) return false
   const q = query.trim().toLowerCase()
   return !q || `${derived.key} ${derived.title}`.toLowerCase().includes(q)
 }
+
+export const WORKING_MS = 5 * 60_000
+
+const latest = (...values) => Math.max(0, ...values.filter(Number.isFinite))
+
+export function mapActivity({ tickets = [], sessions = [], mrs = [], looseSessions = [], looseMrs = [] }) {
+  const at = new Map()
+  const sessionAt = new Map(sessions.map((item) => [item.id, latest(item.lastActivityAt)]))
+  const mrAt = new Map(mrs.map((item) => [item.url, latest(item.updatedAt, item.mergedAt, item.createdAt)]))
+  for (const [id, value] of sessionAt) at.set(`s:${id}`, value)
+  for (const [url, value] of mrAt) at.set(`m:${url}`, value)
+  for (const item of looseSessions) at.set(`s:${item.id}`, latest(item.lastActivityAt))
+  for (const item of looseMrs) at.set(`m:${item.url}`, latest(item.createdAt, item.mergedAt))
+  const epics = new Map()
+  for (const ticket of tickets) {
+    const value = latest(
+      ticket.updatedAt,
+      ...(ticket.sessions ?? []).map((id) => sessionAt.get(id)),
+      ...(ticket.mrs ?? []).map((url) => mrAt.get(url)),
+    )
+    at.set(`t:${ticket.key}`, value)
+    const epic = `e:${ticket.epic ?? 'none'}`
+    epics.set(epic, Math.max(epics.get(epic) ?? 0, value))
+  }
+  for (const [id, value] of epics) at.set(id, value)
+  return at
+}
+
+export const isWorking = (lastActivityAt, now = Date.now()) => Number.isFinite(lastActivityAt) && now - lastActivityAt < WORKING_MS

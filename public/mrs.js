@@ -37,6 +37,18 @@ export function visibleMrs(all, { filter = 'all', temp = null, now = Date.now() 
   return orderMrs(all.filter((mr) => match(mr) && (!temp || mrTemperature(mr, now).group === temp)))
 }
 
+export const workingCount = (mr) => (mr.sessions ?? []).filter((session) => session.working).length
+
+export const mrsHref = (urls = []) => (urls.length ? `/mrs?${urls.map((url) => `mr=${encodeURIComponent(url)}`).join('&')}` : '/mrs')
+
+export const pickedMrs = (search) => new URLSearchParams(search).getAll('mr')
+
+export function viewShowing(all, picked, view, now = Date.now()) {
+  const shown = new Set(visibleMrs(all, { ...view, now }).map((mr) => mr.url))
+  const hidden = picked.some((url) => !shown.has(url) && all.some((mr) => mr.url === url))
+  return hidden ? { ...view, filter: 'all', temp: null } : view
+}
+
 export function tempCounts(all, now = Date.now()) {
   const counts = { warm: 0, cool: 0 }
   for (const mr of all) counts[mrTemperature(mr, now).group] += 1
@@ -89,6 +101,12 @@ export function babysitView(entry, now = Date.now()) {
 export const babysitOffered = (mr, now = Date.now()) =>
   mr.role === 'authored' && fixOffered(mr) && !babysitView(mr.babysit, now)?.active && mr.babysit?.state !== 'merged'
 
+export function withMrReference(current, mr) {
+  const reference = `Merge request: ${mr.url}\n${mr.title}\n\n`
+  const kept = current.trim()
+  return kept.includes(mr.url) ? current : kept ? `${kept}\n\n${reference}` : reference
+}
+
 export const folderName = (mr) => mr.folder?.split('/').filter(Boolean).pop() ?? ''
 
 export const babysitFocusId = (mr) => (mr.mergedAt ? null : mr.babysit?.sessionId ?? null)
@@ -134,3 +152,6 @@ export function refreshStatus({ fetchedAt, at, loading, autoOff }, now, format) 
   const remaining = at + MRS_POLL_MS - now
   return `${updated} · ${remaining > 0 ? `next refresh in ${spanLabel(remaining)}` : 'next refresh due'}`
 }
+
+export const replyPlanOffered = (mr) =>
+  !mr.mergedAt && mr.babysit?.state === 'needs-you' && Boolean(mr.babysit.sessionId) && /reply plan ready/i.test(mr.babysit.note ?? '')
