@@ -4,6 +4,7 @@ import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
+import { quickReplies } from './quickreply.js'
 import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
@@ -1776,6 +1777,22 @@ function renderComposer(c) {
   if (ui.popover === 'schedule') dock.append(renderSchedulePopover(c, box))
   const attachments = renderAttachments(c)
   if (attachments) dock.append(attachments)
+  const replies = quickReplies(c)
+  if (replies.length) {
+    const chips = el('div', 'quick-replies')
+    for (const reply of replies) {
+      const chip = el('button', 'quick-reply', reply.label)
+      chip.title = `Send "${reply.prompt}"`
+      chip.onclick = () => {
+        chips.querySelectorAll('button').forEach((b) => { b.disabled = true })
+        const sender = document.createElement('textarea')
+        sender.value = reply.prompt
+        submitPrompt(c.id, sender)
+      }
+      chips.append(chip)
+    }
+    dock.append(chips)
+  }
   dock.append(composer, note)
   syncSlash(c.id, dock, box)
   requestAnimationFrame(() => autosize(box))
