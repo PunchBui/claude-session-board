@@ -566,7 +566,7 @@
   .muted { color: var(--muted); }
 
   .dock { position: relative; }
-  .quick-replies { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .quick-replies { max-width: var(--col, 820px); margin: 0 auto 8px; padding: 0 6px; display: flex; flex-wrap: wrap; gap: 6px; }
   .quick-reply { font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line, #d8d6d0); background: transparent; color: inherit; cursor: pointer; }
   .quick-reply:hover:not(:disabled) { border-color: var(--text); }
   .quick-reply:disabled { opacity: 0.5; cursor: default; }
