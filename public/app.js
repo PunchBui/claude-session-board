@@ -82,6 +82,8 @@ try {
   state.alertsOn = localStorage.getItem('board.alerts') === '1'
   state.usage.days = Number(localStorage.getItem('board.usageDays')) || 30
   Object.assign(state.panel, JSON.parse(localStorage.getItem('board.panel') || '{}'))
+  // On a phone the panel covers the whole chat, so it never comes back open after a reload.
+  if (isMobile()) state.panel.open = false
   state.usage.metric = localStorage.getItem('board.usageMetric') || 'output'
   state.skills.days = [7, 30, 90].includes(Number(localStorage.getItem('board.skillsDays'))) ? Number(localStorage.getItem('board.skillsDays')) : 30
   state.skills.sort = SKILL_SORTS.includes(localStorage.getItem('board.skillsSort')) ? localStorage.getItem('board.skillsSort') : 'uses'
@@ -1568,16 +1570,37 @@ function insertSnippet(c, box, snippet) {
   if (field) { field.focus(); field.setSelectionRange(next.length, next.length) }
 }
 
+// Header for a composer popover, with its own Close button: a phone has no Esc key.
+function popoverHead(c, title) {
+  const head = el('div', 'pop-head')
+  const close = el('button', 'icon-only pop-close')
+  close.type = 'button'
+  close.title = 'Close'
+  close.setAttribute('aria-label', 'Close')
+  close.append(icon('x', { size: 16 }))
+  close.onclick = () => closePopover(c.id)
+  head.append(el('h4', undefined, title), close)
+  return head
+}
+
+function closePopover(id) {
+  const ui = uiOf(id)
+  if (!ui.popover) return
+  ui.popover = null
+  renderFocus()
+}
+
 function renderSnippetPopover(c, box) {
   const ui = uiOf(c.id)
   const pop = el('div', 'popover')
-  pop.append(el('h4', undefined, 'Prompt shortcuts'))
+  pop.append(popoverHead(c, 'Prompt shortcuts'))
   const list = el('div', 'snip-list')
   for (const snippet of state.snippets) {
     const row = el('div', 'snip')
     const remove = el('button')
-    remove.append(icon('x', { size: 14 }))
+    remove.append(icon('trash', { size: 14 }))
     remove.title = 'Delete shortcut'
+    remove.setAttribute('aria-label', `Delete shortcut ${snippet.label}`)
     remove.onclick = (event) => { event.stopPropagation(); postJson('/api/snippets/remove', { sid: snippet.sid }).then(({ data }) => { state.snippets = data.items ?? state.snippets; renderFocus() }) }
     row.append(el('span', 'l', snippet.label), el('span', 't', snippet.text), remove)
     row.onclick = () => insertSnippet(c, box, snippet)
@@ -1608,7 +1631,7 @@ function renderSchedulePopover(c, box) {
   const ui = uiOf(c.id)
   if (!ui.at) ui.at = toLocalInput(Date.now() + 3600_000)
   const pop = el('div', 'popover')
-  pop.append(el('h4', undefined, 'Send the text in the box later'))
+  pop.append(popoverHead(c, 'Send the text in the box later'))
   const row = el('div', 'row')
   const when = document.createElement('input')
   when.type = 'datetime-local'
@@ -2238,7 +2261,7 @@ function mrLinks(c) {
   all.onclick = (event) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return
     event.preventDefault()
-    navigate(href)
+    navigate(href, { back: true })
   }
   box.append(all)
   return box
@@ -2290,22 +2313,21 @@ function renderCard(c) {
   }
   const actions = el('div', 'head-actions')
   const phone = isMobile()
-  actions.append(...[tempBadge(heat, c), loopBadge(c.loop), live, switcher, sideChatButton(c), tasksButton(c), lifecycleButton(c), step, openLink(c.id)].filter(Boolean))
-  row.append(starButton(c.id), titleBox)
+  actions.append(...[phone && starButton(c.id), tempBadge(heat, c), loopBadge(c.loop), live, switcher, sideChatButton(c), tasksButton(c), lifecycleButton(c), step, openLink(c.id)].filter(Boolean))
   if (phone) {
-    // Phone: the actions, including Chat/Changes, fold behind a ... button.
-    const more = el('button', 'icon-only more-btn')
-    more.append(icon('more', { size: 18 }))
-    more.setAttribute('aria-label', 'Session actions')
-    more.setAttribute('aria-expanded', String(Boolean(ui.more)))
-    more.onclick = () => { ui.more = !ui.more; renderFocus() }
-    row.append(more)
+    // Phone: the star, the actions (Chat/Changes included) and the token row all fold behind
+    // the ⋯ in the header (renderMobileHeader), so the chat gets the screen.
     card.classList.toggle('more-open', Boolean(ui.more))
+    if (ui.more) {
+      row.append(actions)
+      head.append(row)
+    }
+  } else {
+    row.append(starButton(c.id), titleBox, actions)
+    head.append(row)
   }
-  row.append(actions)
-  head.append(row)
   for (const part of [renderAttention(c), ui.pane === 'chat' ? null : renderNowDoing(c)]) if (part) head.append(part)
-  renderUsage(c, head)
+  if (!phone || ui.more) renderUsage(c, head)
   if (heat.group === 'cool') head.append(coolNudge(c))
 
   const dock = renderComposer(c)
@@ -2624,6 +2646,24 @@ function renderOthers(list) {
 
 function renderMobileHeader(current) {
   const box = $('m-title')
+  const back = isMobile() ? history.state?.back : null
+  $('m-back').hidden = !back
+  $('menu-btn').hidden = Boolean(back)
+  if (back) {
+    const label = back.startsWith('/focus') ? 'Back to the chat' : `Back to ${PAGE_TITLES[ROUTES[back.split('?')[0]]] ?? 'the previous page'}`
+    $('m-back').title = label
+    $('m-back').setAttribute('aria-label', label)
+  }
+  const more = $('m-more')
+  more.hidden = !(isMobile() && state.tab === 'focus' && !state.draft && current)
+  if (!more.hidden) {
+    // The session's ⋯ lives in the header on phones; a dot on it keeps the context warning visible.
+    const level = contextLevel(current.usage?.context ?? 0)
+    more.dataset.id = current.id
+    more.dataset.ctx = level ?? ''
+    more.title = level ? 'Session actions · context is getting full' : 'Session actions'
+    more.setAttribute('aria-expanded', String(Boolean(uiOf(current.id).more)))
+  }
   if (!isMobile()) return box.replaceChildren()
   const onFocus = state.tab === 'focus'
   const title = el('div', 'm-title-main', onFocus ? (state.draft ? 'New chat' : current?.title ?? 'Focus') : PAGE_TITLES[state.tab])
@@ -4453,7 +4493,7 @@ function renderSchedulePage() {
 }
 
 async function editSchedule(rid) {
-  navigate('/schedule')
+  navigate('/schedule', { back: true })
   await loadSchedule()
   const routine = state.schedule.data?.routines?.find((r) => r.rid === rid)
   if (routine) startEdit(routine)
@@ -4520,7 +4560,7 @@ function mapButton(focus, title, className, size) {
   b.onclick = (event) => {
     event.stopPropagation()
     flowView.show(focus)
-    navigate('/flow')
+    navigate('/flow', { back: true })
   }
   return b
 }
@@ -5247,8 +5287,10 @@ function readFilters() {
   $('archived').checked = params.get('archived') === '1'
 }
 
-function navigate(path) {
-  if (location.pathname + location.search !== path) history.pushState({}, '', path)
+// `back`: a page opened from inside another one (the Lifecycle map from a session, say) remembers
+// where it came from, so the phone header shows Back: a fullscreen web app has no browser Back button.
+function navigate(path, { back = false } = {}) {
+  if (location.pathname + location.search !== path) history.pushState(back ? { back: location.pathname + location.search } : {}, '', path)
   applyRoute()
 }
 
@@ -5554,6 +5596,25 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); stepSelected(event.key === 'ArrowDown' ? 1 : -1) }
   else if (event.key === '/' && $('side-q').offsetParent) { event.preventDefault(); $('side-q').focus() }
 })
+// A phone has no Esc: a tap on the chat closes the ⋯ panel, and a tap outside the composer closes
+// its popover or slash menu. pointerdown, because iOS does not send document-level clicks for taps on plain text.
+document.addEventListener('pointerdown', (event) => {
+  const card = event.target.closest?.('.stage .card')
+  if (!card) return
+  const id = card.dataset.id
+  const ui = state.ui.get(id)
+  if (!ui) return
+  let changed = false
+  if (ui.more && !event.target.closest('.card-head')) { ui.more = false; changed = true }
+  if (!event.target.closest('.dock')) {
+    if (ui.popover) { ui.popover = null; changed = true }
+    else if (ui.slashItems?.length) {
+      ui.slashDismissed = state.drafts.get(id) ?? ''
+      resyncSlash(id)
+    }
+  }
+  if (changed) renderFocus()
+})
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { state.unseen = 0; updateTitle() }
 })
@@ -5696,6 +5757,16 @@ if (/Electron/.test(navigator.userAgent)) {
   setupNavBar()
 }
 $('menu-btn').replaceChildren(icon('menu', { size: 22 }))
+$('m-back').append(icon('chevron-left', { size: 22 }))
+$('m-back').onclick = () => history.back()
+$('m-more').append(icon('more', { size: 18 }))
+$('m-more').onclick = () => {
+  const id = $('m-more').dataset.id
+  if (!id) return
+  const ui = uiOf(id)
+  ui.more = !ui.more
+  renderFocus()
+}
 $('drawer-close').replaceChildren(icon('x', { size: 20 }))
 $('drawer-brand').replaceChildren(icon('asterisk', { size: 20, strokeWidth: 2.4 }), text('Sessions'))
 loadSnippets()

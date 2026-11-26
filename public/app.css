@@ -557,6 +557,9 @@
   .drop-overlay.on { display: grid; }
   .popover { position: absolute; left: 50%; bottom: calc(100% - 8px); transform: translateX(-50%); width: min(560px, calc(100% - 32px)); z-index: 4; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow: auto; }
   .popover h4 { margin: 0; font: 500 14px/1.3 var(--serif); color: var(--muted); }
+  .pop-head { position: sticky; top: -12px; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -12px -6px 0 0; padding: 8px 0 2px; background: var(--surface); }
+  .pop-head .pop-close { width: 30px; height: 30px; min-width: 30px; min-height: 30px; border: 0; background: none; }
+  .pop-head .pop-close:hover { background: var(--surface-2); color: var(--text); }
   .snip-list { display: flex; flex-direction: column; gap: 2px; }
   .snip { display: flex; align-items: flex-start; gap: 8px; border-radius: 10px; padding: 6px 8px; cursor: pointer; }
   .snip:hover { background: var(--surface-2); }
@@ -845,6 +848,15 @@
     .split:has(.task-panel:not([hidden])) { grid-template-columns: minmax(0, 1fr); }
     .task-panel:not([hidden]) { position: fixed; top: 0; right: 0; bottom: 0; width: min(100%, 400px); z-index: 30; border-radius: 0; box-shadow: -10px 0 30px rgba(0, 0, 0, .35); }
   }
+  @media (max-width: 720px) {
+    /* The Focus view is its own stacking layer under the sticky header, so a panel at top: 0 sat behind the header */
+    .task-panel:not([hidden]) { top: var(--topbar-h, 52px); width: 100%; border: 0; border-top: 1px solid var(--line); box-shadow: none; }
+    .tp-head { padding: 6px 8px 6px 10px; }
+    .tp-head > .icon-only { width: 40px; height: 40px; flex: none; }
+    .tp-tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+    .tp-tabs button { padding: 8px 10px; white-space: nowrap; }
+    .tp-body { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+  }
   .msg.pending .body { opacity: .7; }
   .msg time.sending { opacity: 1; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
   .spinner { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
@@ -1042,10 +1054,11 @@
     .composer { padding: 6px 6px 6px 12px; border-radius: 18px; }
     .tool { width: 38px; height: 38px; }
     .send { width: 38px; height: 38px; }
-    .popover { position: fixed; left: 8px; right: 8px; bottom: 8px; transform: none; width: auto; max-height: 60dvh; }
+    /* Above the composer, never over it: its ⚡ / clock toggles and the typed text stay reachable */
+    .popover { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 4px); transform: none; width: auto; max-height: min(45dvh, 420px); }
     .slash-menu { width: auto; }
     .codeblock pre { font-size: 12px; }
-    .toasts { right: 10px; left: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); max-width: none; }
+    .toasts { right: 10px; left: 10px; top: calc(var(--topbar-h, 52px) + 8px); bottom: auto; max-width: none; }
     dialog { padding: 16px; border-radius: 16px; max-height: 92dvh; overflow: auto; }
     .file-row { flex-wrap: wrap; }
     .attention { padding: 10px 12px; }
@@ -1220,7 +1233,16 @@
     .head-title .meta-line { display: none; }
     .head-title .title, .stage .title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .more-btn { display: inline-grid; flex: none; }
+    /* The session's ⋯ sits in the header; the card head only shows what needs you (or the open ⋯ panel) */
+    .topbar .m-more { order: 0; position: relative; }
+    .topbar .m-more[aria-expanded=true] { color: var(--text); border-color: var(--accent); }
+    .topbar .m-more[data-ctx=caution]::after, .topbar .m-more[data-ctx=danger]::after { content: ''; position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--caution); box-shadow: 0 0 0 2px var(--surface); }
+    .topbar .m-more[data-ctx=danger]::after { background: var(--danger); }
+    .stage .card-head:empty { display: none; }
+    .more-open .usage { flex-wrap: wrap; overflow: visible; white-space: normal; padding-bottom: 4px; }
     .head-actions { display: none !important; }
+    /* New chat has no ⋯ button, and its only action is Cancel */
+    .stage .card.new-chat .head-actions { display: flex !important; flex: none; }
     .more-open .head-row { flex-wrap: wrap; }
     .more-open .head-actions { display: flex !important; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 4px; }
     .stage .chat { padding: 14px 12px 8px; }
@@ -1433,10 +1455,11 @@
   .fl-field textarea { resize: vertical; font: 12.5px var(--mono); }
   .fl-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .fl-form-note { font-size: 12.5px; color: var(--muted); min-height: 1em; }
-  .fl-detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 100vw); background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow); transform: translateX(105%); transition: transform .18s ease-out; overflow-y: auto; z-index: 60; padding: 18px 22px 40px; visibility: hidden; }
+  .fl-detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 100vw); background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow); transform: translateX(105%); transition: transform .18s ease-out; overflow-y: auto; z-index: 60; padding: calc(18px + env(safe-area-inset-top)) 22px calc(40px + env(safe-area-inset-bottom)); visibility: hidden; }
   .fl-detail.open { transform: none; visibility: visible; }
-  .fl-x { position: absolute; top: 12px; right: 14px; border: 0; background: none; font-size: 22px; color: var(--muted); line-height: 1; }
-  .fl-crumb { font-size: 12px; color: var(--muted); padding-right: 30px; }
+  .fl-x { position: absolute; top: calc(6px + env(safe-area-inset-top)); right: 8px; width: 40px; height: 40px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 10px; background: none; font-size: 24px; color: var(--muted); line-height: 1; }
+  .fl-x:hover { background: var(--surface-2); color: var(--text); }
+  .fl-crumb { font-size: 12px; color: var(--muted); padding-right: 40px; }
   .fl-crumb a { color: var(--muted); }
   .fl-d-title { font: 500 20px/1.3 var(--serif); margin: 4px 0 8px; }
   .fl-d-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }

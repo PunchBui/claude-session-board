@@ -48,6 +48,7 @@ const SHAPES = {
   calendar: [['rect', { x: 3, y: 4, width: 18, height: 18, rx: 2 }], ['path', { d: 'M16 2v4' }], ['path', { d: 'M8 2v4' }], ['path', { d: 'M3 10h18' }]],
   'panel-left': [['rect', { x: 3, y: 3, width: 18, height: 18, rx: 2 }], ['path', { d: 'M9 3v18' }]],
   asterisk: [['path', { d: 'M12 3v18' }], ['path', { d: 'm4.2 7.5 15.6 9' }], ['path', { d: 'm4.2 16.5 15.6-9' }]],
+  trash: [['path', { d: 'M3 6h18' }], ['path', { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6' }], ['path', { d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }]],
 }
 
 export function icon(name, { size = 16, strokeWidth = 2, fill = false, className = '' } = {}) {

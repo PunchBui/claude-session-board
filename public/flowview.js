@@ -168,7 +168,8 @@ export function createFlowView(root, { openSession, postJson, reload }) {
         h('button', { class: 'btn primary', type: 'submit' }, jira ? 'Save' : 'Connect'),
         jira ? h('button', { class: 'btn', type: 'button', onclick: () => set({ setup: false, message: null }) }, 'Cancel') : null,
         jira && !jira.fromEnv ? h('button', { class: 'btn danger', type: 'button', onclick: disconnect }, 'Disconnect') : null),
-      jira?.fromEnv ? h('p', { class: 'fl-sub' }, 'JIRA_API_TOKEN is set in the environment, so it wins over what you save here.') : null,
+      // Native append() would print a null as the text "null"
+      jira?.fromEnv ? h('p', { class: 'fl-sub' }, 'JIRA_API_TOKEN is set in the environment, so it wins over what you save here.') : '',
     )
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
