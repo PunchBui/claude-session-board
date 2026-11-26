@@ -4,6 +4,7 @@ import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
+import { quickReplies } from './quickreply.js'
 import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
@@ -1799,6 +1800,22 @@ function renderComposer(c) {
   if (ui.popover === 'schedule') dock.append(renderSchedulePopover(c, box))
   const attachments = renderAttachments(c)
   if (attachments) dock.append(attachments)
+  const replies = quickReplies(c)
+  if (replies.length) {
+    const chips = el('div', 'quick-replies')
+    for (const reply of replies) {
+      const chip = el('button', 'quick-reply', reply.label)
+      chip.title = `Send "${reply.prompt}"`
+      chip.onclick = () => {
+        chips.querySelectorAll('button').forEach((b) => { b.disabled = true })
+        const sender = document.createElement('textarea')
+        sender.value = reply.prompt
+        submitPrompt(c.id, sender)
+      }
+      chips.append(chip)
+    }
+    dock.append(chips)
+  }
   dock.append(composer, note)
   syncSlash(c.id, dock, box)
   requestAnimationFrame(() => autosize(box))
@@ -1812,6 +1829,10 @@ function renderAsks(c) {
   if (!asks.length) return null
   const wrap = el('div', 'asks')
   for (const ask of asks) {
+    if (ask.kind === 'question') {
+      wrap.append(renderQuestionAsk(c, ask))
+      continue
+    }
     const key = `${c.id}:${ask.id}`
     const values = state.asks.get(key) ?? {}
     state.asks.set(key, values)
@@ -1885,6 +1906,104 @@ function renderAsks(c) {
   return wrap
 }
 
+function renderQuestionAsk(c, ask) {
+  const key = `${c.id}:${ask.id}`
+  const entry = state.asks.get(key) ?? { answers: {}, error: '' }
+  state.asks.set(key, entry)
+  const values = entry.answers
+  const card = el('form', 'ask question-ask')
+  const status = el('span', 'ask-status', entry.error)
+  const buttons = []
+  const send = async (action) => {
+    for (const b of buttons) b.disabled = true
+    entry.error = ''
+    status.textContent = ''
+    const answers = Object.fromEntries(ask.questions.map((q) => {
+      const value = values[q.question] ?? { picked: [], other: '' }
+      return [q.question, [...value.picked, value.other.trim()].filter(Boolean)]
+    }))
+    const result = await postJson('/api/prompt/answer', { id: c.id, requestId: ask.id, action, answers })
+    if (result.ok) state.asks.delete(key)
+    else {
+      entry.error = result.data.error ?? 'Could not send the answer'
+      status.textContent = entry.error
+      for (const b of buttons) b.disabled = false
+    }
+    if (result.ok || result.data.error?.includes('no longer')) await resync()
+  }
+  card.append(el('div', 'ask-server', ask.questions.length > 1 ? `Claude has ${ask.questions.length} questions for you` : 'Claude has a question for you'))
+  for (const q of ask.questions) {
+    const value = values[q.question] ??= { picked: [], other: '' }
+    const block = el('fieldset', 'question')
+    const head = el('legend', 'question-head')
+    if (q.header) head.append(el('span', 'question-chip', q.header))
+    head.append(el('span', 'question-text', q.question))
+    block.append(head)
+    if (q.multiSelect) block.append(el('div', 'question-hint', 'Pick any that apply'))
+    const rows = []
+    const other = el('input', 'question-other')
+    const sync = () => {
+      for (const { row, label } of rows) {
+        const on = value.picked.includes(label)
+        row.classList.toggle('on', on)
+        row.setAttribute('aria-checked', String(on))
+      }
+    }
+    q.options.forEach((option, index) => {
+      const row = el('button', `question-option${q.multiSelect ? ' multi' : ''}`)
+      row.type = 'button'
+      row.setAttribute('role', q.multiSelect ? 'checkbox' : 'radio')
+      const mark = el('span', 'question-mark', q.multiSelect ? '' : String(index + 1))
+      const body = el('span', 'question-body')
+      body.append(el('b', undefined, option.label))
+      if (option.description) body.append(el('span', 'question-desc', option.description))
+      row.append(mark, body)
+      row.onclick = () => {
+        if (q.multiSelect) value.picked = value.picked.includes(option.label) ? value.picked.filter((label) => label !== option.label) : [...value.picked, option.label]
+        else {
+          value.picked = [option.label]
+          value.other = ''
+          other.value = ''
+        }
+        sync()
+      }
+      rows.push({ row, label: option.label })
+      block.append(row)
+    })
+    other.type = 'text'
+    other.placeholder = q.multiSelect ? 'Something else (optional)' : 'Other: type your own answer'
+    other.value = value.other
+    other.oninput = () => {
+      value.other = other.value
+      if (!q.multiSelect && other.value.trim()) {
+        value.picked = []
+        sync()
+      }
+    }
+    other.onkeydown = (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        send('accept')
+      }
+    }
+    block.append(other)
+    sync()
+    card.append(block)
+  }
+  const bar = el('div', 'ask-bar')
+  for (const [action, label, cls] of [['accept', 'Submit answers', 'primary'], ['decline', 'Skip', '']]) {
+    const button = el('button', `btn ${cls}`.trim(), ask.questions.length === 1 && action === 'accept' ? 'Submit' : label)
+    button.type = 'button'
+    button.onclick = () => send(action)
+    buttons.push(button)
+    bar.append(button)
+  }
+  bar.append(status)
+  card.append(bar)
+  card.onsubmit = (event) => event.preventDefault()
+  return card
+}
+
 function handoffLinkFor(c) {
   const params = new URLSearchParams({ folder: c.cwd ?? '', q: `Read the handoff document at ${c.run.handoff.file} and continue the work it describes.` })
   if (!c.cwd) params.delete('folder')
@@ -1936,7 +2055,7 @@ function renderUsage(c, head) {
 
 function renderAttention(c) {
   const a = c.live?.attention
-  if (!a) return null
+  if (!a || a.board) return null
   const box = el('div', `attention ${a.kind}`)
   const body = el('div')
   const title = el('b', undefined, a.kind === 'question' ? `Waiting for your answer (${a.tool})` : `Possibly waiting for approval · ${a.tool} pending `)
@@ -2282,11 +2401,11 @@ function renderCard(c) {
   const meta = el('div', 'meta-line')
   meta.append(projectChip(c), el('span', 'path', home(c.cwd)))
   const turns = c.source === 'board' ? null : `${c.completedTurns} ${c.completedTurns === 1 ? 'turn' : 'turns'}`
-  const tags = [c.source === 'board' && 'board only', c.model ? c.model.replace(/^claude-/, '') : defaultChip(c, 'model'), c.effort ? `${c.effort} effort` : defaultChip(c, 'effort'), c.permissionMode, turns]
+  const tags = [c.source === 'board' && 'board only', turns]
   for (const t of tags) {
-    if (t instanceof Node) meta.append(t)
-    else if (t) meta.append(el('span', 'dotted', t))
+    if (t) meta.append(el('span', 'dotted', t))
   }
+  meta.append(settingSelect(c, 'model'), settingSelect(c, 'effort'), settingSelect(c, 'permissionMode'))
   titleBox.append(el('div', 'title', c.title), meta)
   const mrs = mrLinks(c)
   if (mrs) titleBox.append(mrs)
@@ -2881,6 +3000,37 @@ async function showNewDefaults(folder) {
   }
 }
 
+const SETTING_LABELS = { model: 'Model', effort: 'Effort', permissionMode: 'Mode' }
+
+function settingSelect(c, name) {
+  const choices = NEW_OPTIONS.find(([key]) => key === name)[2]
+  const select = el('select', 'dotted setting-select')
+  const current = c[name]
+  const shown = (value) => choices.find(([v]) => v === value)?.[1] ?? String(value).replace(/^claude-/, '')
+  const stored = c.override?.[name] ?? ''
+  const inherited = !stored && current ? shown(current) : null
+  for (const [value, label] of choices) {
+    const option = el('option', null, value === '' ? `${SETTING_LABELS[name]}: ${inherited ?? 'default'}` : `${SETTING_LABELS[name]}: ${label}`)
+    option.value = value
+    select.append(option)
+  }
+  if (stored && !choices.some(([v]) => v === stored)) {
+    const option = el('option', null, `${SETTING_LABELS[name]}: ${stored}`)
+    option.value = stored
+    select.append(option)
+  }
+  select.value = stored
+  select.title = `Applies from this session's next prompt. Choose the first entry to go back to the default.`
+  select.addEventListener('change', async () => {
+    select.disabled = true
+    const result = await postJson('/api/session/settings', { id: c.id, [name]: select.value })
+    select.disabled = false
+    if (!result.ok) select.value = stored
+    else resync()
+  })
+  return select
+}
+
 const defaultChipText = (name, value) => (name === 'effort' ? `${value} effort` : value.replace(/^claude-/, ''))
 
 function defaultChip(c, name) {
@@ -3416,7 +3566,7 @@ function showFixOutcome(button, outcome) {
   button.disabled = outcome.disabled
 }
 
-const startMrSession = (mr, prompt) => postJson('/api/new-session', { folder: mr.folder, prompt })
+const startMrSession = (mr, prompt, extra = {}) => postJson('/api/new-session', { folder: mr.folder, prompt, ...extra })
 
 async function sendMrFix(mr, kind, button) {
   if (button.disabled) return
@@ -3635,7 +3785,7 @@ async function startDeployCheck(mr, button) {
   if (button.disabled) return
   button.disabled = true
   button.textContent = 'Starting…'
-  const result = await startMrSession(mr, `/csb-check-deploy ${mr.url}`)
+  const result = await startMrSession(mr, `/csb-check-deploy ${mr.url}`, { focus: false })
   showFixOutcome(button, startOutcome(result))
   if (!result.ok) return
   const saved = await postJson('/api/mrs/deploy', { url: mr.url, state: 'checking', sessionId: result.data.id })

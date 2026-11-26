@@ -94,6 +94,7 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     findRaw: async (id) => h.raws.find((raw) => raw.sessionId === id) ?? null,
     queues: h.queues,
     persistQueues: async () => { h.persisted += 1 },
+    readOverride: async () => h.override ?? {},
     runsFile: h.runsFile,
     transcriptPaths: h.transcriptPaths,
     openHandoff: (raw, file) => h.opened.push([raw.sessionId, file]),
@@ -621,6 +622,14 @@ test('a new board session is recorded and its first run uses --session-id, not -
   assert.equal((await h.saved())[result.body.id].cliSessionId, h.board[0].cliSessionId)
 })
 
+test('a new board session asked not to focus is recorded as unfocused, and is focused by default otherwise', async (t) => {
+  const h = harness(t)
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'check it', focus: false })
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'build it' })
+  assert.equal(h.board[0].unfocused, true)
+  assert.equal(h.board[1].unfocused, undefined)
+})
+
 test('a board session is renamed from its first prompt once the first run finishes', async (t) => {
   const prompts = []
   const h = harness(t, { titler: async (prompt) => { prompts.push(prompt); return 'Build the thing' } })
@@ -836,6 +845,26 @@ test('a permission prompt is denied at once and a finished turn closes the run i
   assert.equal(h.manager.runFor(SID).pending.length, 0)
 })
 
+test('an AskUserQuestion call waits for a person and the answer goes back to the run', async (t) => {
+  const h = harness(t)
+  await start(h)
+  const child = h.spawned[0]
+  const writes = []
+  child.write = (line) => writes.push(line)
+  const run = h.manager.runFor(SID)
+  const questions = [{ question: 'Which env?', header: 'Env', multiSelect: false, options: [{ label: 'QA', description: '' }, { label: 'Prod', description: '' }] }]
+  appendFileSync(child.options.outFile, `${JSON.stringify({ type: 'control_request', request_id: 'q1', request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: { questions } } })}\n`)
+  await until(() => run.pending.length === 1)
+  assert.deepEqual(writes, [])
+  const shown = h.manager.publicRun(SID).pending[0]
+  assert.equal(shown.kind, 'question')
+  assert.equal('input' in shown, false)
+  assert.equal(h.manager.answerPrompt(SID, { requestId: 'q1', action: 'accept', answers: {} }).status, 400)
+  assert.equal(h.manager.answerPrompt(SID, { requestId: 'q1', action: 'accept', answers: { 'Which env?': ['QA'] } }).status, 200)
+  assert.equal(run.pending.length, 0)
+  assert.deepEqual(JSON.parse(writes[0]).response.response, { behavior: 'allow', updatedInput: { questions, answers: { 'Which env?': 'QA' } } })
+})
+
 test('questions are dropped when the run ends and cannot be answered afterwards', async (t) => {
   const h = harness(t)
   await start(h)
@@ -857,4 +886,20 @@ test('every run gets the extra arguments the board adds, such as the visualize s
   const at = child.args.indexOf('--mcp-config')
   assert.ok(at > 0)
   assert.deepEqual(child.args.slice(at, at + 2), ['--mcp-config', '{"mcpServers":{}}'])
+})
+
+test('a per-chat override changes the model, effort and permission mode of the next run', async (t) => {
+  const h = harness(t, { sessions: [{ sessionId: SID, cliSessionId: CLI, model: 'claude-opus-5', effort: 'high' }] })
+  h.override = { model: 'sonnet', effort: 'max', permissionMode: 'plan' }
+  assert.equal((await start(h)).status, 202)
+  const [child] = h.spawned
+  assert.equal(child.args[child.args.indexOf('--model') + 1], 'sonnet')
+  assert.equal(child.args[child.args.indexOf('--effort') + 1], 'max')
+  assert.equal(child.args[child.args.indexOf('--permission-mode') + 1], 'plan')
+})
+
+test('without an override the run keeps the board default mode', async (t) => {
+  const h = harness(t)
+  assert.equal((await start(h)).status, 202)
+  assert.equal(h.spawned[0].args[h.spawned[0].args.indexOf('--permission-mode') + 1], 'bypassPermissions')
 })

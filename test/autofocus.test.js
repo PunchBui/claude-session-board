@@ -27,3 +27,9 @@ test('a session the user unfocused is not added again', () => {
   const known = newSessionIds(null, [session('a')], ['a']).next
   assert.deepEqual(newSessionIds(known, [session('a')], []).fresh, [])
 })
+
+test('a session started unfocused is not added to Focus', () => {
+  const known = newSessionIds(null, [session('a')], []).next
+  const { fresh } = newSessionIds(known, [session('a'), session('b', { unfocused: true }), session('c')], [])
+  assert.deepEqual(fresh, ['c'])
+})

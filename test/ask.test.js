@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { askFrom, answerLine, permissionRequestFrom, cancelledId, denyLine, errorLine, interruptLine, userMessageLine, tailJsonLines } from '../lib/ask.js'
+import { askFrom, publicAsk, answerLine, permissionRequestFrom, cancelledId, denyLine, errorLine, interruptLine, userMessageLine, tailJsonLines } from '../lib/ask.js'
 
 const request = (extra = {}) => ({
   type: 'control_request',
@@ -98,4 +98,58 @@ test('the tail hands over complete lines as they are appended, including split m
 test('interruptLine is a stream-json interrupt control request', () => {
   assert.deepEqual(parse(interruptLine('req-1')), { type: 'control_request', request_id: 'req-1', request: { subtype: 'interrupt' } })
   assert.ok(interruptLine('req-1').endsWith('\n'))
+})
+
+const questionRequest = (questions) => ({
+  type: 'control_request',
+  request_id: 'q1',
+  request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: { questions }, tool_use_id: 'toolu_1', requires_user_interaction: true },
+})
+const colour = { question: 'Which colour?', header: 'Colour', multiSelect: false, options: [{ label: 'Red', description: 'warm' }, { label: 'Blue', description: 'cool' }] }
+const fruit = { question: 'Which fruits?', header: 'Fruits', multiSelect: true, options: [{ label: 'Apple' }, { label: 'Mango' }, { label: 'Kiwi' }] }
+
+test('an AskUserQuestion permission request becomes a question ask and is not denied', () => {
+  const message = questionRequest([colour, fruit])
+  const ask = askFrom(message)
+  assert.equal(ask.kind, 'question')
+  assert.equal(ask.id, 'q1')
+  assert.deepEqual(ask.questions.map((q) => [q.question, q.header, q.multiSelect, q.options.map((o) => o.label)]), [['Which colour?', 'Colour', false, ['Red', 'Blue']], ['Which fruits?', 'Fruits', true, ['Apple', 'Mango', 'Kiwi']]])
+  assert.equal(ask.questions[1].options[0].description, '')
+  assert.equal('input' in publicAsk(ask), false)
+  assert.equal(publicAsk(ask).questions.length, 2)
+})
+
+test('an AskUserQuestion request with no usable question is left to the permission denial', () => {
+  assert.equal(askFrom(questionRequest([{ header: 'x' }])), null)
+  assert.equal(askFrom(questionRequest('nope')), null)
+})
+
+test('answering questions allows the tool with the answers the CLI expects, joined like Claude Code', () => {
+  const ask = askFrom(questionRequest([colour, fruit]))
+  const { line, error } = answerLine(ask, { action: 'accept', answers: { 'Which colour?': ['Blue'], 'Which fruits?': ['Apple', 'Mango', 'Apple', ' '], 'Not asked?': ['x'] } })
+  assert.equal(error, undefined)
+  assert.deepEqual(parse(line), {
+    type: 'control_response',
+    response: { subtype: 'success', request_id: 'q1', response: { behavior: 'allow', updatedInput: { questions: [colour, fruit], answers: { 'Which colour?': 'Blue', 'Which fruits?': 'Apple, Mango' } } } },
+  })
+})
+
+test('a typed answer outside the options is sent as is, like Other in Claude Code', () => {
+  const ask = askFrom(questionRequest([colour]))
+  const { line } = answerLine(ask, { action: 'accept', answers: { 'Which colour?': 'Green, please' } })
+  assert.equal(parse(line).response.response.updatedInput.answers['Which colour?'], 'Green, please')
+})
+
+test('every question needs an answer and single-choice questions take one', () => {
+  const ask = askFrom(questionRequest([colour, fruit]))
+  assert.match(answerLine(ask, { action: 'accept', answers: { 'Which colour?': ['Red'] } }).error, /Fruits/)
+  assert.match(answerLine(ask, { action: 'accept', answers: { 'Which colour?': ['Red', 'Blue'], 'Which fruits?': ['Kiwi'] } }).error, /one answer.*Colour/)
+  assert.ok(answerLine(ask, { action: 'sure' }).error)
+})
+
+test('skipping the questions denies the tool so the run carries on without answers', () => {
+  const ask = askFrom(questionRequest([colour]))
+  const response = parse(answerLine(ask, { action: 'decline' }).line).response.response
+  assert.equal(response.behavior, 'deny')
+  assert.match(response.message, /chose not to answer/)
 })

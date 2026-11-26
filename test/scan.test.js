@@ -72,6 +72,21 @@ test('live: question and stale approval detection', () => {
   assert.equal(liveOf(other, { nowMs: now, mtimeMs: now - 5000, running: false }).phase, 'tool')
 })
 
+test('live: a board run waiting on a question needs the person even while it runs', () => {
+  const state = newScanState()
+  absorbLine(state, assistant('h', [{ type: 'tool_use', id: 'q2', name: 'AskUserQuestion', input: { questions: [{ question: 'Which env?' }] } }], { output_tokens: 1 }))
+  const now = Date.now()
+  const ask = { id: 'r1', kind: 'question', questions: [{ question: 'Which env?', header: 'Env', multiSelect: false, options: [] }], at: now - 1000 }
+  const waiting = liveOf(state, { nowMs: now, mtimeMs: now - 5000, running: true, asks: [ask] })
+  assert.deepEqual(waiting.attention, { kind: 'question', tool: 'AskUserQuestion', text: 'Which env?', since: now - 1000, board: true })
+  assert.equal(waiting.working, true)
+  assert.equal(waiting.phase, 'idle')
+  assert.equal(liveOf(state, { nowMs: now, mtimeMs: now - 5000, running: true }).attention, null)
+  const mcp = liveOf(state, { nowMs: now, mtimeMs: now - 5000, running: true, asks: [{ id: 'r2', kind: 'elicitation', server: 'supabase', message: 'Apply?', at: now }] })
+  assert.equal(mcp.attention.tool, 'supabase')
+  assert.equal(mcp.attention.text, 'Apply?')
+})
+
 test('live: a quiet pending tool is not an approval when the session never prompts', () => {
   const now = Date.now()
   const build = (mode) => {
