@@ -452,7 +452,7 @@
   .queue-head .btn { padding: 1px 10px; font-size: 12px; }
   .send.wide { width: auto; padding: 0 16px; font-size: 13px; font-weight: 600; line-height: 1; white-space: nowrap; }
   .send.stop-side { background: var(--surface-2); color: var(--text); font-size: 12px; }
-  .asks { max-width: var(--col, 820px); margin: 0 auto 8px; display: grid; gap: 8px; }
+  .asks { max-width: var(--col, 820px); margin: 0 auto 8px; display: grid; gap: 8px; max-height: 60vh; max-height: 60dvh; overflow-y: auto; overscroll-behavior: contain; }
   .ask { border: 1px solid var(--caution); background: var(--surface); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; font-size: 13px; }
   .ask-server { font-size: 12px; font-weight: 600; color: var(--caution); }
   .ask-message { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -478,6 +478,11 @@
   .question-body { display: grid; gap: 2px; min-width: 0; }
   .question-desc { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .question-other { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
+  @media (max-width: 720px) {
+    .question-option { padding: 7px 9px; gap: 8px; }
+    .question-desc { font-size: 12.5px; }
+    .question-ask .ask-bar .btn { flex: 1; justify-content: center; text-align: center; }
+  }
   .run-note { max-width: var(--col, 820px); margin: 8px auto 0; padding: 0 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
   .run-note.error { color: var(--danger); }
   .run-note.running { color: var(--info); }
