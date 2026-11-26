@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createScanStore, transcriptTitle, isHandoffFile } from './lib/scan.js'
-import { shownSettings } from './lib/sessionsettings.js'
+import { shownSettings, parseOverride, mergeOverride, overridesFromFile } from './lib/sessionsettings.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
 import { REPEATS, nextAfter } from './lib/schedule.js'
@@ -77,6 +77,7 @@ const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const RUNS_FILE = join(DATA_DIR, 'runs.json')
 const BOARD_SESSIONS_FILE = join(DATA_DIR, 'board-sessions.json')
 const SIDE_CHATS_FILE = join(DATA_DIR, 'side-chats.json')
+const OVERRIDES_FILE = join(DATA_DIR, 'session-overrides.json')
 const JIRA_FILE = join(DATA_DIR, 'jira.json')
 const FLOW_CACHE_FILE = join(DATA_DIR, 'flow-cache.json')
 const MR_EVENTS_FILE = join(DATA_DIR, 'mr-events.json')
@@ -277,11 +278,14 @@ async function buildCard(raw) {
   const touchedAt = Math.max(base.lastActivityAt ?? 0, scanned?.info.mtimeMs ?? 0)
   const run = manager.runFor(raw.sessionId)
   const running = run?.state === 'running'
+  const override = (await readOverrides())[raw.sessionId] ?? {}
   const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running, runEndedAt: run?.endedAt ?? null, asks: running ? run.pending ?? [] : [] }) : null
   const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS || Boolean(live?.working)
   return {
     ...base,
-    ...shownSettings(raw, scanned?.state.settings),
+    ...shownSettings(raw, { ...scanned?.state.settings, ...override }),
+    ...(override.permissionMode ? { permissionMode: override.permissionMode } : {}),
+    override,
     touchedAt,
     lastPromptAt: promptAtOf(scanned?.state),
     active,
@@ -353,6 +357,10 @@ async function boardEvictable(items) {
 async function readFocus() {
   const parsed = await readJson(FOCUS_FILE, {})
   return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+}
+
+async function readOverrides() {
+  return overridesFromFile(await readJson(OVERRIDES_FILE, {}))
 }
 
 async function readClosedSideChats() {
@@ -916,6 +924,7 @@ const manager = createRunManager({
   queues,
   persistQueues,
   readJson,
+  readOverride: async (id) => (await readOverrides())[id] ?? {},
   writeJson,
   runsFile: RUNS_FILE,
   transcriptPaths,
@@ -1137,6 +1146,18 @@ const postRoutes = {
     const result = await manager.requestNewSession(body)
     if (result.status === 202 && body.focus !== false) await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
     return reply(res, result)
+  },
+  async '/api/session/settings'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '')) return json(res, 400, { error: 'bad request' })
+    const parsed = parseOverride(body)
+    if (parsed.error) return json(res, 400, { error: parsed.error })
+    if (!(await findRaw(body.id))) return json(res, 404, { error: 'session not found' })
+    const all = await readOverrides()
+    const next = mergeOverride(all[body.id] ?? {}, parsed.override)
+    if (Object.keys(next).length) all[body.id] = next
+    else delete all[body.id]
+    await writeJson(OVERRIDES_FILE, { items: all })
+    return json(res, 200, { override: next })
   },
   async '/api/side-chats'(body, res) {
     return reply(res, await manager.requestSideChat(body))

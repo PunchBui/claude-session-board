@@ -94,6 +94,7 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     findRaw: async (id) => h.raws.find((raw) => raw.sessionId === id) ?? null,
     queues: h.queues,
     persistQueues: async () => { h.persisted += 1 },
+    readOverride: async () => h.override ?? {},
     runsFile: h.runsFile,
     transcriptPaths: h.transcriptPaths,
     openHandoff: (raw, file) => h.opened.push([raw.sessionId, file]),
@@ -885,4 +886,20 @@ test('every run gets the extra arguments the board adds, such as the visualize s
   const at = child.args.indexOf('--mcp-config')
   assert.ok(at > 0)
   assert.deepEqual(child.args.slice(at, at + 2), ['--mcp-config', '{"mcpServers":{}}'])
+})
+
+test('a per-chat override changes the model, effort and permission mode of the next run', async (t) => {
+  const h = harness(t, { sessions: [{ sessionId: SID, cliSessionId: CLI, model: 'claude-opus-5', effort: 'high' }] })
+  h.override = { model: 'sonnet', effort: 'max', permissionMode: 'plan' }
+  assert.equal((await start(h)).status, 202)
+  const [child] = h.spawned
+  assert.equal(child.args[child.args.indexOf('--model') + 1], 'sonnet')
+  assert.equal(child.args[child.args.indexOf('--effort') + 1], 'max')
+  assert.equal(child.args[child.args.indexOf('--permission-mode') + 1], 'plan')
+})
+
+test('without an override the run keeps the board default mode', async (t) => {
+  const h = harness(t)
+  assert.equal((await start(h)).status, 202)
+  assert.equal(h.spawned[0].args[h.spawned[0].args.indexOf('--permission-mode') + 1], 'bypassPermissions')
 })

@@ -252,6 +252,8 @@
   .meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
   .meta-line .dotted::before { content: '·'; margin-right: 10px; color: var(--faint); }
   .meta-line .dotted { white-space: nowrap; }
+  .meta-line .setting-select { font: inherit; color: inherit; background: transparent; border: 0; padding: 0 2px; cursor: pointer; }
+  .meta-line .setting-select:hover { color: var(--text); }
   .mr-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .mr-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; text-decoration: none; }
   .mr-chip:hover { color: var(--accent); border-color: var(--accent); }

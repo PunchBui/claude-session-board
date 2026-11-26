@@ -2361,11 +2361,11 @@ function renderCard(c) {
   const meta = el('div', 'meta-line')
   meta.append(projectChip(c), el('span', 'path', home(c.cwd)))
   const turns = c.source === 'board' ? null : `${c.completedTurns} ${c.completedTurns === 1 ? 'turn' : 'turns'}`
-  const tags = [c.source === 'board' && 'board only', c.model ? c.model.replace(/^claude-/, '') : defaultChip(c, 'model'), c.effort ? `${c.effort} effort` : defaultChip(c, 'effort'), c.permissionMode, turns]
+  const tags = [c.source === 'board' && 'board only', turns]
   for (const t of tags) {
-    if (t instanceof Node) meta.append(t)
-    else if (t) meta.append(el('span', 'dotted', t))
+    if (t) meta.append(el('span', 'dotted', t))
   }
+  meta.append(settingSelect(c, 'model'), settingSelect(c, 'effort'), settingSelect(c, 'permissionMode'))
   titleBox.append(el('div', 'title', c.title), meta)
   const mrs = mrLinks(c)
   if (mrs) titleBox.append(mrs)
@@ -2941,6 +2941,37 @@ async function showNewDefaults(folder) {
     const base = name === 'permissionMode' ? 'Board default' : 'Default'
     first.textContent = shown ? `${base} (${shown})` : `${base} (account setting)`
   }
+}
+
+const SETTING_LABELS = { model: 'Model', effort: 'Effort', permissionMode: 'Mode' }
+
+function settingSelect(c, name) {
+  const choices = NEW_OPTIONS.find(([key]) => key === name)[2]
+  const select = el('select', 'dotted setting-select')
+  const current = c[name]
+  const shown = (value) => choices.find(([v]) => v === value)?.[1] ?? String(value).replace(/^claude-/, '')
+  const stored = c.override?.[name] ?? ''
+  const inherited = !stored && current ? shown(current) : null
+  for (const [value, label] of choices) {
+    const option = el('option', null, value === '' ? `${SETTING_LABELS[name]}: ${inherited ?? 'default'}` : `${SETTING_LABELS[name]}: ${label}`)
+    option.value = value
+    select.append(option)
+  }
+  if (stored && !choices.some(([v]) => v === stored)) {
+    const option = el('option', null, `${SETTING_LABELS[name]}: ${stored}`)
+    option.value = stored
+    select.append(option)
+  }
+  select.value = stored
+  select.title = `Applies from this session's next prompt. Choose the first entry to go back to the default.`
+  select.addEventListener('change', async () => {
+    select.disabled = true
+    const result = await postJson('/api/session/settings', { id: c.id, [name]: select.value })
+    select.disabled = false
+    if (!result.ok) select.value = stored
+    else resync()
+  })
+  return select
 }
 
 const defaultChipText = (name, value) => (name === 'effort' ? `${value} effort` : value.replace(/^claude-/, ''))

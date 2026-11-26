@@ -37,3 +37,20 @@ test('the transcript scan picks up /model and /effort from local command entries
   absorbLine(state, command('model', 'nope', "Model 'nope' not found"))
   assert.deepEqual(state.settings, { model: 'haiku', effort: 'max' })
 })
+
+import { parseOverride, mergeOverride, withOverride, overridesFromFile } from '../lib/sessionsettings.js'
+
+test('a per-chat override is validated, merged and cleared by an empty value', () => {
+  assert.deepEqual(parseOverride({ model: 'opus', effort: 'max', permissionMode: 'plan' }), { override: { model: 'opus', effort: 'max', permissionMode: 'plan' } })
+  assert.match(parseOverride({ effort: 'turbo' }).error, /effort/)
+  assert.match(parseOverride({ permissionMode: 'root' }).error, /permissionMode/)
+  assert.deepEqual(parseOverride({ model: '' }), { override: { model: null } })
+  assert.deepEqual(mergeOverride({ model: 'opus', effort: 'low' }, { model: null, permissionMode: 'auto' }), { effort: 'low', permissionMode: 'auto' })
+  assert.deepEqual(withOverride({ model: 'sonnet', effort: 'low' }, { effort: 'max' }), { model: 'sonnet', effort: 'max' })
+})
+
+test('the overrides file drops bad entries', () => {
+  const file = { items: { 'local_ok-1': { model: 'opus', effort: null }, 'local_bad': { effort: 'turbo' }, '../x': { model: 'opus' }, 'local_empty': {} } }
+  assert.deepEqual(overridesFromFile(file), { 'local_ok-1': { model: 'opus' } })
+  assert.deepEqual(overridesFromFile(null), {})
+})
