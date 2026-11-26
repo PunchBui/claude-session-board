@@ -3478,7 +3478,7 @@ function showFixOutcome(button, outcome) {
   button.disabled = outcome.disabled
 }
 
-const startMrSession = (mr, prompt) => postJson('/api/new-session', { folder: mr.folder, prompt })
+const startMrSession = (mr, prompt, extra = {}) => postJson('/api/new-session', { folder: mr.folder, prompt, ...extra })
 
 async function sendMrFix(mr, kind, button) {
   if (button.disabled) return
@@ -3697,7 +3697,7 @@ async function startDeployCheck(mr, button) {
   if (button.disabled) return
   button.disabled = true
   button.textContent = 'Starting…'
-  const result = await startMrSession(mr, `/csb-check-deploy ${mr.url}`)
+  const result = await startMrSession(mr, `/csb-check-deploy ${mr.url}`, { focus: false })
   showFixOutcome(button, startOutcome(result))
   if (!result.ok) return
   const saved = await postJson('/api/mrs/deploy', { url: mr.url, state: 'checking', sessionId: result.data.id })

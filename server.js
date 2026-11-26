@@ -185,6 +185,7 @@ function toSummary(raw) {
     source: raw.source ?? 'desktop',
     resume: raw.resume ?? null,
     sideChatOf: sideChatParent(raw),
+    unfocused: raw.unfocused === true,
   }
 }
 
@@ -1134,7 +1135,7 @@ const postRoutes = {
   },
   async '/api/new-session'(body, res) {
     const result = await manager.requestNewSession(body)
-    if (result.status === 202) await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
+    if (result.status === 202 && body.focus !== false) await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
     return reply(res, result)
   },
   async '/api/side-chats'(body, res) {

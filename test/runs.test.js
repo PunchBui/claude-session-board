@@ -621,6 +621,14 @@ test('a new board session is recorded and its first run uses --session-id, not -
   assert.equal((await h.saved())[result.body.id].cliSessionId, h.board[0].cliSessionId)
 })
 
+test('a new board session asked not to focus is recorded as unfocused, and is focused by default otherwise', async (t) => {
+  const h = harness(t)
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'check it', focus: false })
+  await h.manager.requestNewSession({ folder: h.dir, prompt: 'build it' })
+  assert.equal(h.board[0].unfocused, true)
+  assert.equal(h.board[1].unfocused, undefined)
+})
+
 test('a board session is renamed from its first prompt once the first run finishes', async (t) => {
   const prompts = []
   const h = harness(t, { titler: async (prompt) => { prompts.push(prompt); return 'Build the thing' } })
