@@ -836,6 +836,26 @@ test('a permission prompt is denied at once and a finished turn closes the run i
   assert.equal(h.manager.runFor(SID).pending.length, 0)
 })
 
+test('an AskUserQuestion call waits for a person and the answer goes back to the run', async (t) => {
+  const h = harness(t)
+  await start(h)
+  const child = h.spawned[0]
+  const writes = []
+  child.write = (line) => writes.push(line)
+  const run = h.manager.runFor(SID)
+  const questions = [{ question: 'Which env?', header: 'Env', multiSelect: false, options: [{ label: 'QA', description: '' }, { label: 'Prod', description: '' }] }]
+  appendFileSync(child.options.outFile, `${JSON.stringify({ type: 'control_request', request_id: 'q1', request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: { questions } } })}\n`)
+  await until(() => run.pending.length === 1)
+  assert.deepEqual(writes, [])
+  const shown = h.manager.publicRun(SID).pending[0]
+  assert.equal(shown.kind, 'question')
+  assert.equal('input' in shown, false)
+  assert.equal(h.manager.answerPrompt(SID, { requestId: 'q1', action: 'accept', answers: {} }).status, 400)
+  assert.equal(h.manager.answerPrompt(SID, { requestId: 'q1', action: 'accept', answers: { 'Which env?': ['QA'] } }).status, 200)
+  assert.equal(run.pending.length, 0)
+  assert.deepEqual(JSON.parse(writes[0]).response.response, { behavior: 'allow', updatedInput: { questions, answers: { 'Which env?': 'QA' } } })
+})
+
 test('questions are dropped when the run ends and cannot be answered afterwards', async (t) => {
   const h = harness(t)
   await start(h)

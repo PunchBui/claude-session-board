@@ -276,7 +276,7 @@ async function buildCard(raw) {
   const touchedAt = Math.max(base.lastActivityAt ?? 0, scanned?.info.mtimeMs ?? 0)
   const run = manager.runFor(raw.sessionId)
   const running = run?.state === 'running'
-  const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running, runEndedAt: run?.endedAt ?? null }) : null
+  const live = scanned ? liveOf(scanned.state, { nowMs: Date.now(), mtimeMs: scanned.info.mtimeMs, running, runEndedAt: run?.endedAt ?? null, asks: running ? run.pending ?? [] : [] }) : null
   const active = Date.now() - touchedAt < ACTIVE_WINDOW_MS || Boolean(live?.working)
   return {
     ...base,

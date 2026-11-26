@@ -462,6 +462,22 @@
   .ask-field input:not([type=checkbox]), .ask-field select { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
   .ask-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .ask-status { font-size: 12px; color: var(--danger); }
+  .question-ask { border-color: var(--accent); }
+  .question-ask .ask-server { color: var(--accent); }
+  .question { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+  .question-head { padding: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 600; color: var(--text); }
+  .question-chip { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+  .question-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .question-hint { font-size: 12px; color: var(--muted); }
+  .question-option { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; }
+  .question-option:hover { border-color: var(--accent); }
+  .question-option.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-2)); }
+  .question-mark { flex: none; width: 20px; height: 20px; border-radius: 6px; border: 1px solid var(--line); display: grid; place-items: center; font-size: 11px; color: var(--muted); }
+  .question-option.on .question-mark { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .question-option.multi.on .question-mark::after { content: '✓'; font-size: 12px; }
+  .question-body { display: grid; gap: 2px; min-width: 0; }
+  .question-desc { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .question-other { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
   .run-note { max-width: var(--col, 820px); margin: 8px auto 0; padding: 0 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
   .run-note.error { color: var(--danger); }
   .run-note.running { color: var(--info); }

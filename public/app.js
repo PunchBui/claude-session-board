@@ -1789,6 +1789,10 @@ function renderAsks(c) {
   if (!asks.length) return null
   const wrap = el('div', 'asks')
   for (const ask of asks) {
+    if (ask.kind === 'question') {
+      wrap.append(renderQuestionAsk(c, ask))
+      continue
+    }
     const key = `${c.id}:${ask.id}`
     const values = state.asks.get(key) ?? {}
     state.asks.set(key, values)
@@ -1862,6 +1866,104 @@ function renderAsks(c) {
   return wrap
 }
 
+function renderQuestionAsk(c, ask) {
+  const key = `${c.id}:${ask.id}`
+  const entry = state.asks.get(key) ?? { answers: {}, error: '' }
+  state.asks.set(key, entry)
+  const values = entry.answers
+  const card = el('form', 'ask question-ask')
+  const status = el('span', 'ask-status', entry.error)
+  const buttons = []
+  const send = async (action) => {
+    for (const b of buttons) b.disabled = true
+    entry.error = ''
+    status.textContent = ''
+    const answers = Object.fromEntries(ask.questions.map((q) => {
+      const value = values[q.question] ?? { picked: [], other: '' }
+      return [q.question, [...value.picked, value.other.trim()].filter(Boolean)]
+    }))
+    const result = await postJson('/api/prompt/answer', { id: c.id, requestId: ask.id, action, answers })
+    if (result.ok) state.asks.delete(key)
+    else {
+      entry.error = result.data.error ?? 'Could not send the answer'
+      status.textContent = entry.error
+      for (const b of buttons) b.disabled = false
+    }
+    if (result.ok || result.data.error?.includes('no longer')) await resync()
+  }
+  card.append(el('div', 'ask-server', ask.questions.length > 1 ? `Claude has ${ask.questions.length} questions for you` : 'Claude has a question for you'))
+  for (const q of ask.questions) {
+    const value = values[q.question] ??= { picked: [], other: '' }
+    const block = el('fieldset', 'question')
+    const head = el('legend', 'question-head')
+    if (q.header) head.append(el('span', 'question-chip', q.header))
+    head.append(el('span', 'question-text', q.question))
+    block.append(head)
+    if (q.multiSelect) block.append(el('div', 'question-hint', 'Pick any that apply'))
+    const rows = []
+    const other = el('input', 'question-other')
+    const sync = () => {
+      for (const { row, label } of rows) {
+        const on = value.picked.includes(label)
+        row.classList.toggle('on', on)
+        row.setAttribute('aria-checked', String(on))
+      }
+    }
+    q.options.forEach((option, index) => {
+      const row = el('button', `question-option${q.multiSelect ? ' multi' : ''}`)
+      row.type = 'button'
+      row.setAttribute('role', q.multiSelect ? 'checkbox' : 'radio')
+      const mark = el('span', 'question-mark', q.multiSelect ? '' : String(index + 1))
+      const body = el('span', 'question-body')
+      body.append(el('b', undefined, option.label))
+      if (option.description) body.append(el('span', 'question-desc', option.description))
+      row.append(mark, body)
+      row.onclick = () => {
+        if (q.multiSelect) value.picked = value.picked.includes(option.label) ? value.picked.filter((label) => label !== option.label) : [...value.picked, option.label]
+        else {
+          value.picked = [option.label]
+          value.other = ''
+          other.value = ''
+        }
+        sync()
+      }
+      rows.push({ row, label: option.label })
+      block.append(row)
+    })
+    other.type = 'text'
+    other.placeholder = q.multiSelect ? 'Something else (optional)' : 'Other: type your own answer'
+    other.value = value.other
+    other.oninput = () => {
+      value.other = other.value
+      if (!q.multiSelect && other.value.trim()) {
+        value.picked = []
+        sync()
+      }
+    }
+    other.onkeydown = (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        send('accept')
+      }
+    }
+    block.append(other)
+    sync()
+    card.append(block)
+  }
+  const bar = el('div', 'ask-bar')
+  for (const [action, label, cls] of [['accept', 'Submit answers', 'primary'], ['decline', 'Skip', '']]) {
+    const button = el('button', `btn ${cls}`.trim(), ask.questions.length === 1 && action === 'accept' ? 'Submit' : label)
+    button.type = 'button'
+    button.onclick = () => send(action)
+    buttons.push(button)
+    bar.append(button)
+  }
+  bar.append(status)
+  card.append(bar)
+  card.onsubmit = (event) => event.preventDefault()
+  return card
+}
+
 function handoffLinkFor(c) {
   const params = new URLSearchParams({ folder: c.cwd ?? '', q: `Read the handoff document at ${c.run.handoff.file} and continue the work it describes.` })
   if (!c.cwd) params.delete('folder')
@@ -1913,7 +2015,7 @@ function renderUsage(c, head) {
 
 function renderAttention(c) {
   const a = c.live?.attention
-  if (!a) return null
+  if (!a || a.board) return null
   const box = el('div', `attention ${a.kind}`)
   const body = el('div')
   const title = el('b', undefined, a.kind === 'question' ? `Waiting for your answer (${a.tool})` : `Possibly waiting for approval · ${a.tool} pending `)
