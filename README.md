@@ -163,6 +163,8 @@ Typing `/` in a card's prompt box opens an autocomplete list of every command a 
 
 The Alerts on/off button at the foot of the sidebar turns on toasts, a short beep, browser notifications and a tab-title counter when a focused session finishes, asks a question, may need approval, is marked blocked, or a prompt fails or pauses the queue. The 🔔 bell lists past notifications.
 
+The repository icon beside it shows whether the board's own checkout matches origin (`GET /api/repo-status`, which runs `git fetch`). Click it to fetch again when up to date, to pull when behind (`POST /api/repo/pull`, a fast-forward only pull, so a branch with local commits is refused rather than merged), or to commit and push when ahead. Server changes arrive on disk but only load after the board restarts.
+
 ## Action log
 
 Every button click on the board (not the reports the skills send with `curl`, which are logged separately as `skill`) is appended to `data/actions.json`: time, route, status, the MR url or session id, and for prompts only whether it was a slash command (`/handoff`) or plain text, never the text. The newest 5000 are kept. `GET /api/actions?days=30` returns your counts per action, so you can see where your attention goes before deciding what to automate.

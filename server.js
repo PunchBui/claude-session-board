@@ -17,6 +17,7 @@ import { aggregateUsage } from './lib/usage.js'
 import { createLimitsReader } from './lib/limits.js'
 import { createRepoStatusReader } from './lib/repostatus.js'
 import { createRepoPusher } from './lib/repopush.js'
+import { createRepoPuller } from './lib/repopull.js'
 import { listCommands, probeSlashCommands } from './lib/commands.js'
 import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
@@ -949,6 +950,11 @@ const postRoutes = {
     if (!result.ok) return json(res, result.status, { error: result.error })
     return json(res, 200, { committed: result.committed, status: await readRepoStatus({ force: true }) })
   },
+  async '/api/repo/pull'(body, res) {
+    const result = await pullRepo()
+    if (!result.ok) return json(res, result.status, { error: result.error })
+    return json(res, 200, { pulled: result.pulled, status: await readRepoStatus({ force: true }) })
+  },
   async '/api/pick-folder'(body, res) {
     try {
       return json(res, 200, await pickFolder())
@@ -1489,6 +1495,7 @@ const readLimits = createLimitsReader()
 const REPO_DIR = fileURLToPath(new URL('./', import.meta.url))
 const readRepoStatus = createRepoStatusReader({ cwd: REPO_DIR })
 const commitAndPushRepo = createRepoPusher({ cwd: REPO_DIR })
+const pullRepo = createRepoPuller({ cwd: REPO_DIR })
 
 installCrashGuard()
 await loadStores()

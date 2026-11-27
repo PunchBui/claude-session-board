@@ -5829,6 +5829,13 @@ const REPO_STATES = {
   diverged: { icon: 'arrow-up-down', text: 'Origin has updates and local has changes to push' },
 }
 
+const REPO_CLICK = {
+  synced: 'Click to fetch again',
+  behind: 'Click to pull',
+  ahead: 'Click to commit and push',
+  diverged: 'Click to pull',
+}
+
 function repoStatusTitle(data) {
   const view = REPO_STATES[data.state]
   const counts = [data.behind ? `${data.behind} to pull` : '', data.ahead ? `${data.ahead} to push` : ''].filter(Boolean).join(', ')
@@ -5837,7 +5844,7 @@ function repoStatusTitle(data) {
     `${data.branch} → ${data.upstream}`,
     data.dirtyCount ? `${data.dirtyCount} uncommitted file${data.dirtyCount === 1 ? '' : 's'}` : '',
     data.fetched ? '' : 'Could not reach origin, showing the last fetched state',
-    data.state === 'ahead' ? 'Click to commit and push' : 'Click to check again',
+    REPO_CLICK[data.state],
   ].filter(Boolean).join('\n')
 }
 
@@ -5882,7 +5889,19 @@ const commitAndPushRepo = () => withRepoSpinner(async (button) => {
   showRepoStatus(button, await signedOut(await fetch('/api/repo-status?force=1')).json())
 })
 
-$('repo-status').onclick = () => ($('repo-status').dataset.state === 'ahead' ? commitAndPushRepo() : refreshRepoStatus(true))
+const pullRepoFromOrigin = () => withRepoSpinner(async (button) => {
+  const result = await postJson('/api/repo/pull', {})
+  if (result.ok) {
+    showRepoStatus(button, result.data.status)
+    toast({ id: 'repo-pull', title: 'Pulled from origin', kind: 'finished', message: `Pulled ${result.data.pulled} new commit${result.data.pulled === 1 ? '' : 's'}. Restart the board to load server changes.` })
+    return
+  }
+  toast({ id: 'repo-pull', title: 'Could not pull', kind: 'failed', message: result.data.error ?? 'Could not pull' })
+  showRepoStatus(button, await signedOut(await fetch('/api/repo-status?force=1')).json())
+})
+
+const REPO_CLICK_ACTION = { ahead: commitAndPushRepo, behind: pullRepoFromOrigin, diverged: pullRepoFromOrigin }
+$('repo-status').onclick = () => (REPO_CLICK_ACTION[$('repo-status').dataset.state] ?? (() => refreshRepoStatus(true)))()
 
 const topbar = document.querySelector('.topbar')
 if (window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--topbar-h', `${topbar.offsetHeight}px`)).observe(topbar)
