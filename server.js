@@ -672,6 +672,7 @@ async function flowPage({ force = false } = {}) {
 }
 
 const FOLDER_WAIT_MS = 1500
+let lastFolders = new Map()
 const remoteOf = createRemoteCache({ read: originUrl })
 const canonicalProject = createCanonicalCache({
   read: async (path) => JSON.parse(await glab(['api', '--hostname', GITLAB_HOST, `projects/${encodeURIComponent(path)}`])).path_with_namespace,
@@ -1410,8 +1411,10 @@ const getRoutes = {
     })
     const linked = await mrSessionLinks()
     const withLinks = withSessions(data, linked)
-    const folders = await settleWithin(mrFolders(withLinks, linked), FOLDER_WAIT_MS)
-    const shown = folders ? withFolders(withLinks, folders) : { ...withLinks, refreshing: true }
+    const resolving = mrFolders(withLinks, linked).then((resolved) => (lastFolders = resolved))
+    resolving.catch(() => {})
+    const folders = await settleWithin(resolving, FOLDER_WAIT_MS)
+    const shown = withFolders(folders ? withLinks : { ...withLinks, refreshing: true }, lastFolders)
     const reviewChannel = await currentReviewChannel()
     return json(res, 200, withDeploy(withBabysit({ ...withPingDue(withPings(withFocus(shown, next.urls), await readMrPings(), reviewChannel), { events: await readJson(MR_EVENTS_FILE, {}), now: Date.now(), afterMs: PING_DUE_MS }), reviewChannel: reviewChannel || null, reviewChannelLocked: Boolean(REVIEW_CHANNEL_ENV) }, await readMrBabysit()), await readMrDeploy()))
   },
