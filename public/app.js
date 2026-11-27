@@ -5898,7 +5898,7 @@ const REPO_CLICK = {
   synced: 'Click to fetch again',
   behind: 'Click to pull',
   ahead: 'Click to commit and push',
-  diverged: 'Click to pull',
+  diverged: 'Click to commit, pull and push',
 }
 
 function repoStatusTitle(data) {
@@ -5943,14 +5943,18 @@ const refreshRepoStatus = (force = false) => withRepoSpinner(async (button) => {
   showRepoStatus(button, await signedOut(await fetch(`/api/repo-status${force ? '?force=1' : ''}`)).json())
 })
 
-const commitAndPushRepo = () => withRepoSpinner(async (button) => {
-  const result = await postJson('/api/repo/push', {})
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+const syncRepo = () => withRepoSpinner(async (button) => {
+  const result = await postJson('/api/repo/push', { pull: true })
   if (result.ok) {
+    const { committed, pulled, pushed } = result.data
+    const did = [committed ? `committed “${committed}”` : '', pulled ? `pulled ${plural(pulled, 'commit')}` : '', pushed ? 'pushed' : ''].filter(Boolean).join(', ')
     showRepoStatus(button, result.data.status)
-    toast({ id: 'repo-push', title: 'Pushed to origin', kind: 'finished', message: result.data.committed ? `Committed “${result.data.committed}” and pushed.` : 'Pushed the local commits.' })
+    toast({ id: 'repo-push', title: pushed ? 'Synced with origin' : 'Updated from origin', kind: 'finished', message: `${did.charAt(0).toUpperCase()}${did.slice(1)}.` })
     return
   }
-  toast({ id: 'repo-push', title: 'Could not push', kind: 'failed', message: result.data.error ?? 'Could not push' })
+  toast({ id: 'repo-push', title: 'Could not sync', kind: 'failed', message: result.data.error ?? 'Could not sync' })
   showRepoStatus(button, await signedOut(await fetch('/api/repo-status?force=1')).json())
 })
 
@@ -5965,7 +5969,7 @@ const pullRepoFromOrigin = () => withRepoSpinner(async (button) => {
   showRepoStatus(button, await signedOut(await fetch('/api/repo-status?force=1')).json())
 })
 
-const REPO_CLICK_ACTION = { ahead: commitAndPushRepo, behind: pullRepoFromOrigin, diverged: pullRepoFromOrigin }
+const REPO_CLICK_ACTION = { ahead: syncRepo, behind: pullRepoFromOrigin, diverged: syncRepo }
 $('repo-status').onclick = () => (REPO_CLICK_ACTION[$('repo-status').dataset.state] ?? (() => refreshRepoStatus(true)))()
 
 const topbar = document.querySelector('.topbar')

@@ -43,7 +43,7 @@ test('uncommitted files are committed and pushed to origin', async () => {
     writeFileSync(join(work, 'a.txt'), 'two\n')
     writeFileSync(join(work, 'b.txt'), 'new\n')
     const result = await createRepoPusher({ cwd: work })()
-    assert.deepEqual(result, { ok: true, committed: 'Update a.txt, b.txt' })
+    assert.deepEqual(result, { ok: true, committed: 'Update a.txt, b.txt', pulled: 0, pushed: true })
     assert.equal(git(origin, 'log', '-1', '--format=%s', 'main'), 'Update a.txt, b.txt')
     assert.equal(git(work, 'status', '--porcelain'), '')
   } finally { rmSync(root, { recursive: true, force: true }) }
@@ -55,7 +55,7 @@ test('commits that are already made are pushed without a new commit', async () =
     writeFileSync(join(work, 'a.txt'), 'two\n')
     git(work, 'commit', '-q', '-am', 'my own message')
     const result = await createRepoPusher({ cwd: work })()
-    assert.deepEqual(result, { ok: true, committed: null })
+    assert.deepEqual(result, { ok: true, committed: null, pulled: 0, pushed: true })
     assert.equal(git(origin, 'log', '-1', '--format=%s', 'main'), 'my own message')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
@@ -95,4 +95,47 @@ test('a folder without git reports an error instead of throwing', async () => {
     assert.equal(result.ok, false)
     assert.equal(result.status, 400)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('pull: true fast-forwards a clean branch that is behind and does not push', async () => {
+  const { root, work, other } = makeRepos()
+  try {
+    writeFileSync(join(other, 'c.txt'), 'remote\n')
+    git(other, 'add', '-A')
+    git(other, 'commit', '-q', '-m', 'remote change')
+    git(other, 'push', '-q', 'origin', 'main')
+    const result = await createRepoPusher({ cwd: work })({ pull: true })
+    assert.deepEqual(result, { ok: true, committed: null, pulled: 1, pushed: false })
+    assert.equal(git(work, 'log', '-1', '--format=%s'), 'remote change')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('pull: true commits local files, rebases onto origin and pushes when diverged', async () => {
+  const { root, origin, work, other } = makeRepos()
+  try {
+    writeFileSync(join(other, 'c.txt'), 'remote\n')
+    git(other, 'add', '-A')
+    git(other, 'commit', '-q', '-m', 'remote change')
+    git(other, 'push', '-q', 'origin', 'main')
+    writeFileSync(join(work, 'a.txt'), 'local\n')
+    const result = await createRepoPusher({ cwd: work })({ pull: true })
+    assert.deepEqual(result, { ok: true, committed: 'Update a.txt', pulled: 1, pushed: true })
+    assert.equal(git(origin, 'log', '-2', '--format=%s', 'main'), 'Update a.txt\nremote change')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('pull: true aborts the rebase on a conflict and keeps the local commit', async () => {
+  const { root, origin, work, other } = makeRepos()
+  try {
+    writeFileSync(join(other, 'a.txt'), 'remote\n')
+    git(other, 'commit', '-q', '-am', 'remote change')
+    git(other, 'push', '-q', 'origin', 'main')
+    writeFileSync(join(work, 'a.txt'), 'local\n')
+    const result = await createRepoPusher({ cwd: work })({ pull: true })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /rebase aborted/)
+    assert.equal(git(origin, 'log', '-1', '--format=%s', 'main'), 'remote change')
+    assert.equal(git(work, 'log', '-1', '--format=%s'), 'Update a.txt')
+    assert.equal(git(work, 'status', '--porcelain'), '')
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

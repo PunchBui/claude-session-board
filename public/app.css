@@ -719,6 +719,9 @@
   .body .md-table tbody tr:last-child td { border-bottom: 0; }
   .body .md-table td { overflow-wrap: anywhere; }
   .body > * + .md-table-wrap, .body .md-table-wrap + * { margin-top: 10px; }
+  /* Tables in the main chat break out of the reading column to span the whole chat pane (100cqw = .chat's content width) */
+  .chat { container-type: inline-size; }
+  .chat .msg.assistant .body .md-table-wrap { width: 100cqw; max-width: 100cqw; margin-left: calc(50% - 50cqw); box-sizing: border-box; }
 
   .body .para + .codeblock, .body .codeblock + .para, .body .codeblock + .codeblock { margin-top: 10px; }
   .codeblock { position: relative; background: color-mix(in srgb, var(--text) 6%, transparent); border: 1px solid var(--line); border-radius: 12px; text-align: left; }
