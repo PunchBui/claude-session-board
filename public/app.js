@@ -1859,13 +1859,13 @@ function renderComposer(c) {
 
 // A running board session can stop and ask: an MCP server (e.g. Supabase before a migration) wants a yes/no,
 // which a one-shot `claude -p` run could only cancel. The answer goes back to the waiting run.
-function renderAsks(c) {
+function renderAsks(c, refresh = resync) {
   const asks = c.run?.state === 'running' ? c.run.pending ?? [] : []
   if (!asks.length) return null
   const wrap = el('div', 'asks')
   for (const ask of asks) {
     if (ask.kind === 'question') {
-      wrap.append(renderQuestionAsk(c, ask))
+      wrap.append(renderQuestionAsk(c, ask, refresh))
       continue
     }
     const key = `${c.id}:${ask.id}`
@@ -1923,7 +1923,7 @@ function renderAsks(c) {
         status.textContent = result.data.error ?? 'Could not send the answer'
         for (const b of buttons) b.disabled = false
       }
-      if (result.ok || result.data.error?.includes('no longer')) await resync()
+      if (result.ok || result.data.error?.includes('no longer')) await refresh()
     }
     const bar = el('div', 'ask-bar')
     for (const [action, label, cls] of ask.mode === 'url' ? [['accept', 'Done', 'primary'], ['cancel', 'Cancel', '']] : [['accept', 'Approve', 'primary'], ['decline', 'Decline', '']]) {
@@ -1941,7 +1941,7 @@ function renderAsks(c) {
   return wrap
 }
 
-function renderQuestionAsk(c, ask) {
+function renderQuestionAsk(c, ask, refresh = resync) {
   const key = `${c.id}:${ask.id}`
   const entry = state.asks.get(key) ?? { answers: {}, error: '' }
   state.asks.set(key, entry)
@@ -1964,7 +1964,7 @@ function renderQuestionAsk(c, ask) {
       status.textContent = entry.error
       for (const b of buttons) b.disabled = false
     }
-    if (result.ok || result.data.error?.includes('no longer')) await resync()
+    if (result.ok || result.data.error?.includes('no longer')) await refresh()
   }
   card.append(el('div', 'ask-server', ask.questions.length > 1 ? `Claude has ${ask.questions.length} questions for you` : 'Claude has a question for you'))
   for (const q of ask.questions) {
@@ -5084,6 +5084,7 @@ function sideChatDetail(r, showParent) {
   const box = el('div', 'sc-detail')
   const log = el('div', 'sc-log')
   log.dataset.sc = r.id
+  const asks = card ? renderAsks(card, () => loadSideChat(r.id)) : null
   if (!card) log.append(el('div', 'tp-note', 'Loading…'))
   else {
     chatBase = card.cwd ?? ''
@@ -5094,19 +5095,20 @@ function sideChatDetail(r, showParent) {
     if (waiting) log.append(renderMessage({ role: 'user', text: pending.text, pending: true }))
     const working = renderWorking(card)
     if (working) log.append(working)
-    else if (card.run?.state === 'running') {
+    else if (card.run?.state === 'running' && !asks) {
       const line = el('div', 'working')
       const inner = el('div', 'working-line')
       inner.append(el('span', 'pulse'), el('span', 'shimmer', 'Starting…'))
       line.append(inner)
       log.append(line)
     }
-    if (!messages.length && !waiting && !working && card.run?.state !== 'running') log.append(el('div', 'tp-note', 'No messages yet.'))
+    if (!messages.length && !waiting && !working && !asks && card.run?.state !== 'running') log.append(el('div', 'tp-note', 'No messages yet.'))
     if (['failed', 'stalled'].includes(card.run?.state) && card.run.error) log.append(el('div', 'sc-error', card.run.error))
     const queued = card.queue?.items.length ?? 0
     if (queued) log.append(el('div', 'tp-note', `${queued} queued ${queued === 1 ? 'message' : 'messages'}: ${queued === 1 ? 'it runs' : 'they run'} when this reply finishes.`))
   }
   box.append(log)
+  if (asks) box.append(asks)
   if (!r.closed) box.append(sideComposer(`reply:${r.id}`, { placeholder: 'Reply in this side chat…', label: 'Send in this side chat', onSend: (prompt) => sendSideReply(r, prompt) }))
   const actions = el('div', 'sc-actions')
   const toggle = el('button', 'btn', r.closed ? 'Reopen' : 'Close')
@@ -5144,7 +5146,11 @@ function sideChatRow(r, showParent) {
   const sub = [showParent ? r.parentTitle : null, r.source === 'board' ? 'started on the board' : 'from Claude desktop'].filter(Boolean)
   title.append(el('span', 'tp-row-session', sub.join(' · ')))
   head.append(icon(open ? 'chevron-down' : 'chevron-right', { size: 14 }), title)
-  if (r.running) {
+  if (sc.cards.get(r.id)?.run?.pending?.length) {
+    const asking = el('span', 'sc-live sc-asking')
+    asking.append(icon('help-circle', { size: 13 }), text('Needs you'))
+    head.append(asking)
+  } else if (r.running) {
     const live = el('span', 'sc-live')
     live.append(el('span', 'spinner'), text('Working'))
     head.append(live)

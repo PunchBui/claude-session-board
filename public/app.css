@@ -848,6 +848,7 @@
   .sc-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .sc-actions .btn { font-size: 12px; }
   .sc-live { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 11.5px; color: var(--info); }
+  .sc-asking { color: var(--caution); font-weight: 600; }
   @media (max-width: 900px) {
     .split:has(.task-panel:not([hidden])) { grid-template-columns: minmax(0, 1fr); }
     .task-panel:not([hidden]) { position: fixed; top: 0; right: 0; bottom: 0; width: min(100%, 400px); z-index: 30; border-radius: 0; box-shadow: -10px 0 30px rgba(0, 0, 0, .35); }
