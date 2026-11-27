@@ -81,6 +81,24 @@ export function carryMissingCards(previous, ids, cards) {
   return carried.length ? [...cards, ...carried] : cards
 }
 
+export function focusQuery(cards) {
+  const have = cards.filter((c) => c.version).map((c) => `${c.id}:${c.version}`)
+  return have.length ? `?have=${encodeURIComponent(have.join(','))}` : ''
+}
+
+export function mergeFocus(previous, focus) {
+  const same = new Set(focus.same ?? [])
+  const known = new Map(previous.map((c) => [c.id, c]))
+  const sent = new Map(focus.cards.map((c) => [c.id, c]))
+  const cards = []
+  for (const id of focus.ids) {
+    const card = sent.get(id) ?? (same.has(id) ? known.get(id) : undefined)
+    if (card) cards.push(card)
+    else if (same.has(id)) return null
+  }
+  return { ...focus, cards, same: [] }
+}
+
 export function pickSelected(groups, selected) {
   const all = flatten(groups)
   return all.find((c) => c.id === selected) ?? all[0] ?? null

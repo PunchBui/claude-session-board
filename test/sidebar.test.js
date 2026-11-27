@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { groupOf, cardTitle, visibleGroups, groupSummary, groupCards, pickSelected, carryMissingCards, neighbour, shortAge, flatten, sortCards, sortKey, SORTS, moveWithin } from '../public/sidebar.js'
+import { groupOf, cardTitle, visibleGroups, groupSummary, groupCards, pickSelected, carryMissingCards, focusQuery, mergeFocus, neighbour, shortAge, flatten, sortCards, sortKey, SORTS, moveWithin } from '../public/sidebar.js'
 
 const card = (id, over = {}) => ({ id, title: id, project: 'web', cwd: `/w/${id}`, active: false, ...over })
 
@@ -183,4 +183,26 @@ test('a session no longer in Focus is not carried over', () => {
 test('nothing is carried when every focused card arrived', () => {
   const cards = [card('a')]
   assert.equal(carryMissingCards([card('a')], ['a'], cards), cards)
+})
+
+test('the focus request lists the versions of the cards already held', () => {
+  assert.equal(focusQuery([]), '')
+  assert.equal(focusQuery([{ id: 'a' }]), '')
+  assert.equal(decodeURIComponent(focusQuery([{ id: 'a', version: 'v1' }, { id: 'b', version: 'v2' }, { id: 'c' }])), '?have=a:v1,b:v2')
+})
+
+test('unchanged cards are filled in from the previous ones in the order of the ids', () => {
+  const previous = [card('a', { version: 'v1' }), card('b', { version: 'v1' })]
+  const merged = mergeFocus(previous, { ids: ['b', 'c', 'a'], cards: [card('c', { version: 'v1' })], same: ['a', 'b'] })
+  assert.deepEqual(merged.cards.map((c) => c.id), ['b', 'c', 'a'])
+  assert.equal(merged.cards[0], previous[1])
+})
+
+test('a response that relies on a card the client lacks cannot be merged', () => {
+  assert.equal(mergeFocus([], { ids: ['a'], cards: [], same: ['a'] }), null)
+})
+
+test('a full response merges to itself', () => {
+  const merged = mergeFocus([], { ids: ['a'], cards: [card('a')] })
+  assert.deepEqual(merged.cards.map((c) => c.id), ['a'])
 })

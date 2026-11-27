@@ -23,6 +23,7 @@ import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
+import { createCardCache, cardVersion, timeBucket, parseHave, focusDelta } from './lib/cardcache.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer, pingChannel, reviewChannelFrom, resolveReviewChannel } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
@@ -541,22 +542,28 @@ async function tick() {
   }
 }
 
-async function loadFocusCards() {
-  const [ids, raws] = await Promise.all([readFocus(), readRawSessions()])
+const focusCardCache = createCardCache()
+
+async function focusVersion(raw, override) {
+  const path = await findTranscript(raw.cliSessionId)
+  const info = path ? await stat(path).catch(() => null) : null
+  const id = raw.sessionId
+  return cardVersion([toSummary(raw), ownsLoops(raw), info?.mtimeMs ?? null, info?.size ?? null, manager.publicRun(id), publicQueue(id), schedulesFor(id), babysitBySession.get(id) ?? null, override ?? null, timeBucket(Date.now(), Math.max(info?.mtimeMs ?? 0, raw.lastActivityAt ?? 0))])
+}
+
+async function loadFocusCards(have = new Map()) {
+  const [ids, raws, overrides] = await Promise.all([readFocus(), readRawSessions(), readOverrides()])
   const sideIds = new Set(raws.filter(isSideChat).map((raw) => raw.sessionId))
-  const shown = ids.filter((id) => !sideIds.has(id))
   const byId = new Map(raws.map((raw) => [raw.sessionId, raw]))
-  const cards = await Promise.all(
-    shown.filter((id) => byId.has(id)).map((id) =>
-      buildCard(byId.get(id)).then((card) => ({
-        ...card,
-        run: manager.publicRun(id),
-        queue: publicQueue(id),
-        schedules: schedulesFor(id),
-      }))
-    )
-  )
-  return { ids: shown, cards }
+  const shown = ids.filter((id) => !sideIds.has(id))
+  const present = shown.filter((id) => byId.has(id))
+  const { cards, same } = await focusDelta(present, {
+    have,
+    cache: focusCardCache,
+    versionOf: (id) => focusVersion(byId.get(id), overrides[id]),
+    build: async (id) => ({ ...(await buildCard(byId.get(id))), run: manager.publicRun(id), queue: publicQueue(id), schedules: schedulesFor(id) }),
+  })
+  return { ids: shown, cards, same }
 }
 
 const mergeRequests = createMrCache({
@@ -1385,7 +1392,7 @@ const getRoutes = {
     return json(res, 200, await loadSessions())
   },
   async '/api/focus'(url, res) {
-    return json(res, 200, await loadFocusCards())
+    return json(res, 200, await loadFocusCards(parseHave(url.searchParams.get('have'))))
   },
   async '/api/side-chats'(url, res) {
     return json(res, 200, { items: await sideChatRows() })

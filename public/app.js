@@ -12,7 +12,7 @@ import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { splitAttachments, visibleText, DEFAULT_ATTACH_TEXT } from './attachments.js'
 import { PATH_PATTERN, BARE_DOC_PATTERN, isBareDoc, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtml, stripLocation, fileUrl } from './filepaths.js'
-import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, pickSelected, carryMissingCards, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
+import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, pickSelected, carryMissingCards, focusQuery, mergeFocus, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
 import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
@@ -5660,8 +5660,8 @@ function detectEvents(sessions, cards) {
 
 async function refreshBoard() {
   try {
-    const [sessions, firstFocus] = await Promise.all([getJson('/api/sessions'), getJson('/api/focus')])
-    let focus = firstFocus
+    const [sessions, firstFocus] = await Promise.all([getJson('/api/sessions'), getJson(`/api/focus${focusQuery(state.cards)}`)])
+    let focus = mergeFocus(state.cards, firstFocus) ?? await getJson('/api/focus')
     const { fresh, next: knownIds } = newSessionIds(state.knownIds, sessions, focus.ids)
     state.knownIds = knownIds
     if (fresh.length) {
