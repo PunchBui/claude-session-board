@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { groupOf, cardTitle, visibleGroups, groupSummary, groupCards, pickSelected, neighbour, shortAge, flatten, sortCards, sortKey, SORTS, moveWithin } from '../public/sidebar.js'
+import { groupOf, cardTitle, visibleGroups, groupSummary, groupCards, pickSelected, carryMissingCards, neighbour, shortAge, flatten, sortCards, sortKey, SORTS, moveWithin } from '../public/sidebar.js'
 
 const card = (id, over = {}) => ({ id, title: id, project: 'web', cwd: `/w/${id}`, active: false, ...over })
 
@@ -167,4 +167,20 @@ test('a collapsed group still summarises all of its sessions', () => {
   assert.equal(group.cards.length, 0)
   assert.deepEqual(group.summary, { running: 1, idle: 1, nextAt: 7000 })
   assert.equal(visibleGroups(groupCards([card('i')]), new Set(), null)[0].summary, null)
+})
+
+test('a focused session missing from one poll keeps its last card', () => {
+  const previous = [card('a'), card('b')]
+  const next = carryMissingCards(previous, ['a', 'b'], [card('a', { title: 'new' })])
+  assert.deepEqual(next.map((c) => c.id), ['a', 'b'])
+  assert.equal(next[0].title, 'new')
+})
+
+test('a session no longer in Focus is not carried over', () => {
+  assert.deepEqual(carryMissingCards([card('a'), card('b')], ['a'], [card('a')]).map((c) => c.id), ['a'])
+})
+
+test('nothing is carried when every focused card arrived', () => {
+  const cards = [card('a')]
+  assert.equal(carryMissingCards([card('a')], ['a'], cards), cards)
 })

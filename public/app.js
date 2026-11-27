@@ -12,7 +12,7 @@ import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
 import { splitAttachments, visibleText, DEFAULT_ATTACH_TEXT } from './attachments.js'
 import { PATH_PATTERN, BARE_DOC_PATTERN, isBareDoc, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtml, stripLocation, fileUrl } from './filepaths.js'
-import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
+import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, pickSelected, carryMissingCards, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
 import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
@@ -5675,7 +5675,7 @@ async function refreshBoard() {
       state.sessions = sessions
       state.resume = new Map(sessions.filter((s) => s.resume).map((s) => [s.id, s.resume]))
       state.focusIds = focus.ids
-      state.cards = focus.cards
+      state.cards = carryMissingCards(state.cards, focus.ids, focus.cards)
       timeline.update({ prompts: focus.cards.map((c) => ({ sessionId: c.id, title: c.title, project: c.project, items: c.schedules ?? [] })) })
       state.loaded = true
       renderSummary()

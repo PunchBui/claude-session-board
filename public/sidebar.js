@@ -75,6 +75,12 @@ export function moveWithin(order, id, targetId, after, sameGroup = () => true) {
 
 export const flatten = (groups) => groups.flatMap((g) => g.cards)
 
+export function carryMissingCards(previous, ids, cards) {
+  const have = new Set(cards.map((c) => c.id))
+  const carried = ids.filter((id) => !have.has(id)).map((id) => previous.find((c) => c.id === id)).filter(Boolean)
+  return carried.length ? [...cards, ...carried] : cards
+}
+
 export function pickSelected(groups, selected) {
   const all = flatten(groups)
   return all.find((c) => c.id === selected) ?? all[0] ?? null
