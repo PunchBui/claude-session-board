@@ -490,14 +490,24 @@ async function toggleAlerts() {
 
 const failToast = (id, title, result) => toast({ id, title, kind: 'failed', message: result.data?.error ?? title })
 
+function dropFromFocusNow(id) {
+  state.focusIds = state.focusIds.filter((existing) => existing !== id)
+  state.cards = state.cards.filter((c) => c.id !== id)
+  renderRows()
+  renderFocus()
+}
+
 async function setFocus(id, focused) {
+  if (!focused) dropFromFocusNow(id)
   const result = await postJson('/api/focus', { id, focused })
   if (!result.ok) {
     failToast('focus-update', focused ? 'Could not add to Focus' : 'Could not remove from Focus', result)
+    if (!focused) resync()
     return false
   }
   state.focusIds = result.data.ids
-  await resync()
+  if (focused) await resync()
+  else resync()
   return true
 }
 
