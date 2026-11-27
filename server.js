@@ -23,6 +23,7 @@ import { listSkills, aggregateSkills, skillDetail } from './lib/skills.js'
 import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
+import { MAX_WATCHES, parseWatchInput, parseWatchesFile, isWatchDue, watchPrompt, afterCheck, applyReport, toggled, needsNewSession, expireWatches } from './lib/watches.js'
 import { createCardCache, cardVersion, timeBucket, parseHave, focusDelta } from './lib/cardcache.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer, pingChannel, reviewChannelFrom, resolveReviewChannel } from './lib/ping.js'
@@ -79,6 +80,7 @@ const MR_DEPLOY_FILE = join(DATA_DIR, 'mr-deploy.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
 const ROUTINE_FILE = join(DATA_DIR, 'routines.json')
+const WATCH_FILE = join(DATA_DIR, 'watches.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
 const RUNS_FILE = join(DATA_DIR, 'runs.json')
 const BOARD_SESSIONS_FILE = join(DATA_DIR, 'board-sessions.json')
@@ -132,6 +134,8 @@ const transcriptPaths = new Map()
 const queues = new Map()
 let schedules = []
 let routines = []
+let watches = []
+let firingWatches = false
 let firingRoutines = false
 let customSnippets = null
 const indexStatus = { done: 0, total: 0, running: false }
@@ -442,11 +446,13 @@ async function loadStores() {
   const storedSchedules = await readJson(SCHEDULE_FILE, {})
   schedules = Array.isArray(storedSchedules.items) ? storedSchedules.items : []
   routines = parseRoutinesFile(await readJson(ROUTINE_FILE, {}))
+watches = parseWatchesFile(await readJson(WATCH_FILE, {}))
   const storedSnippets = await readJson(SNIPPET_FILE, null)
   customSnippets = Array.isArray(storedSnippets?.items) ? storedSnippets.items : null
 }
 
 const persistRoutines = () => writeJson(ROUTINE_FILE, { items: routines })
+const persistWatches = () => writeJson(WATCH_FILE, { items: watches })
 const persistSchedules = () => writeJson(SCHEDULE_FILE, { items: schedules })
 const snippets = () => customSnippets ?? DEFAULT_SNIPPETS
 const persistSnippets = () => writeJson(SNIPPET_FILE, { items: snippets() })
@@ -533,9 +539,41 @@ async function fireDueRoutines() {
   }
 }
 
+async function checkWatch(watch, { force = false } = {}) {
+  const now = Date.now()
+  const sessionId = watch.sessionId
+  const prompt = watchPrompt(watch, { origin: `http://localhost:${PORT}`, since: watch.lastCheckedAt ?? watch.createdAt })
+  let outcome
+  if (needsNewSession(watch)) {
+    outcome = await startRoutineSession({ ...watch, prompt })
+  } else {
+    if (!force && (manager.runFor(sessionId)?.state === 'running' || queues.get(sessionId)?.items.length)) return
+    const raw = await findRaw(sessionId)
+    outcome = raw && (await hasTranscript(raw)) ? ((await enqueue(sessionId, prompt)) ? { sessionId } : { error: 'The session queue is full.' }) : await startRoutineSession({ ...watch, prompt })
+  }
+  watches = watches.map((w) => (w.wid === watch.wid ? { ...afterCheck(w, outcome, now), ...(outcome.error ? { lastNote: outcome.error } : {}) } : w))
+  await persistWatches()
+}
+
+async function fireDueWatches() {
+  if (firingWatches) return
+  firingWatches = true
+  try {
+    const expired = expireWatches(watches, Date.now())
+    if (expired.some((w, i) => w.state !== watches[i].state)) {
+      watches = expired
+      await persistWatches()
+    }
+    for (const watch of watches.filter((w) => isWatchDue(w, Date.now()))) await checkWatch(watch)
+  } finally {
+    firingWatches = false
+  }
+}
+
 async function tick() {
   try {
     await fireDueRoutines()
+    await fireDueWatches()
     await fireDueSchedules()
     await pump()
   } catch (error) {
@@ -1321,6 +1359,44 @@ const postRoutes = {
     if (routines.length !== before) await persistRoutines()
     return json(res, 200, { routines })
   },
+  async '/api/watches'(body, res) {
+    const parsed = parseWatchInput(body)
+    if (parsed.error) return json(res, 400, { error: parsed.error })
+    if (watches.length >= MAX_WATCHES) return json(res, 409, { error: `Too many watches (${MAX_WATCHES}). Delete one first.` })
+    watches = [...watches, parsed.watch]
+    await persistWatches()
+    fireDueWatches().catch(() => {})
+    return json(res, 201, { watches })
+  },
+  async '/api/watches/toggle'(body, res) {
+    const watch = watches.find((w) => w.wid === body.wid)
+    if (!watch) return json(res, 404, { error: 'not found' })
+    watches = watches.map((w) => (w.wid === watch.wid ? toggled(w, Boolean(body.enabled), Date.now()) : w))
+    await persistWatches()
+    return json(res, 200, { watches })
+  },
+  async '/api/watches/run'(body, res) {
+    const watch = watches.find((w) => w.wid === body.wid)
+    if (!watch) return json(res, 404, { error: 'not found' })
+    if (watch.state !== 'watching') return json(res, 409, { error: 'Resume this watch first.' })
+    await checkWatch(watch, { force: true })
+    return json(res, 202, { watches })
+  },
+  async '/api/watches/remove'(body, res) {
+    const before = watches.length
+    watches = watches.filter((w) => w.wid !== body.wid)
+    if (watches.length !== before) await persistWatches()
+    return json(res, 200, { watches })
+  },
+  async '/api/watches/report'(body, res) {
+    const watch = watches.find((w) => w.wid === body?.wid)
+    if (!watch) return json(res, 404, { error: 'not found' })
+    const applied = applyReport(watch, body, Date.now())
+    if (applied.error) return json(res, 400, { error: applied.error })
+    watches = watches.map((w) => (w.wid === watch.wid ? applied.watch : w))
+    await persistWatches()
+    return json(res, 200, { state: applied.watch.state })
+  },
   async '/api/snippets'(body, res) {
     const label = String(body.label ?? '').trim().slice(0, 40)
     if (!label || !validPrompt(body.text)) return json(res, 400, { error: 'bad request' })
@@ -1446,6 +1522,9 @@ const getRoutes = {
   },
   async '/api/routines'(url, res) {
     return json(res, 200, { routines })
+  },
+  async '/api/watches'(url, res) {
+    return json(res, 200, { watches })
   },
   async '/api/snippets'(url, res) {
     return json(res, 200, { items: snippets() })

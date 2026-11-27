@@ -183,6 +183,15 @@
   .rt-meta .err { color: var(--bad, #b3261e); }
   .rt-item .rt-actions { display: flex; gap: 6px; flex: none; }
   .rt-item .btn { padding: 2px 10px; font-size: 12px; }
+  .watch-section { margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }
+  .watch-sub { color: var(--muted); font: 13px/1.45 var(--sans); }
+  .watch-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .watch-form .field { box-sizing: border-box; height: 36px; min-width: 0; max-width: 100%; }
+  .watch-form .watch-target { flex: 1 1 280px; }
+  .watch-form .watch-folder { flex: 0 1 220px; width: 220px; }
+  .watch-form .watch-error { flex-basis: 100%; color: var(--bad, #b3261e); font-size: 12px; }
+  .rt-item.done .rt-title::before { content: "✓ "; color: var(--ok); }
+  .rt-meta .watch-note { color: var(--text); }
   .sheet { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
   .scroll-x { overflow-x: auto; }
   table { width: 100%; min-width: 1180px; border-collapse: collapse; table-layout: fixed; }

@@ -70,6 +70,7 @@ const state = {
   usage: { days: 30, metric: 'output', data: null, at: 0 },
   skills: { data: null, scope: 'all', temp: null, days: 30, sort: 'uses', query: '', at: 0, open: new Set(), details: new Map() },
   schedule: { data: null, at: 0, built: false },
+  watches: { data: null, at: 0, built: false, kinds: new Map() },
   loops: { data: null, at: 0 },
   timeline: { at: 0 },
   background: { data: null, at: 0, output: new Map(), loading: new Set() },
@@ -4655,6 +4656,7 @@ const scheduleRequest = latestOnly()
 async function loadSchedule() {
   if (!state.schedule.built) buildScheduleForm()
   fillScheduleFolders()
+  loadWatches()
   const isLatest = scheduleRequest()
   try {
     const data = await getJson('/api/routines')
@@ -4664,6 +4666,117 @@ async function loadSchedule() {
     timeline.update({ routines: state.schedule.data.routines })
     renderSchedulePage()
   } catch {}
+}
+
+const WATCH_KINDS = [['slack-thread', 'Slack thread', 'Link of the thread to watch for a reply'], ['deploy', 'Deploy', 'Link of the merge request to watch for its deploy'], ['custom', 'Condition', 'Describe what to wait for, in a sentence']]
+const WATCH_STATE_LABELS = { watching: 'Watching', paused: 'Paused', done: 'Done', expired: 'Expired' }
+
+function buildWatchForm() {
+  const form = $('watch-form')
+  const kind = el('select', 'field')
+  for (const [value, label] of WATCH_KINDS) kind.append(new Option(label, value))
+  const target = el('input', 'field watch-target')
+  target.placeholder = WATCH_KINDS[0][2]
+  kind.onchange = () => { target.placeholder = WATCH_KINDS.find(([value]) => value === kind.value)[2] }
+  const folder = el('select', 'field watch-folder')
+  const every = el('select', 'field')
+  for (const minutes of [5, 10, 15, 30, 60]) every.append(new Option(`Every ${minutes} min`, String(minutes)))
+  every.value = '10'
+  const days = el('select', 'field')
+  for (const count of [1, 3, 7, 14, 30]) days.append(new Option(`For ${count} day${count === 1 ? '' : 's'}`, String(count)))
+  days.value = '7'
+  const submit = el('button', 'btn primary', 'Watch')
+  submit.type = 'submit'
+  const error = el('div', 'watch-error')
+  error.hidden = true
+  form.append(kind, target, folder, every, days, submit, error)
+  form.onsubmit = async (event) => {
+    event.preventDefault()
+    error.hidden = true
+    const { ok, data } = await postJson('/api/watches', { kind: kind.value, target: target.value, folder: folder.value, everyMin: Number(every.value), days: Number(days.value) })
+    if (!ok) {
+      error.textContent = data.error ?? 'Could not start the watch.'
+      error.hidden = false
+      return
+    }
+    target.value = ''
+    state.watches.data = data.watches
+    renderWatches()
+    setTimeout(loadWatches, 1500)
+  }
+  state.watches.form = { folder }
+  state.watches.built = true
+}
+
+function fillWatchFolders() {
+  const folder = state.watches.form?.folder
+  if (!folder) return
+  const roots = folderRoots()
+  const key = [...roots.keys()].join('|')
+  if (folder.dataset.key === key) return
+  folder.dataset.key = key
+  const previous = folder.value
+  folder.replaceChildren(...[...roots].map(([root, name]) => new Option(`${name} — ${home(root)}`, root)))
+  if (previous && roots.has(previous)) folder.value = previous
+}
+
+async function loadWatches() {
+  try {
+    const { watches } = await getJson('/api/watches')
+    const before = new Map((state.watches.data ?? []).map((w) => [w.wid, w.state]))
+    for (const w of watches) {
+      if (w.state === 'done' && before.has(w.wid) && before.get(w.wid) !== 'done') toast({ id: w.sessionId ?? w.wid, title: 'Watch finished', kind: 'finished', message: `${w.name}${w.lastNote ? `: ${w.lastNote}` : ''}` })
+    }
+    state.watches.data = watches
+    state.watches.at = Date.now()
+    if (state.tab === 'schedule') renderWatches()
+  } catch {}
+}
+
+async function watchAction(path, body) {
+  const { ok, data } = await postJson(path, body)
+  if (data.watches) state.watches.data = data.watches
+  if (!ok) toast({ id: 'watch-error', title: 'Watch', kind: 'failed', message: data.error ?? 'Something went wrong.' })
+  renderWatches()
+}
+
+function renderWatches() {
+  if (!state.watches.built) buildWatchForm()
+  fillWatchFolders()
+  const items = state.watches.data ?? []
+  const rows = [...items].sort((a, b) => Number(b.state === 'watching') - Number(a.state === 'watching') || b.createdAt - a.createdAt)
+  $('watch-status').textContent = rows.length ? `${rows.length} total · ${rows.filter((w) => w.state === 'watching').length} watching` : ''
+  $('watch-empty').hidden = rows.length > 0
+  const list = $('watch-rows')
+  list.replaceChildren()
+  for (const w of rows) {
+    const item = el('div', `rt-item${w.state === 'watching' ? '' : ' off'}${w.state === 'done' ? ' done' : ''}`)
+    const main = el('div', 'rt-main')
+    const meta = el('div', 'rt-meta')
+    meta.append(el('span', undefined, WATCH_STATE_LABELS[w.state] ?? w.state))
+    meta.append(el('span', undefined, w.checks ? `${w.checks} check${w.checks === 1 ? '' : 's'}, last ${relative(w.lastCheckedAt)}` : 'Not checked yet'))
+    if (w.state === 'watching') meta.append(el('span', undefined, `Every ${w.everyMin} min, until ${new Date(w.expiresAt).toLocaleDateString([], { dateStyle: 'medium' })}`))
+    if (w.sessionId) {
+      const link = el('a', undefined, 'Open session')
+      link.href = `/focus?card=${encodeURIComponent(w.sessionId)}`
+      link.onclick = (event) => { event.preventDefault(); openInFocus(w.sessionId) }
+      meta.append(link)
+    }
+    if (w.lastNote) meta.append(el('span', 'watch-note', w.lastNote))
+    main.append(el('div', 'rt-title', w.name), meta)
+    const actions = el('div', 'rt-actions')
+    const check = el('button', 'btn', 'Check now')
+    check.disabled = w.state !== 'watching'
+    check.onclick = () => watchAction('/api/watches/run', { wid: w.wid })
+    const toggle = el('button', 'btn', w.state === 'watching' ? 'Pause' : 'Resume')
+    toggle.disabled = w.state === 'done'
+    toggle.onclick = () => watchAction('/api/watches/toggle', { wid: w.wid, enabled: w.state !== 'watching' })
+    const del = el('button', 'btn', 'Delete')
+    del.onclick = () => watchAction('/api/watches/remove', { wid: w.wid })
+    actions.append(check, toggle, del)
+    item.append(main, actions)
+    list.append(item)
+  }
 }
 
 async function scheduleAction(path, body) {
@@ -5727,6 +5840,7 @@ async function refreshBoard() {
     if (state.tab === 'flow' && Date.now() - state.flow.at > 60_000 && !flowView.busy()) loadFlow()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
+    if (Date.now() - state.watches.at > 15_000) loadWatches()
     if (Date.now() - state.mrs.at > mrsPollMs(mrHasWorking())) loadMrs()
     if (!isMobile() && Date.now() - state.timeline.at > 15_000) loadTimeline()
     if (state.tab === 'focus' && state.panel.open) {
