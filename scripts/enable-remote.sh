@@ -15,6 +15,8 @@ CONFIG="$DATA_DIR/remote.json"
 PORT="${PORT:-4747}"
 LABEL="com.user.claude-session-board"
 MODE="${1:-enable}"
+HOST_PATTERN='\.ts\.net$'
+HELPER="$ROOT/scripts/remote-config.js"
 
 TS="$(command -v tailscale || true)"
 [ -z "$TS" ] && [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ] && TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
@@ -36,7 +38,7 @@ restart_board() {
 
 if [ "$MODE" = "disable" ]; then
   "$TS" serve --https=443 off 2>/dev/null || true
-  rm -f "$CONFIG"
+  node "$HELPER" "$CONFIG" remove "$HOST_PATTERN"
   restart_board
   echo "Remote access is off."
   exit 0
@@ -58,8 +60,7 @@ fi
 [ -n "$TOKEN" ] || TOKEN="$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("base64url"))')"
 
 umask 077
-node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({hosts:[process.argv[2]], token:process.argv[3]}, null, 2)+"\n", {mode:0o600})' "$CONFIG" "$HOST" "$TOKEN"
-chmod 600 "$CONFIG"
+node "$HELPER" "$CONFIG" add "$HOST_PATTERN" "$HOST" "$TOKEN"
 
 "$TS" serve --bg --https=443 "http://127.0.0.1:$PORT"
 restart_board

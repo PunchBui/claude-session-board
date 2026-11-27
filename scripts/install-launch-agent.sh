@@ -20,6 +20,9 @@ fi
 
 mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
 
+ENV_XML="$("$NODE" "$ROOT/scripts/launch-agent-env.js" "$PLIST" "$AGENT_PATH")"
+
+umask 077
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,7 +37,7 @@ cat > "$PLIST" <<EOF
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>$AGENT_PATH</string>
+$ENV_XML
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

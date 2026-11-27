@@ -18,6 +18,8 @@ LOG="$DATA_DIR/cloudflared.log"
 PORT="${PORT:-4747}"
 LABEL="com.user.claude-session-board"
 MODE="${1:-enable}"
+HOST_PATTERN='\.trycloudflare\.com$'
+HELPER="$ROOT/scripts/remote-config.js"
 CF="$(command -v cloudflared || true)"
 [ -n "$CF" ] || { echo "cloudflared is not installed (brew install cloudflared)."; exit 1; }
 case "$MODE" in enable|rotate|disable) ;; *) echo "Unknown option: $MODE"; exit 2 ;; esac
@@ -47,7 +49,7 @@ mkdir -p "$DATA_DIR"
 stop_tunnel
 
 if [ "$MODE" = "disable" ]; then
-  rm -f "$CONFIG"
+  node "$HELPER" "$CONFIG" remove "$HOST_PATTERN"
   restart_board
   echo "Remote access is off."
   exit 0
@@ -75,8 +77,7 @@ done
 [ -n "$HOST" ] || { echo "No tunnel address after 30s; see $LOG"; stop_tunnel; exit 1; }
 
 umask 077
-node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({hosts:[process.argv[2]], token:process.argv[3]}, null, 2)+"\n", {mode:0o600})' "$CONFIG" "$HOST" "$TOKEN"
-chmod 600 "$CONFIG"
+node "$HELPER" "$CONFIG" add "$HOST_PATTERN" "$HOST" "$TOKEN"
 restart_board
 
 echo

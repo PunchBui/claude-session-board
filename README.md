@@ -53,6 +53,7 @@ An installed PWA cannot start the server itself. Install a LaunchAgent so the se
 ```
 
 - The agent is `com.user.claude-session-board`. It runs `server.js` with the `node` on your PATH at install time, so rerun the script after switching Node versions.
+- launchd does not pass your shell exports. The installer copies these variables into the plist's `EnvironmentVariables` if they are set in the shell you run it from: `GITLAB_HOST`, `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `FLOW_JQL`, `PORT`, `PROMPT_PERMISSION_MODE`, `REVIEW_SLACK_CHANNEL`, `REMOTE_HOSTS`, `BOARD_TOKEN`, `CLAUDE_APP_ASAR`, `CLAUDE_BIN`, `CLAUDE_HOME`, `DATA_DIR`, `SESSIONS_DIR`, `PROJECTS_DIR`, `PING_DUE_HOURS`. Values already in an installed plist that your shell does not set are kept, a variable set in your shell replaces the old value, and `PATH` is always rebuilt. Export what you need and rerun the installer to change them (for example `GITLAB_HOST=gitlab.example.com ./scripts/install-launch-agent.sh`). The plist is written readable only by you, since it can hold tokens.
 - Logs go to `~/Library/Logs/claude-session-board.log`.
 - Restart after changing server code: `launchctl kickstart -k gui/$(id -u)/com.user.claude-session-board`. Prompts the board is running keep going through a restart (each runs in its own process group, and the agent sets `AbandonProcessGroup`), so a session can restart the board without killing itself. The new server does not track them, though: it shows them as Working from their transcripts, and their run status, queue pause and handoff opening are not reported.
 - Remove it with `./scripts/install-launch-agent.sh uninstall`.
@@ -75,7 +76,7 @@ The server only listens on `127.0.0.1`. To reach it remotely, `tailscale serve` 
 2. Run `./scripts/enable-remote.sh`. It writes `data/remote.json` (hostname and a random token, mode 600), starts `tailscale serve`, restarts the launch agent, and prints the URL and token.
 3. On the phone, with Tailscale on, open `https://<mac>.<tailnet>.ts.net/`, enter the token once (the login cookie lasts a year), then Share → Add to Home Screen.
 
-`./scripts/enable-remote.sh rotate` makes a new token and signs every device out; `disable` turns it all off. The Mac must be awake and the board running (use the launch agent). Prompts sent from the phone run on the Mac with the same permission mode as local ones, so treat the token like a password. Things that open windows on the Mac (the Finder folder picker, Open in Claude) act on the Mac, not the phone.
+`./scripts/enable-remote.sh rotate` makes a new token and signs every device out; `disable` turns off remote access through Tailscale only. `scripts/enable-cloudflare.sh` and `scripts/enable-remote.sh` each add and remove only their own hostname (`*.trycloudflare.com` and `*.ts.net`) in `data/remote.json`, so running both keeps both hosts, and `data/remote.json` is deleted only when no host is left. The Mac must be awake and the board running (use the launch agent). Prompts sent from the phone run on the Mac with the same permission mode as local ones, so treat the token like a password. Things that open windows on the Mac (the Finder folder picker, Open in Claude) act on the Mac, not the phone.
 
 #### Or through a Cloudflare quick tunnel
 

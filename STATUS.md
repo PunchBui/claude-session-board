@@ -39,5 +39,5 @@ Recently done:
 - 2026-10-31: "Hand off" button on cards over 200k tokens
 NEXT ACTION: Create a Jira API token and connect it on /flow, then check the first sync against the real Jira project (statuses, sprints, MR links); then Restart the launch agent (launchctl kickstart -k gui/$(id -u)/com.user.claude-session-board), start a board session that calls Supabase apply_migration, and confirm the Approve card appears and the migration runs; then Open the board in the Electron shell and confirm the sidebar head clears the window buttons and drags the window, then commit the sidebar layout; after that: Open the trycloudflare URL on the phone and sign in with the token from data/remote.json (cloudflared dies on reboot: rerun scripts/enable-cloudflare.sh, or set up a named tunnel); then Commit the Focus redesign, retake docs/screenshots/focus.png (card.png and the Enlarge section are gone), restart the launch agent (launchctl kickstart -k gui/$(id -u)/com.user.claude-session-board) and try New chat → Chrome On → Start here with a browser task to confirm --chrome works headless
 Blocked on: none
-Skills: csb-create-schedule
+Skills: csb-attention-audit, csb-audit, csb-babysit, csb-check-deploy, csb-create-schedule
 Updated: 2026-11-26

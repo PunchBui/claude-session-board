@@ -42,7 +42,7 @@ if at <= now: at += datetime.timedelta(days=1)
 # one-off: at = datetime.datetime(2026, 11, 9, 8, 30)
 body = {
   "name": "Daily 8th night",
-  "folder": "/Users/dachawatsathonkanwiroj/repos/content-creator",
+  "folder": "/Users/you/repos/content-creator",
   "prompt": "/daily-8thnight rule story",
   "at": int(at.timestamp() * 1000),
   "repeat": "daily",
