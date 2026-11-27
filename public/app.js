@@ -1530,7 +1530,12 @@ function renderQueue(c) {
     const remove = el('button')
     remove.append(icon('x', { size: 14 }))
     remove.title = 'Remove from queue'
-    remove.onclick = () => postJson('/api/queue/remove', { id: c.id, qid: item.qid }).then(resync)
+    remove.onclick = async () => {
+      row.hidden = true
+      const result = await postJson('/api/queue/remove', { id: c.id, qid: item.qid })
+      if (!result.ok) row.hidden = false
+      resync()
+    }
     const force = el('button', 'btn', 'Send now')
     force.title = c.run?.state === 'running' ? 'Interrupt the running prompt and send this message now' : 'Send this message now, even if the session looks busy in the desktop app'
     force.onclick = async () => {
@@ -1918,12 +1923,15 @@ function renderAsks(c, refresh = resync) {
     const answer = async (action) => {
       for (const b of buttons) b.disabled = true
       const result = await postJson('/api/prompt/answer', { id: c.id, requestId: ask.id, action, content: values })
-      if (result.ok) state.asks.delete(key)
-      else {
-        status.textContent = result.data.error ?? 'Could not send the answer'
-        for (const b of buttons) b.disabled = false
+      if (result.ok) {
+        state.asks.delete(key)
+        card.remove()
+        refresh()
+        return
       }
-      if (result.ok || result.data.error?.includes('no longer')) await refresh()
+      status.textContent = result.data.error ?? 'Could not send the answer'
+      for (const b of buttons) b.disabled = false
+      if (result.data.error?.includes('no longer')) await refresh()
     }
     const bar = el('div', 'ask-bar')
     for (const [action, label, cls] of ask.mode === 'url' ? [['accept', 'Done', 'primary'], ['cancel', 'Cancel', '']] : [['accept', 'Approve', 'primary'], ['decline', 'Decline', '']]) {
@@ -1958,13 +1966,16 @@ function renderQuestionAsk(c, ask, refresh = resync) {
       return [q.question, [...value.picked, value.other.trim()].filter(Boolean)]
     }))
     const result = await postJson('/api/prompt/answer', { id: c.id, requestId: ask.id, action, answers })
-    if (result.ok) state.asks.delete(key)
-    else {
-      entry.error = result.data.error ?? 'Could not send the answer'
-      status.textContent = entry.error
-      for (const b of buttons) b.disabled = false
+    if (result.ok) {
+      state.asks.delete(key)
+      card.remove()
+      refresh()
+      return
     }
-    if (result.ok || result.data.error?.includes('no longer')) await refresh()
+    entry.error = result.data.error ?? 'Could not send the answer'
+    status.textContent = entry.error
+    for (const b of buttons) b.disabled = false
+    if (result.data.error?.includes('no longer')) await refresh()
   }
   card.append(el('div', 'ask-server', ask.questions.length > 1 ? `Claude has ${ask.questions.length} questions for you` : 'Claude has a question for you'))
   for (const q of ask.questions) {
