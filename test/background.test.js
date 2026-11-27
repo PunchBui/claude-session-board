@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { newScanState, absorbLine } from '../lib/scan.js'
-import { backgroundTasks, backgroundCounts, sessionBackground, runningCount, safeOutputPath } from '../lib/background.js'
+import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from '../lib/background.js'
 import { backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from '../public/loops.js'
 
 const T0 = Date.parse('2026-10-30T03:00:00.000Z')
@@ -26,7 +26,6 @@ test('a background command is running until its notification arrives', () => {
   assert.equal(task.description, 'Start the board server')
   assert.equal(task.hasOutput, true)
   assert.equal(task.durationMs, 5 * 60_000)
-  assert.equal(runningCount(state.background), 1)
 })
 
 test('a notification queued while the model was mid-tool-call still ends the task', () => {
@@ -37,14 +36,13 @@ test('a notification queued while the model was mid-tool-call still ends the tas
   const [task] = tasks(state, 5)
   assert.equal(task.status, 'completed')
   assert.equal(task.exitCode, 0)
-  assert.equal(runningCount(state.background), 0)
 })
 
 test('queued attachments that are not task notifications are ignored', () => {
   const state = newScanState()
   startCommand(state)
   feed(state, { type: 'attachment', timestamp: iso(3), attachment: { type: 'queued_command', commandMode: 'prompt', prompt: '<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>' } })
-  assert.equal(runningCount(state.background), 1)
+  assert.equal(tasks(state, 5)[0].status, 'running')
 })
 
 test('foreground commands are ignored', () => {
@@ -63,7 +61,6 @@ test('completion and failure notifications set status, exit code and end time', 
   const byId = Object.fromEntries(tasks(state, 10).map((t) => [t.id, t]))
   assert.deepEqual([byId.ok1.status, byId.ok1.exitCode, byId.ok1.durationMs], ['completed', 0, 4 * 60_000])
   assert.deepEqual([byId.bad1.status, byId.bad1.exitCode], ['failed', 143])
-  assert.equal(runningCount(state.background), 0)
 })
 
 test('a time-limit kill and an orphaned stop are recorded', () => {

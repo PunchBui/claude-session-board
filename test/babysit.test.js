@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, watchAction, PAUSED_NOTE, babysitCaller, createBabysitStore, watchBabysits, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, replyPlanReady, APPROVE_REPLIES_PROMPT, REPLIES_APPROVED_NOTE, settleMerged, settleLooked, lookupCandidates, MERGED_WINDOW_MS, MAX_LOOKUPS, LOOKUP_RECHECK_MS, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, watchAction, PAUSED_NOTE, babysitCaller, createBabysitStore, watchBabysits, KICK_GRACE_MS, KICK_RETRY_MS, recordBabysit, replyPlanReady, approveReplyPlan, APPROVE_REPLIES_PROMPT, REPLIES_APPROVED_NOTE, settleMerged, settleLooked, lookupCandidates, MERGED_WINDOW_MS, MAX_LOOKUPS, LOOKUP_RECHECK_MS, withBabysit, babysitSessions, MAX_BABYSIT, MAX_NOTE, MAX_ATTEMPTS } from '../lib/babysit.js'
 
 const URL_1 = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const URL_2 = 'https://gitlab.example.com/t/r/-/merge_requests/2'
@@ -406,4 +406,36 @@ test('a reply plan is ready only for a needs-you babysit with a session and that
   assert.equal(isBabysitPrompt(APPROVE_REPLIES_PROMPT), false)
   assert.equal(isBabysitActive('watching'), true)
   assert.equal(REPLIES_APPROVED_NOTE.length < MAX_NOTE, true)
+})
+
+const PLAN_URL = 'https://gitlab.example.com/t/r/-/merge_requests/5'
+const planEntry = (over = {}) => ({ state: 'needs-you', note: 'Reply plan ready', sessionId: 'local_a', cliSessionId: null, attempts: 0, startedAt: 1, at: 1, ...over })
+
+test('two approvals at once queue one reply and the second is refused', async () => {
+  const { store, saved } = memoryStore({ [PLAN_URL]: planEntry() })
+  const queued = []
+  const approve = () => approveReplyPlan(store, PLAN_URL, { now: () => 5000, exists: async () => true, enqueue: async (sid, prompt) => { queued.push([sid, prompt]); return true } })
+  const results = await Promise.all([approve(), approve()])
+  assert.deepEqual(results.map((result) => result.status).sort(), [200, 409])
+  assert.deepEqual(queued, [['local_a', APPROVE_REPLIES_PROMPT]])
+  assert.equal(saved()[PLAN_URL].state, 'watching')
+  assert.equal(saved()[PLAN_URL].note, REPLIES_APPROVED_NOTE)
+})
+
+test('an approval that cannot be queued puts the reply plan back', async () => {
+  const waiting = planEntry()
+  const { store, saved } = memoryStore({ [PLAN_URL]: waiting })
+  const result = await approveReplyPlan(store, PLAN_URL, { exists: async () => true, enqueue: async () => false })
+  assert.equal(result.status, 429)
+  assert.deepEqual(saved()[PLAN_URL], waiting)
+})
+
+test('approving without a waiting plan or without the session changes nothing', async () => {
+  const { store, saved } = memoryStore({ [PLAN_URL]: planEntry({ state: 'watching', note: '' }) })
+  const never = async () => { throw new Error('should not queue') }
+  assert.equal((await approveReplyPlan(store, PLAN_URL, { exists: async () => true, enqueue: never })).status, 409)
+  const gone = memoryStore({ [PLAN_URL]: planEntry() })
+  assert.equal((await approveReplyPlan(gone.store, PLAN_URL, { exists: async () => false, enqueue: never })).status, 404)
+  assert.equal(gone.saved()[PLAN_URL].state, 'needs-you')
+  assert.equal(saved()[PLAN_URL].state, 'watching')
 })

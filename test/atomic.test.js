@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeJsonAtomic, readJsonQuarantine, withFileLock } from '../lib/atomic.js'
+import { writeJsonAtomic, readJsonQuarantine, withFileLock, updateJsonFile } from '../lib/atomic.js'
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), 'board-atomic-'))
@@ -117,4 +117,27 @@ test('locked tasks on one file run one at a time in call order, and a failure do
   await other
   assert.deepEqual(order.filter((step) => !step.startsWith('x')), ['a start', 'a end', 'b', 'c start', 'c end'])
   assert.ok(order.indexOf('x end') < order.indexOf('a end'))
+})
+
+test('concurrent updates to one file all land and an unchanged value is not rewritten', async (t) => {
+  const dir = scratch(t)
+  const file = join(dir, 'focus.json')
+  await Promise.all(Array.from({ length: 25 }, (_, n) => updateJsonFile(file, { ids: [] }, async (stored) => {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    return { ids: [...stored.ids, n] }
+  })))
+  const saved = await readJsonQuarantine(file, null)
+  assert.deepEqual([...saved.ids].sort((a, b) => a - b), Array.from({ length: 25 }, (_, n) => n))
+  const result = await updateJsonFile(file, {}, (stored) => stored)
+  assert.equal(result.before, result.after)
+  assert.deepEqual(await readJsonQuarantine(file, null), saved)
+})
+
+test('a failing update leaves the file alone and does not block the next one', async (t) => {
+  const dir = scratch(t)
+  const file = join(dir, 'x.json')
+  await writeJsonAtomic(file, { n: 1 })
+  await assert.rejects(updateJsonFile(file, {}, () => { throw new Error('nope') }), /nope/)
+  await updateJsonFile(file, {}, (stored) => ({ n: stored.n + 1 }))
+  assert.deepEqual(await readJsonQuarantine(file, null), { n: 2 })
 })

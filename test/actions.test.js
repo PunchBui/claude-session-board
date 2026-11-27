@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { actionFrom, isTrackedRoute, promptKind, recordAction, summarizeActions, MAX_ACTIONS } from '../lib/actions.js'
+import { EventEmitter } from 'node:events'
+import { recordWhenSent, actionFrom, isTrackedRoute, promptKind, recordAction, summarizeActions, MAX_ACTIONS } from '../lib/actions.js'
 
 const MR = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const SESSION = 'local_5dd7e1f0-0000-4000-8000-000000000001'
@@ -58,4 +59,14 @@ test('the summary counts your own successful actions inside the window', () => {
   ])
   assert.deepEqual(summarizeActions(log, { now, source: 'skill' }), [{ action: '/api/mrs/label', count: 1 }])
   assert.deepEqual(summarizeActions(null, { now }), [])
+})
+
+test('the status is read once the response is sent, so a failure is recorded as it was', () => {
+  const res = Object.assign(new EventEmitter(), { statusCode: 200 })
+  const seen = []
+  recordWhenSent(res, (status) => seen.push(status))
+  res.statusCode = 500
+  assert.deepEqual(seen, [])
+  res.emit('close')
+  assert.deepEqual(seen, [500])
 })

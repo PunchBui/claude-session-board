@@ -62,7 +62,6 @@ test('two claims on one session cannot both be held, and releasing frees it', ()
   assert.equal(claims.claim('local_a'), null)
   assert.equal(typeof claims.claim('local_b'), 'function')
   first()
-  assert.equal(claims.has('local_a'), false)
   assert.equal(typeof claims.claim('local_a'), 'function')
 })
 

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingDueFor, withPingDue, PING_AFTER_MS, pingKey, MAX_PINGS } from '../lib/mrs.js'
+import { InvalidMrUrlError, GITLAB_HOST, MAX_FOCUSED, isMrUrl, toggleFocus, withFocus, resolveGlabBin, normalizeMr, verdictOf, needsAction, withLabel, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, loadMergeRequests, withSessions, createMrCache, isSavedMrData, autoFocusNew, recordPing, withPings, pingDueFor, withPingDue, PING_AFTER_MS, pingKey, MAX_PINGS } from '../lib/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -603,4 +603,12 @@ test('withPingDue marks authored merge requests using the review label time from
   assert.equal('pingDue' in out.reviewing[0], false)
   assert.deepEqual(withPingDue(data, { now: 90 * HOUR }).authored[0].pingDue.reviewers, ['ann', 'bob'])
   assert.deepEqual(withPingDue(data, { now: 90 * HOUR, afterMs: 100 * HOUR }).authored[0].pingDue.reviewers, [])
+})
+
+test('a merge request link that passes the pattern but has no project path is a typed bad request', async () => {
+  const run = async () => { throw new Error('should not run') }
+  const dotted = `https://${GITLAB_HOST}/team/../-/merge_requests/1`
+  for (const call of [() => addLabel(dotted, 'Ready for review', run), () => closeMr(dotted, run), () => setAutoMerge(dotted, run), () => addLabel('nope', 'Ready for review', run)]) {
+    await assert.rejects(call(), (error) => error instanceof InvalidMrUrlError)
+  }
 })

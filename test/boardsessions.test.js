@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeJsonAtomic, readJsonQuarantine } from '../lib/atomic.js'
 import {
-  BOARD_PREFIX, MAX_BOARD_SESSIONS, MAX_TITLE_CHARS, isBoardId, validFolderPath, titleFrom, newBoardSession, validBoardEntry,
+  BOARD_PREFIX, MAX_BOARD_SESSIONS, MAX_TITLE_CHARS, validFolderPath, titleFrom, newBoardSession, validBoardEntry,
   parseBoardFile, resumeCommand, shellQuote, boardStatus, boardRaw, createBoardStore, keptBoardIds, evictionOrder,
 } from '../lib/boardsessions.js'
 
@@ -17,9 +17,6 @@ test('a new board session keys its id off the CLI session id', () => {
   assert.equal(e.sessionId, `${BOARD_PREFIX}${UUID}`)
   assert.equal(e.cliSessionId, UUID)
   assert.deepEqual([e.cwd, e.createdAt, e.title, e.permissionMode], ['/Users/me/project', 1000, 'hello', 'default'])
-  assert.ok(isBoardId(e.sessionId))
-  assert.ok(!isBoardId('local_1234'))
-  assert.ok(!isBoardId(undefined))
 })
 
 test('titles are one clipped line', () => {

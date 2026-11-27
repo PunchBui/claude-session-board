@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { eventsFrom, parseMrUrl, needsEvents, refreshEvents, loadAuthoredMrs, loadMrsByUrl } from '../lib/mrevents.js'
+import { trimEvents, MAX_EVENT_ENTRIES, eventsFrom, parseMrUrl, needsEvents, refreshEvents, loadAuthoredMrs, loadMrsByUrl } from '../lib/mrevents.js'
 import { createFlowSync, relevantMrs } from '../lib/flowsync.js'
 import { recordDeploy } from '../lib/deploycheck.js'
 import { newScanState, absorbLine } from '../lib/scan.js'
@@ -130,4 +130,12 @@ test('the scanner records git branches and the first time a ticket key was menti
   assert.deepEqual([...state.branches], [['ABC-7-fix', { firstAt: Date.parse('2026-11-02T09:00:00Z'), lastAt: Date.parse('2026-11-02T10:00:00Z') }]])
   assert.equal(state.tickets.get('ABC-7'), 3)
   assert.equal(state.ticketFirstAt.get('ABC-7'), Date.parse('2026-11-02T09:00:00Z'))
+})
+
+test('the events cache keeps only the most recently fetched entries', () => {
+  const events = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`u${n}`, { fetchedAt: n }]))
+  assert.equal(trimEvents(events, 20), events)
+  const kept = trimEvents(events, 4)
+  assert.deepEqual(Object.keys(kept).sort(), ['u6', 'u7', 'u8', 'u9'])
+  assert.ok(MAX_EVENT_ENTRIES >= 300)
 })

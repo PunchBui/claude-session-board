@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, symlink, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveLocal, resolveWithBase, findByName, expandHome, imageType } from '../lib/localfile.js'
+import { fileKind, resolveLocal, resolveWithBase, findByName, expandHome, imageType } from '../lib/localfile.js'
 
 async function sandbox() {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'localfile-')))
@@ -127,4 +127,17 @@ test('never searches for names with a path or a parent segment', async () => {
   assert.equal(await resolveWithBase('a/deck.pptx', base, { ...options, search }), null)
   assert.equal(await findByName('nothing.pptx', { ...options, search: async () => [] }), null)
   await rm(base, { recursive: true })
+})
+
+test('a file is classified by type and refused as too large past its own limit', () => {
+  const at = (path, size, directory = false) => ({ path, size, directory })
+  assert.deepEqual(fileKind(at('/a/x.html', 10)), { kind: 'html' })
+  assert.deepEqual(fileKind(at('/a/x.pdf', 10)), { kind: 'pdf' })
+  assert.deepEqual(fileKind(at('/a/x.PNG', 10)), { kind: 'image' })
+  assert.deepEqual(fileKind(at('/a/x.html', 10_000_001)), { tooLarge: true })
+  assert.deepEqual(fileKind(at('/a/x.pdf', 50_000_001)), { tooLarge: true })
+  assert.deepEqual(fileKind(at('/a/x.png', 25_000_001)), { tooLarge: true })
+  assert.equal(fileKind(at('/a/x.txt', 10)), null)
+  assert.equal(fileKind(at('/a/x.html', 10, true)), null)
+  assert.equal(fileKind(null), null)
 })

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanBaseUrl, jiraConfig, authHeader, normalizeIssue, mrUrlOf, syncJira, createJiraClient, DEFAULT_JQL } from '../lib/jira.js'
+import { reusableToken, cleanBaseUrl, jiraConfig, authHeader, normalizeIssue, mrUrlOf, syncJira, createJiraClient, DEFAULT_JQL } from '../lib/jira.js'
 
 const BASE = 'https://example.atlassian.net'
 const categories = new Map([['1', 'new'], ['3', 'indeterminate'], ['4', 'indeterminate'], ['5', 'done']])
@@ -133,4 +133,15 @@ test('the client pages the search with nextPageToken and reports Jira errors', a
   assert.equal(bodies[0].expand, 'changelog')
   const failing = createJiraClient({ baseUrl: BASE, email: 'a@b.c', token: 't' }, { fetchImpl: async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ errorMessages: ['Bad JQL'] }) }) })
   await assert.rejects(failing.myself(), /Jira 400: Bad JQL/)
+})
+
+test('a saved token is only reused for the Jira site it was saved for', () => {
+  const saved = { baseUrl: 'https://example.atlassian.net/', token: 'saved-token' }
+  const base = 'https://example.atlassian.net'
+  assert.equal(reusableToken({}, saved, base), 'saved-token')
+  assert.equal(reusableToken({ token: '  ' }, saved, base), 'saved-token')
+  assert.equal(reusableToken({}, saved, 'https://attacker.example'), '')
+  assert.equal(reusableToken({ token: ' typed ' }, saved, 'https://attacker.example'), 'typed')
+  assert.equal(reusableToken({}, null, base), '')
+  assert.equal(reusableToken({}, saved, ''), '')
 })

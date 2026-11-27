@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readRemoteConfig, sessionValue, sessionCookie, cookieOf, isAuthed, safeEqual, createLoginLimiter, LOGIN_PAGE } from '../lib/remote.js'
+import { readRemoteConfig, sessionValue, sessionCookie, cookieOf, isAuthed, safeEqual, createLoginLimiter, clientKey, crossOrigin, LOGIN_PAGE } from '../lib/remote.js'
 
 const TOKEN = 'a'.repeat(32)
 const fileWith = async (value) => {
@@ -94,4 +94,20 @@ test('the limiter forgets old keys beyond its cap', () => {
 
 test('the login page posts to /api/login', () => {
   assert.match(LOGIN_PAGE, /\/api\/login/)
+})
+
+test('the login limiter key falls back to the socket address so anonymous callers do not share one bucket', () => {
+  assert.equal(clientKey({ 'cf-connecting-ip': '1.2.3.4' }, { remoteAddress: '9.9.9.9' }), '1.2.3.4')
+  assert.equal(clientKey({ 'x-forwarded-for': '5.6.7.8, 10.0.0.1' }, { remoteAddress: '9.9.9.9' }), '5.6.7.8')
+  assert.equal(clientKey({}, { remoteAddress: '127.0.0.1' }), '127.0.0.1')
+  assert.equal(clientKey({ 'x-forwarded-for': ' ' }, { remoteAddress: '127.0.0.1' }), '127.0.0.1')
+  assert.equal(clientKey({}, undefined), '')
+})
+
+test('only a request that names a different origin is cross-origin', () => {
+  const allowed = new Set(['http://localhost:4747'])
+  assert.equal(crossOrigin({}, allowed), false)
+  assert.equal(crossOrigin({ origin: 'http://localhost:4747' }, allowed), false)
+  assert.equal(crossOrigin({ origin: 'https://evil.example' }, allowed), true)
+  assert.equal(crossOrigin({ origin: 'null' }, allowed), true)
 })

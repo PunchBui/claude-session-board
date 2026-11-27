@@ -10,7 +10,7 @@ import { createScanStore, transcriptTitle, isHandoffFile } from './lib/scan.js'
 import { shownSettings, parseOverride, mergeOverride, overridesFromFile } from './lib/sessionsettings.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
-import { REPEATS, nextAfter } from './lib/schedule.js'
+import { REPEATS, nextAfter, fireDue, advanceFired } from './lib/schedule.js'
 import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, recordRun, applyEdit } from './lib/routines.js'
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
@@ -26,27 +26,30 @@ import { resolveClaudeBin } from './lib/claudebin.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer, pingChannel, reviewChannelFrom, resolveReviewChannel } from './lib/ping.js'
 import { resolveSpawnEnv } from './lib/env.js'
-import { createMrCache, withSessions, withFocus, withPings, withPingDue, PING_AFTER_MS, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
+import { createMrCache, InvalidMrUrlError, withSessions, withFocus, withPings, withPingDue, PING_AFTER_MS, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from './lib/background.js'
-import { writeJsonAtomic, readJsonQuarantine, withFileLock } from './lib/atomic.js'
-import { actionFrom, isTrackedRoute, recordAction, summarizeActions } from './lib/actions.js'
+import { writeJsonAtomic, readJsonQuarantine, withFileLock, updateJsonFile } from './lib/atomic.js'
+import { actionFrom, isTrackedRoute, recordAction, summarizeActions, recordWhenSent } from './lib/actions.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
 import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
 import { reorderFocus } from './lib/focusorder.js'
 import { createSubagentStore, isAgentId } from './lib/subagents.js'
-import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, replyPlanReady, APPROVE_REPLIES_PROMPT, REPLIES_APPROVED_NOTE, withBabysit, babysitSessions, babysitCaller, createBabysitStore, watchBabysits } from './lib/babysit.js'
+import { isBabysitState, isBabysitActive, isBabysitPrompt, recordBabysit, approveReplyPlan, withBabysit, babysitSessions, babysitCaller, createBabysitStore, watchBabysits } from './lib/babysit.js'
 import { isDeployState, recordDeploy, withDeploy } from './lib/deploycheck.js'
-import { resolveLocal, resolveWithBase, imageType, isHtmlFile, isPdfFile, contentDisposition, parseRange, withSizeReporter, MAX_IMAGE_BYTES, MAX_HTML_BYTES, MAX_PDF_BYTES } from './lib/localfile.js'
+import { resolveLocal, resolveWithBase, imageType, fileKind, isHtmlFile, contentDisposition, parseRange, withSizeReporter } from './lib/localfile.js'
 import { createRemoteCache, createCanonicalCache, resolveFolders, withFolders, siblingFolders, settleWithin } from './lib/mrfolder.js'
 import { originUrl } from './lib/git.js'
-import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, LOGIN_PAGE } from './lib/remote.js'
+import { readRemoteConfig, isAuthed, safeEqual, sessionCookie, createLoginLimiter, clientKey, crossOrigin, LOGIN_PAGE } from './lib/remote.js'
 import { createBoardStore, boardRaw, keptBoardIds, evictionOrder } from './lib/boardsessions.js'
 import { createTitler } from './lib/autotitle.js'
-import { readJsonBody, BodyTooLargeError } from './lib/body.js'
+import { readJsonBody, readBytes, BodyTooLargeError, BadBodyError } from './lib/body.js'
+import { setBounded } from './lib/cache.js'
+import { settleForce } from './lib/queue.js'
+import { pruneOldFiles } from './lib/prune.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
 import { sideChatParent, isSideChat, isSpawnedTask, spawnedParent, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
-import { jiraConfig, cleanBaseUrl, createJiraClient, mrUrlOf } from './lib/jira.js'
+import { jiraConfig, cleanBaseUrl, reusableToken, createJiraClient, mrUrlOf } from './lib/jira.js'
 import { buildFlow, reviewPattern, branchKeys, parseMilestoneInput, recordMilestone, recordLink } from './lib/flow.js'
 import { createFlowSync } from './lib/flowsync.js'
 import { createImagineCache, findAsar, widgetPage } from './lib/imagine.js'
@@ -99,7 +102,7 @@ const REMOTE_HOSTS = new Set(remote.hosts)
 for (const host of REMOTE_HOSTS) ALLOWED_ORIGINS.add(`https://${host}`)
 const loginLimiter = createLoginLimiter()
 // Static files the browser fetches without cookies (install prompt, icons). They hold nothing private.
-const PUBLIC_ASSETS = new Set(['/manifest.webmanifest', '/favicon.ico', '/favicon.png', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png'])
+const PUBLIC_ASSETS = new Set(['/manifest.webmanifest', '/favicon.png', '/favicon.svg', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png'])
 const PAGES = new Set(['/', '/focus', '/loops', '/background', '/mrs', '/flow', '/search', '/usage', '/skills', '/schedule'])
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 const ALIASES = { 'favicon.ico': 'favicon.png' }
@@ -355,10 +358,14 @@ async function boardEvictable(items) {
   return evictionOrder(items, { keep, usedAt })
 }
 
+const focusIdsOf = (parsed) => (Array.isArray(parsed?.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : [])
+
 async function readFocus() {
-  const parsed = await readJson(FOCUS_FILE, {})
-  return Array.isArray(parsed.ids) ? parsed.ids.filter((id) => SESSION_ID.test(id)) : []
+  return focusIdsOf(await readJson(FOCUS_FILE, {}))
 }
+
+const updateJson = (file, fallback, mutate) => updateJsonFile(file, fallback, mutate, { read: readJson, write: writeJson })
+const updateFocus = (change) => updateJson(FOCUS_FILE, {}, (stored) => ({ ids: change(focusIdsOf(stored)) }))
 
 async function readOverrides() {
   return overridesFromFile(await readJson(OVERRIDES_FILE, {}))
@@ -391,30 +398,25 @@ async function sideChatCard(id) {
 
 const currentReviewChannel = async () => resolveReviewChannel({ env: REVIEW_CHANNEL_ENV, saved: await readJson(REVIEW_CHANNEL_FILE, null) })
 
+const plainObject = (parsed) => (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {})
+
 async function readMrPings() {
-  const parsed = await readJson(MR_PINGS_FILE, {})
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  return plainObject(await readJson(MR_PINGS_FILE, {}))
 }
+
+const savePing = (url, who, at) => updateJson(MR_PINGS_FILE, {}, (stored) => recordPing(plainObject(stored), url, who, at))
 
 const babysitStore = createBabysitStore({ file: MR_BABYSIT_FILE, readJson, writeJson, onChange: (store) => { babysitBySession = babysitSessions(store) } })
 const readMrBabysit = babysitStore.read
 
 async function readMrDeploy() {
-  const parsed = await readJson(MR_DEPLOY_FILE, {})
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  return plainObject(await readJson(MR_DEPLOY_FILE, {}))
 }
 
-async function readMrFocusState() {
-  const parsed = await readJson(MR_FOCUS_FILE, {})
-  return {
-    urls: Array.isArray(parsed.urls) ? parsed.urls.filter(isMrUrl) : [],
-    seen: Array.isArray(parsed.seen) ? parsed.seen.filter(isMrUrl) : null,
-  }
-}
-
-async function readMrFocus() {
-  return (await readMrFocusState()).urls
-}
+const mrFocusStateOf = (parsed) => ({
+  urls: Array.isArray(parsed?.urls) ? parsed.urls.filter(isMrUrl) : [],
+  seen: Array.isArray(parsed?.seen) ? parsed.seen.filter(isMrUrl) : null,
+})
 
 function queueFor(id) {
   if (!queues.has(id)) queues.set(id, { items: [], paused: false })
@@ -469,14 +471,9 @@ async function enqueue(id, prompt) {
 
 async function fireDueSchedules() {
   const now = Date.now()
-  const due = schedules.filter((item) => item.at <= now)
-  if (!due.length) return
-  for (const item of due) {
-    await enqueue(item.id, item.prompt)
-    const next = nextAfter(item.at, item.repeat, now)
-    if (next) item.at = next
-    else schedules = schedules.filter((existing) => existing !== item)
-  }
+  const fired = await fireDue(schedules, { now, enqueue })
+  if (!fired.length) return
+  schedules = advanceFired(schedules, fired, now)
   await persistSchedules()
   pump()
 }
@@ -511,7 +508,7 @@ async function startRoutineSession(routine) {
   try {
     const result = await manager.requestNewSession(routine)
     if (result.status !== 202) return { error: result.body?.error ?? 'Could not start the session.' }
-    await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
+    await updateFocus((ids) => [...new Set([...ids, result.body.id])])
     return { sessionId: result.body.id }
   } catch (error) {
     return { error: String(error?.message ?? error) }
@@ -538,7 +535,9 @@ async function tick() {
     await fireDueRoutines()
     await fireDueSchedules()
     await pump()
-  } catch {}
+  } catch (error) {
+    console.error(`scheduler tick: ${describeError(error)}`)
+  }
 }
 
 async function loadFocusCards() {
@@ -836,20 +835,10 @@ function safeName(value) {
   return name || 'file'
 }
 
-async function readUpload(req) {
-  const chunks = []
-  let size = 0
-  for await (const chunk of req) {
-    size += chunk.length
-    if (size > MAX_UPLOAD_BYTES) throw new Error('file too large')
-    chunks.push(chunk)
-  }
-  return Buffer.concat(chunks)
-}
-
 async function saveUpload(req, res, url) {
   if (Number(req.headers['content-length'] ?? 0) > MAX_UPLOAD_BYTES) return json(res, 413, { error: `File is larger than ${MAX_UPLOAD_BYTES / 1_000_000} MB.` })
-  const data = await readUpload(req).catch(() => null)
+  const data = await readBytes(req, { maxBytes: MAX_UPLOAD_BYTES }).catch((error) => (error instanceof BodyTooLargeError ? error : null))
+  if (data instanceof BodyTooLargeError) return json(res, 413, { error: `File is larger than ${MAX_UPLOAD_BYTES / 1_000_000} MB.` })
   if (!data?.length) return json(res, 400, { error: 'Empty or oversized file.' })
   const name = safeName(url.searchParams.get('name'))
   const dir = join(UPLOAD_DIR, randomUUID())
@@ -872,6 +861,8 @@ async function serveUpload(res, url) {
   return res.end(data)
 }
 
+const pruneRunLogs = () => pruneOldFiles(RUN_LOG_DIR)
+
 async function pruneUploads() {
   const dirs = await readdir(UPLOAD_DIR, { withFileTypes: true }).catch(() => [])
   for (const dir of dirs) {
@@ -884,6 +875,8 @@ async function pruneUploads() {
 const commandCache = new Map()
 const probeCache = new Map()
 const PROBE_TTL_MS = 10 * 60_000
+const MAX_PROBE_CACHE = 50
+const MAX_COMMAND_CACHE = 50
 
 function probedFor(cwd) {
   const hit = probeCache.get(cwd)
@@ -892,7 +885,7 @@ function probedFor(cwd) {
     if (!found) probeCache.delete(cwd)
     return found
   })
-  probeCache.set(cwd, { at: Date.now(), names })
+  setBounded(probeCache, cwd, { at: Date.now(), names }, MAX_PROBE_CACHE)
   return names
 }
 
@@ -900,7 +893,7 @@ async function commandsFor(cwd) {
   const hit = commandCache.get(cwd)
   if (hit && Date.now() - hit.at < 30_000) return hit.items
   const items = await listCommands({ cwd, home: CLAUDE_HOME, probed: await probedFor(cwd) })
-  commandCache.set(cwd, { at: Date.now(), items })
+  setBounded(commandCache, cwd, { at: Date.now(), items }, MAX_COMMAND_CACHE)
   return items
 }
 const findRaw = async (id) => (SESSION_ID.test(id ?? '') ? (await readRawSessions()).find((s) => s.sessionId === id) : null)
@@ -938,6 +931,8 @@ const imagine = createImagineCache()
 const reply = (res, { status, body }) => json(res, status, body)
 const WIDGET_MISSING_PAGE = '<!doctype html><meta charset="utf-8"><body style="font:13px system-ui;color:#888;margin:8px">This visualization needs the Claude desktop app installed on this Mac.</body>'
 
+const mrFailure = (res, error) => json(res, error instanceof InvalidMrUrlError ? 400 : 502, { error: String(error.message ?? error) })
+
 const postRoutes = {
   async '/api/reveal'(body, res) {
     const found = await resolveWithBase(body.path, body.base)
@@ -964,10 +959,11 @@ const postRoutes = {
   },
   async '/api/mrs/focus'(body, res) {
     if (!isMrUrl(body.url) || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
-    const stored = await readMrFocusState()
-    const urls = toggleFocus(stored.urls, body.url, body.focused)
-    await writeJson(MR_FOCUS_FILE, { urls, seen: stored.seen ?? undefined })
-    return json(res, 200, { urls })
+    const { after } = await updateJson(MR_FOCUS_FILE, {}, (parsed) => {
+      const stored = mrFocusStateOf(parsed)
+      return { urls: toggleFocus(stored.urls, body.url, body.focused), seen: stored.seen ?? undefined }
+    })
+    return json(res, 200, { urls: after.urls })
   },
   async '/api/mrs/label'(body, res) {
     if (!isMrUrl(body.url) || !ADDABLE_LABELS.includes(body.label)) return json(res, 400, { error: 'bad request' })
@@ -975,7 +971,7 @@ const postRoutes = {
     try {
       added = await addLabel(body.url, body.label)
     } catch (error) {
-      return json(res, 502, { error: String(error.message ?? error) })
+      return mrFailure(res, error)
     }
     const mr = mergeRequests.patchAuthored(body.url, (current) => added.reduce((mr, name) => withLabel(mr, name, Date.now()), current))
     return json(res, 200, { ok: true, mr })
@@ -985,7 +981,7 @@ const postRoutes = {
     try {
       await setAutoMerge(body.url)
     } catch (error) {
-      return json(res, 502, { error: String(error.message ?? error) })
+      return mrFailure(res, error)
     }
     const mr = mergeRequests.patchAuthored(body.url, (current) => withAutoMerge(current, Date.now()))
     return json(res, 200, { ok: true, mr })
@@ -995,7 +991,7 @@ const postRoutes = {
     try {
       await closeMr(body.url)
     } catch (error) {
-      return json(res, 502, { error: String(error.message ?? error) })
+      return mrFailure(res, error)
     }
     mergeRequests.removeAuthored(body.url)
     return json(res, 200, { ok: true })
@@ -1027,22 +1023,15 @@ const postRoutes = {
   },
   async '/api/mrs/babysit/approve'(body, res) {
     if (!isMrUrl(body.url)) return json(res, 400, { error: 'bad request' })
-    const entry = (await readMrBabysit())[body.url]
-    if (!replyPlanReady(entry)) return json(res, 409, { error: 'no reply plan is waiting on this merge request' })
-    if (!(await findRaw(entry.sessionId))) return json(res, 404, { error: 'the babysit session no longer exists' })
-    if (!(await enqueue(entry.sessionId, APPROVE_REPLIES_PROMPT))) return json(res, 429, { error: 'that session\'s queue is full' })
-    const { after } = await babysitStore.update((current) => (replyPlanReady(current[body.url])
-      ? recordBabysit(current, body.url, { state: 'watching', note: REPLIES_APPROVED_NOTE }, Date.now())
-      : current))
-    pump()
-    return json(res, 200, { ok: true, babysit: after[body.url] })
+    const result = await approveReplyPlan(babysitStore, body.url, { exists: async (sid) => Boolean(await findRaw(sid)), enqueue })
+    if (result.status === 200) pump()
+    return reply(res, result)
   },
   async '/api/mrs/deploy'(body, res) {
     const badSession = body.sessionId !== undefined && !SESSION_ID.test(body.sessionId)
     if (!isMrUrl(body.url) || !isDeployState(body.state) || badSession) return json(res, 400, { error: 'bad request' })
-    const store = recordDeploy(await readMrDeploy(), body.url, body, Date.now())
-    await writeJson(MR_DEPLOY_FILE, store)
-    return json(res, 200, { ok: true, deploy: store[body.url] })
+    const { after } = await updateJson(MR_DEPLOY_FILE, {}, (stored) => recordDeploy(plainObject(stored), body.url, body, Date.now()))
+    return json(res, 200, { ok: true, deploy: after[body.url] })
   },
   async '/api/flow/sync'(body, res) {
     await flowSync.refresh()
@@ -1057,7 +1046,7 @@ const postRoutes = {
     const saved = await readJiraSaved()
     const baseUrl = cleanBaseUrl(body.baseUrl)
     const email = typeof body.email === 'string' ? body.email.trim().slice(0, 200) : ''
-    const token = typeof body.token === 'string' && body.token.trim() ? body.token.trim().slice(0, 500) : saved?.token ?? ''
+    const token = reusableToken(body, saved, baseUrl)
     const jql = typeof body.jql === 'string' ? body.jql.trim().slice(0, 2000) : saved?.jql ?? ''
     const reviewStatus = typeof body.reviewStatus === 'string' ? body.reviewStatus.trim().slice(0, 200) : saved?.reviewStatus ?? ''
     if (!baseUrl || !email || !token) return json(res, 400, { error: 'Fill in the Jira site, your email and an API token.' })
@@ -1075,28 +1064,26 @@ const postRoutes = {
   async '/api/flow/milestone'(body, res) {
     const parsed = parseMilestoneInput(body)
     if (parsed.error) return json(res, 400, { error: parsed.error })
-    const store = recordMilestone(await readJson(FLOW_MILESTONES_FILE, {}), parsed, Date.now())
-    await writeJson(FLOW_MILESTONES_FILE, store)
-    return json(res, 200, { ok: true, milestones: store[parsed.key] ?? {} })
+    const { after } = await updateJson(FLOW_MILESTONES_FILE, {}, (stored) => recordMilestone(plainObject(stored), parsed, Date.now()))
+    return json(res, 200, { ok: true, milestones: after[parsed.key] ?? {} })
   },
   async '/api/flow/link'(body, res) {
     const kind = body.kind === 'mr' || body.kind === 'session' ? body.kind : null
     const ticket = body.ticket === null ? null : typeof body.ticket === 'string' ? body.ticket.trim().toUpperCase() : undefined
     const validId = kind === 'mr' ? isMrUrl(body.id) : kind === 'session' && SESSION_ID.test(body.id ?? '')
     if (!kind || !validId || ticket === undefined || (ticket && !/^[A-Z][A-Z0-9]{1,9}-\d{1,7}$/.test(ticket))) return json(res, 400, { error: 'bad request' })
-    const store = recordLink(await readJson(FLOW_LINKS_FILE, {}), { kind, id: body.id, ticket })
-    await writeJson(FLOW_LINKS_FILE, store)
+    await updateJson(FLOW_LINKS_FILE, {}, (stored) => recordLink(plainObject(stored), { kind, id: body.id, ticket }))
     return json(res, 200, { ok: true })
   },
   async '/api/mrs/ping'(body, res) {
     if (!isMrUrl(body.url) || typeof body.reviewer !== 'string') return json(res, 400, { error: 'bad request' })
     const data = await mergeRequests()
-    const mr = [...data.authored, ...data.reviewing].find((item) => item.url === body.url)
+    const mr = data.authored.find((item) => item.url === body.url)
     if (!mr || !mr.reviewers.includes(body.reviewer)) return json(res, 404, { error: 'reviewer not found on this merge request' })
     try {
       const { name } = await pingReviewer({ mr, username: body.reviewer, bin: CLAUDE_BIN, env: spawnEnv })
       const pingedAt = Date.now()
-      await writeJson(MR_PINGS_FILE, recordPing(await readMrPings(), body.url, body.reviewer, pingedAt))
+      await savePing(body.url, body.reviewer, pingedAt)
       return json(res, 200, { ok: true, name, pingedAt })
     } catch (error) {
       return json(res, 502, { error: String(error.message ?? error) })
@@ -1112,7 +1099,7 @@ const postRoutes = {
     try {
       const { channel } = await pingChannel({ mr, channel: reviewChannel, bin: CLAUDE_BIN, env: spawnEnv })
       const pingedAt = Date.now()
-      await writeJson(MR_PINGS_FILE, recordPing(await readMrPings(), body.url, `#${channel}`, pingedAt))
+      await savePing(body.url, `#${channel}`, pingedAt)
       return json(res, 200, { ok: true, channel, pingedAt })
     } catch (error) {
       console.error(`ask team failed for ${body.url}: ${error.message ?? error}`)
@@ -1130,27 +1117,24 @@ const postRoutes = {
   },
   async '/api/focus'(body, res) {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.focused !== 'boolean') return json(res, 400, { error: 'bad request' })
-    const current = await readFocus()
-    const next = body.focused ? [...new Set([...current, body.id])] : current.filter((existing) => existing !== body.id)
-    await writeJson(FOCUS_FILE, { ids: next })
-    return json(res, 200, { ids: next })
+    const { after } = await updateFocus((current) => (body.focused ? [...new Set([...current, body.id])] : current.filter((existing) => existing !== body.id)))
+    return json(res, 200, { ids: after.ids })
   },
   async '/api/focus/clear'(body, res) {
-    await writeJson(FOCUS_FILE, { ids: [] })
+    await updateFocus(() => [])
     return json(res, 200, { ids: [] })
   },
   async '/api/focus/order'(body, res) {
     if (!Array.isArray(body.ids) || body.ids.length > 500 || !body.ids.every((id) => SESSION_ID.test(id ?? ''))) return json(res, 400, { error: 'bad request' })
-    const ids = reorderFocus(await readFocus(), body.ids)
-    await writeJson(FOCUS_FILE, { ids })
-    return json(res, 200, { ids })
+    const { after } = await updateFocus((current) => reorderFocus(current, body.ids))
+    return json(res, 200, { ids: after.ids })
   },
   async '/api/prompt'(body, res) {
     return reply(res, await manager.requestPrompt(body, body.prompt))
   },
   async '/api/new-session'(body, res) {
     const result = await manager.requestNewSession(body)
-    if (result.status === 202 && body.focus !== false) await writeJson(FOCUS_FILE, { ids: [...new Set([...(await readFocus()), result.body.id])] })
+    if (result.status === 202 && body.focus !== false) await updateFocus((ids) => [...new Set([...ids, result.body.id])])
     return reply(res, result)
   },
   async '/api/session/settings'(body, res) {
@@ -1158,11 +1142,14 @@ const postRoutes = {
     const parsed = parseOverride(body)
     if (parsed.error) return json(res, 400, { error: parsed.error })
     if (!(await findRaw(body.id))) return json(res, 404, { error: 'session not found' })
-    const all = await readOverrides()
-    const next = mergeOverride(all[body.id] ?? {}, parsed.override)
-    if (Object.keys(next).length) all[body.id] = next
-    else delete all[body.id]
-    await writeJson(OVERRIDES_FILE, { items: all })
+    let next
+    await updateJson(OVERRIDES_FILE, {}, (stored) => {
+      const all = overridesFromFile(stored)
+      next = mergeOverride(all[body.id] ?? {}, parsed.override)
+      if (Object.keys(next).length) all[body.id] = next
+      else delete all[body.id]
+      return { items: all }
+    })
     return json(res, 200, { override: next })
   },
   async '/api/side-chats'(body, res) {
@@ -1172,8 +1159,7 @@ const postRoutes = {
     if (!SESSION_ID.test(body.id ?? '') || typeof body.closed !== 'boolean') return json(res, 400, { error: 'bad request' })
     const raw = await findRaw(body.id)
     if (!raw || !isSideChat(raw)) return json(res, 404, { error: 'side chat not found' })
-    const closed = setClosed(await readClosedSideChats(), body.id, body.closed)
-    await writeJson(SIDE_CHATS_FILE, { closed })
+    await updateJson(SIDE_CHATS_FILE, {}, (stored) => ({ closed: setClosed(parseClosedFile(stored), body.id, body.closed) }))
     return json(res, 200, { ok: true })
   },
   async '/api/handoff'(body, res) {
@@ -1214,10 +1200,11 @@ const postRoutes = {
       const stopped = await manager.interruptPrompt(body.id)
       if (stopped.status !== 200) return reply(res, stopped)
     }
-    const result = await manager.requestPrompt({ id: body.id }, item.prompt, { force: true })
-    if (result.status === 202) {
-      queue.items = queue.items.filter((entry) => entry.qid !== body.qid)
-      if (interrupting) queue.paused = wasPaused
+    let result = { status: 500, body: { error: 'could not start the prompt' } }
+    try {
+      result = await manager.requestPrompt({ id: body.id }, item.prompt, { force: true })
+    } finally {
+      settleForce(queue, body.qid, { status: result.status, interrupting, wasPaused })
       await persistQueues()
     }
     return reply(res, result)
@@ -1351,13 +1338,16 @@ const getRoutes = {
     const base = url.searchParams.get('base')
     const joined = base && base.startsWith('/') && isHtmlFile(rawPath) && !/^[/~]/.test(rawPath) && !rawPath.split('/').includes('..') ? `${base.replace(/\/+$/, '')}/${rawPath}` : rawPath
     const found = await resolveLocal(joined)
-    if (found && !found.directory && found.size <= MAX_HTML_BYTES && isHtmlFile(found.path)) {
+    const kind = fileKind(found)
+    if (kind?.tooLarge) return send(res, 413, 'file too large', 'text/plain')
+    if (kind?.kind === 'html') {
+      const page = await readFile(found.path).catch(() => null)
+      if (!page) return send(res, 404, 'not found', 'text/plain')
       // Opaque origin: scripts may run (whiteboards animate) but cannot touch the board's cookies or API.
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': 'sandbox allow-scripts allow-popups', 'x-content-type-options': 'nosniff' })
-      const page = await readFile(found.path)
       return res.end(url.searchParams.get('viewer') === '1' ? withSizeReporter(page.toString('utf8')) : page)
     }
-    if (found && !found.directory && found.size <= MAX_PDF_BYTES && isPdfFile(found.path)) {
+    if (kind?.kind === 'pdf') {
       // iOS fetches PDFs in byte ranges; a server that ignores Range leaves its viewer blank.
       const headers = { 'content-type': 'application/pdf', 'content-disposition': contentDisposition(found.path, url.searchParams.get('download') === '1'), 'accept-ranges': 'bytes', 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' }
       const range = parseRange(req.headers.range, found.size)
@@ -1372,10 +1362,11 @@ const getRoutes = {
       res.on('close', () => stream.destroy())
       return stream.pipe(res)
     }
-    const type = found && !found.directory && found.size <= MAX_IMAGE_BYTES ? imageType(found.path) : null
-    if (!type) return send(res, 404, 'not found', 'text/plain')
-    res.writeHead(200, { 'content-type': type, 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' })
-    return res.end(await readFile(found.path))
+    if (kind?.kind !== 'image') return send(res, 404, 'not found', 'text/plain')
+    const image = await readFile(found.path).catch(() => null)
+    if (!image) return send(res, 404, 'not found', 'text/plain')
+    res.writeHead(200, { 'content-type': imageType(found.path), 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' })
+    return res.end(image)
   },
   async '/api/health'(url, res) {
     return json(res, 200, {
@@ -1412,8 +1403,11 @@ const getRoutes = {
   },
   async '/api/mrs'(url, res) {
     const data = await mergeRequests({ force: url.searchParams.get('force') === '1' })
-    const next = autoFocusNew(data, await readMrFocusState())
-    if (next.changed) await writeJson(MR_FOCUS_FILE, { urls: next.urls, seen: next.seen })
+    let next
+    await updateJson(MR_FOCUS_FILE, {}, (parsed) => {
+      next = autoFocusNew(data, mrFocusStateOf(parsed))
+      return next.changed ? { urls: next.urls, seen: next.seen } : parsed
+    })
     const linked = await mrSessionLinks()
     const withLinks = withSessions(data, linked)
     const folders = await settleWithin(mrFolders(withLinks, linked), FOLDER_WAIT_MS)
@@ -1454,7 +1448,8 @@ const getRoutes = {
     const result = await subagentStore.chat(path, agent)
     return result ? json(res, 200, result) : json(res, 404, { error: 'subagent not found' })
   },
-  async '/api/commands'(url, res) {
+  async '/api/commands'(url, res, req) {
+    if (crossOrigin(req.headers, ALLOWED_ORIGINS)) return send(res, 403, 'forbidden', 'text/plain')
     const folder = url.searchParams.get('folder')
     if (folder) return validFolderPath(folder) ? json(res, 200, { items: await commandsFor(folder) }) : json(res, 400, { error: 'bad folder' })
     const raw = await findRaw(url.searchParams.get('id'))
@@ -1501,13 +1496,14 @@ installCrashGuard()
 await loadStores()
 await manager.adoptSavedRuns().catch((error) => console.error(`adopting runs: ${describeError(error)}`))
 pruneUploads()
+pruneRunLogs().catch((error) => console.error(`pruning run logs: ${describeError(error)}`))
 setInterval(tick, 2000)
 warmIndex()
 setInterval(warmIndex, 60_000)
 setInterval(() => kickIdleBabysits().catch((error) => console.error(`babysit watchdog: ${describeError(error)}`)), 60_000)
 
 async function login(req, res) {
-  const who = String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? '').split(',')[0].trim().slice(0, 64)
+  const who = clientKey(req.headers, req.socket)
   if (loginLimiter.blocked(who)) return json(res, 429, { error: 'Too many attempts. Try again later.' })
   const body = await readBody(req)
   if (typeof body.token !== 'string' || !safeEqual(body.token, remote.token)) {
@@ -1539,11 +1535,8 @@ createServer(async (req, res) => {
       const route = postRoutes[url.pathname]
       if (!route) return send(res, 404, 'not found', 'text/plain')
       const body = await readBody(req)
-      try {
-        return await route(body, res)
-      } finally {
-        if (isTrackedRoute(url.pathname)) logAction(actionFrom({ route: url.pathname, body, status: res.statusCode, userAgent: req.headers['user-agent'], now: Date.now() }))
-      }
+      if (isTrackedRoute(url.pathname)) recordWhenSent(res, (status) => logAction(actionFrom({ route: url.pathname, body, status, userAgent: req.headers['user-agent'], now: Date.now() })))
+      return await route(body, res)
     }
     if (req.method !== 'GET') return send(res, 405, 'method not allowed', 'text/plain')
     if (url.pathname === '/api/upload') return await serveUpload(res, url)
@@ -1551,7 +1544,16 @@ createServer(async (req, res) => {
     if (route) return await route(url, res, req)
     return await serveStatic(res, url.pathname)
   } catch (error) {
+    if (res.headersSent) {
+      console.error(`${req.method} ${url.pathname} failed after the response started: ${describeError(error)}`)
+      return res.destroy()
+    }
     if (error instanceof BodyTooLargeError) return json(res, 413, { error: error.message })
-    return send(res, 500, String(error), 'text/plain')
+    if (error instanceof BadBodyError) {
+      console.error(`bad request body on ${url.pathname}: ${describeError(error.cause)}`)
+      return json(res, 400, { error: error.message })
+    }
+    console.error(`${req.method} ${url.pathname}: ${describeError(error)}`)
+    return send(res, 500, 'internal error', 'text/plain')
   }
 }).listen(PORT, HOST, () => console.log(`Claude session board on http://localhost:${PORT}`))

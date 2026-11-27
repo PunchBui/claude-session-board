@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFlow, sessionGraph, ticketKeys, reviewPattern, parseMilestoneInput, recordMilestone, recordLink, DEFAULT_REVIEW_STATUS } from '../lib/flow.js'
+import { MAX_LINKS, buildFlow, sessionGraph, ticketKeys, reviewPattern, parseMilestoneInput, recordMilestone, recordLink, DEFAULT_REVIEW_STATUS } from '../lib/flow.js'
 
 const H = 3_600_000
 const T0 = Date.UTC(2026, 10, 2, 3)
@@ -241,4 +241,16 @@ test('a session with no ticket joins the flow through the session it came from, 
   assert.ok(!flow.loose.mrs.some((row) => row.url === MR_B))
   assert.deepEqual(flow.sessionLinks, [{ from: 's1', to: 's2', kind: 'task' }, { from: 's2', to: 's3', kind: 'fork' }])
   assert.deepEqual(flow.loose.sessions.map((row) => row.id), ['lone'])
+})
+
+test('the link store keeps the newest entries per kind', () => {
+  let store = {}
+  for (let n = 0; n < MAX_LINKS + 5; n++) store = recordLink(store, { kind: 'session', id: `local_${n}`, ticket: 'AB-1' })
+  store = recordLink(store, { kind: 'mr', id: 'https://gitlab.example.com/t/r/-/merge_requests/9', ticket: 'AB-2' })
+  assert.equal(Object.keys(store.session).length, MAX_LINKS)
+  assert.equal(store.session.local_0, undefined)
+  assert.equal(store.session[`local_${MAX_LINKS + 4}`], 'AB-1')
+  assert.equal(store.mr['https://gitlab.example.com/t/r/-/merge_requests/9'], 'AB-2')
+  store = recordLink(store, { kind: 'session', id: 'local_10', ticket: 'AB-3' })
+  assert.equal(Object.keys(store.session).at(-1), 'local_10')
 })

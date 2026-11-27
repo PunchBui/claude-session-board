@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle, isHandoffFile } from '../lib/scan.js'
+import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle, isHandoffFile, isSystemWrapper, createScanStore } from '../lib/scan.js'
 import { usageOf, liveOf } from '../lib/live.js'
 
 const line = (value) => JSON.stringify(value)
@@ -189,4 +192,50 @@ test('an oversized or empty widget keeps its place without the code', () => {
     { type: 'tool_use', id: 'e', name: 'mcp__visualize__show_widget', input: { title: 'empty' } },
   ], { output_tokens: 1 }))
   assert.deepEqual(state.chat.map(({ code, size }) => ({ code, size })), [{ code: null, size: 400_001 }, { code: null, size: 0 }])
+})
+
+test('pasted markup is indexed as a prompt while command and system wrappers stay skipped', () => {
+  const state = newScanState()
+  absorbLine(state, user('<div class="x">why does this render twice?</div>'))
+  assert.equal(state.messages.length, 1)
+  assert.equal(state.messages[0].text, '<div class="x">why does this render twice?</div>')
+  assert.equal(state.lastKind, 'user')
+  assert.equal(state.lastPromptAt, '2026-10-27T08:00:05.000Z')
+  const skipped = new Set(['<system-reminder>x</system-reminder>', '<local-command-stdout>ok</local-command-stdout>', '<local-command-caveat>c</local-command-caveat>', '<task-notification><task-id>1</task-id></task-notification>', '<command-message>x</command-message>'])
+  for (const text of skipped) assert.ok(isSystemWrapper(text), text)
+  for (const text of ['<div>', '<xml><a/></xml>', 'plain', '<commandline>']) assert.ok(!isSystemWrapper(text), text)
+  const before = state.messages.length
+  for (const text of skipped) absorbLine(state, user(text))
+  absorbLine(state, user([{ type: 'text', text: '<system-reminder>x</system-reminder>' }]))
+  assert.equal(state.messages.length, before)
+  absorbLine(state, user([{ type: 'text', text: '<b>bold question</b>' }]))
+  assert.equal(state.messages.length, before + 1)
+})
+
+test('the scan store keeps the most recently used states and rescans an evicted file from the start', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-scan-'))
+  try {
+    const store = createScanStore({ maxStates: 2 })
+    const files = ['a', 'b', 'c'].map((name) => {
+      const path = join(dir, `${name}.jsonl`)
+      writeFileSync(path, `${user(`prompt ${name}`)}\n`)
+      return path
+    })
+    const size = () => Buffer.byteLength(`${user('prompt x')}\n`)
+    await store.scan(files[0], size())
+    await store.scan(files[1], size())
+    await store.scan(files[0], size())
+    await store.scan(files[2], size())
+    assert.deepEqual([...store.states.keys()], [files[0], files[2]])
+    const again = await store.scan(files[1], size())
+    assert.equal(again.messages.length, 1)
+    assert.equal(again.messages[0].text, 'prompt b')
+    assert.deepEqual([...store.states.keys()], [files[2], files[1]])
+    appendFileSync(files[1], `${user('later')}\n`)
+    const grown = await store.scan(files[1], size() * 2 + 1)
+    assert.ok(grown.messages.length >= 1)
+    assert.equal(store.states.size, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
