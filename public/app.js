@@ -5,6 +5,7 @@ import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { quickReplies, stalledFor, lastAssistantText } from './quickreply.js'
+import { overlapFor, commitOnlyPrompt, relativeTo } from './overlapwarn.js'
 import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, mrsPollMs, failedCiBabysitTargets, pingDueTargets } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
@@ -71,6 +72,7 @@ const state = {
   skills: { data: null, scope: 'all', temp: null, days: 30, sort: 'uses', query: '', at: 0, open: new Set(), details: new Map() },
   schedule: { data: null, at: 0, built: false },
   watches: { data: null, at: 0, built: false, kinds: new Map() },
+  overlaps: { items: [], at: 0 },
   loops: { data: null, at: 0 },
   timeline: { at: 0 },
   background: { data: null, at: 0, output: new Map(), loading: new Set() },
@@ -1413,6 +1415,37 @@ async function submitPrompt(id, box, chip) {
   if (state.pending.size) burstRefresh()
 }
 
+function renderOverlapWarning(c) {
+  const overlaps = overlapFor(state.overlaps.items, c.id).slice(0, 3)
+  if (!overlaps.length) return null
+  const wrap = el('div', 'overlap-warn')
+  for (const { path, others } of overlaps) {
+    const row = el('div', 'overlap-row')
+    row.append(icon('triangle-alert', { size: 14 }), el('span', 'overlap-text', `${relativeTo(path, c.cwd)} has uncommitted edits from ${others.length === 1 ? `"${others[0].title}"` : `${others.length} other sessions`} too`))
+    const commit = el('button', 'btn', 'Commit that file only')
+    commit.title = 'Ask this session to stage and commit just this file, after checking the diff'
+    commit.onclick = () => {
+      commit.disabled = true
+      const sender = document.createElement('textarea')
+      sender.value = commitOnlyPrompt(path, c.cwd, others)
+      submitPrompt(c.id, sender, 'Commit that file only')
+    }
+    row.append(commit)
+    wrap.append(row)
+  }
+  return wrap
+}
+
+async function loadOverlaps() {
+  state.overlaps.at = Date.now()
+  try {
+    const { items } = await getJson('/api/overlaps')
+    const changed = JSON.stringify(items) !== JSON.stringify(state.overlaps.items)
+    state.overlaps.items = items
+    if (changed && state.tab === 'focus') renderFocus()
+  } catch {}
+}
+
 const quietLabel = (ms) => `${Math.floor(ms / 60_000)}m`
 
 function reportChips(c, replies) {
@@ -1852,6 +1885,8 @@ function renderComposer(c) {
   if (ui.popover === 'schedule') dock.append(renderSchedulePopover(c, box))
   const attachments = renderAttachments(c)
   if (attachments) dock.append(attachments)
+  const warning = renderOverlapWarning(c)
+  if (warning) dock.append(warning)
   const replies = quickReplies(c)
   if (replies.length) {
     reportChips(c, replies)
@@ -5841,6 +5876,7 @@ async function refreshBoard() {
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
     if (Date.now() - state.watches.at > 15_000) loadWatches()
+    if (state.tab === 'focus' && Date.now() - state.overlaps.at > 15_000) loadOverlaps()
     if (Date.now() - state.mrs.at > mrsPollMs(mrHasWorking())) loadMrs()
     if (!isMobile() && Date.now() - state.timeline.at > 15_000) loadTimeline()
     if (state.tab === 'focus' && state.panel.open) {

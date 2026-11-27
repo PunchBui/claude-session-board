@@ -192,6 +192,11 @@
   .watch-form .watch-error { flex-basis: 100%; color: var(--bad, #b3261e); font-size: 12px; }
   .rt-item.done .rt-title::before { content: "✓ "; color: var(--ok); }
   .rt-meta .watch-note { color: var(--text); }
+  .overlap-warn { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .overlap-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; font-size: 12px; color: color-mix(in srgb, var(--caution) 55%, var(--text)); background: color-mix(in srgb, var(--caution) 16%, transparent); }
+  .overlap-row svg { flex: none; }
+  .overlap-row .overlap-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .overlap-row .btn { flex: none; padding: 2px 10px; font-size: 12px; }
   .sheet { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
   .scroll-x { overflow-x: auto; }
   table { width: 100%; min-width: 1180px; border-collapse: collapse; table-layout: fixed; }

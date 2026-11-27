@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { createScanStore, transcriptTitle, isHandoffFile } from './lib/scan.js'
 import { shownSettings, parseOverride, mergeOverride, overridesFromFile } from './lib/sessionsettings.js'
 import { usageOf, liveOf } from './lib/live.js'
-import { gitInfo } from './lib/git.js'
+import { gitInfo, modifiedFiles } from './lib/git.js'
 import { REPEATS, nextAfter, fireDue, advanceFired } from './lib/schedule.js'
 import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, recordRun, applyEdit } from './lib/routines.js'
 import { searchSessions } from './lib/search.js'
@@ -24,6 +24,7 @@ import { pickFolder } from './lib/folder.js'
 import { loopOf, loopRecords } from './lib/loops.js'
 import { resolveClaudeBin } from './lib/claudebin.js'
 import { MAX_WATCHES, parseWatchInput, parseWatchesFile, isWatchDue, watchPrompt, afterCheck, applyReport, toggled, needsNewSession, expireWatches } from './lib/watches.js'
+import { overlapsOf } from './lib/overlap.js'
 import { createCardCache, cardVersion, timeBucket, parseHave, focusDelta } from './lib/cardcache.js'
 import { handoffFile, handoffPrompt, handoffLink } from './lib/handoff.js'
 import { pingReviewer, pingChannel, reviewChannelFrom, resolveReviewChannel } from './lib/ping.js'
@@ -840,6 +841,30 @@ async function installedSkills() {
   return listSkills({ projects, home: CLAUDE_HOME })
 }
 
+const OVERLAP_TTL_MS = 10_000
+const OVERLAP_MAX = 30
+let overlapCache = { at: 0, items: [] }
+
+async function currentOverlaps() {
+  if (Date.now() - overlapCache.at < OVERLAP_TTL_MS) return overlapCache.items
+  const entries = (await readRawSessions())
+    .filter((raw) => !isSideChat(raw))
+    .map((raw) => {
+      const path = transcriptPaths.get(raw.cliSessionId)
+      const files = path ? scanStore.states.get(path)?.files : null
+      return files?.size ? { id: raw.sessionId, title: toSummary(raw).title, cwd: raw.cwd ?? raw.originCwd ?? null, files } : null
+    })
+    .filter(Boolean)
+  const modified = new Map()
+  const items = []
+  for (const overlap of overlapsOf(entries).slice(0, OVERLAP_MAX)) {
+    if (!modified.has(overlap.dir)) modified.set(overlap.dir, await modifiedFiles(overlap.dir))
+    if (modified.get(overlap.dir)?.paths.has(overlap.path)) items.push(overlap)
+  }
+  overlapCache = { at: Date.now(), items }
+  return items
+}
+
 async function changesFor(id) {
   const raw = (await readRawSessions()).find((session) => session.sessionId === id)
   if (!raw) return null
@@ -1522,6 +1547,9 @@ const getRoutes = {
   },
   async '/api/routines'(url, res) {
     return json(res, 200, { routines })
+  },
+  async '/api/overlaps'(url, res) {
+    return json(res, 200, { items: await currentOverlaps() })
   },
   async '/api/watches'(url, res) {
     return json(res, 200, { watches })
