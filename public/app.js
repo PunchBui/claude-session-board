@@ -490,7 +490,21 @@ async function toggleAlerts() {
 
 const failToast = (id, title, result) => toast({ id, title, kind: 'failed', message: result.data?.error ?? title })
 
+function neighbourAfterRemoval(id) {
+  const groups = shownGroups(sideGroups(), id)
+  const after = neighbour(groups, id, 1)
+  return after !== id ? after : neighbour(groups, id, -1)
+}
+
 function dropFromFocusNow(id) {
+  if (selectedCard()?.id === id && !state.draft) {
+    const next = neighbourAfterRemoval(id)
+    if (next && next !== id) {
+      state.selected = next
+      state.selectedSeen = next
+      remember('board.selected', next)
+    }
+  }
   state.focusIds = state.focusIds.filter((existing) => existing !== id)
   state.cards = state.cards.filter((c) => c.id !== id)
   renderRows()
@@ -532,7 +546,7 @@ function kebabMenu(id) {
     menu.setAttribute('role', 'menu')
     const item = el('button', undefined, 'Unfocus session')
     item.setAttribute('role', 'menuitem')
-    item.onclick = () => { closeMenus(); setFocus(id, false) }
+    item.onclick = (event) => { event.stopPropagation(); closeMenus(); setFocus(id, false) }
     menu.append(item)
     wrap.append(menu)
     const box = b.getBoundingClientRect()
