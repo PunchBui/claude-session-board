@@ -942,7 +942,7 @@ const postRoutes = {
   },
   async '/api/repo/push'(body, res) {
     const result = await commitAndPushRepo({ pull: body.pull === true })
-    if (!result.ok) return json(res, result.status, { error: result.error })
+    if (!result.ok) return json(res, result.status, { error: result.error, conflict: result.conflict ? { ...result.conflict, folder: REPO_DIR } : undefined })
     return json(res, 200, { committed: result.committed, pulled: result.pulled, pushed: result.pushed, status: await readRepoStatus({ force: true }) })
   },
   async '/api/repo/pull'(body, res) {

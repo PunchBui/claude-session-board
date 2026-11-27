@@ -5945,6 +5945,15 @@ const refreshRepoStatus = (force = false) => withRepoSpinner(async (button) => {
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
+const conflictPrompt = ({ branch, upstream, files }) => `Syncing ${branch} with ${upstream} hit merge conflicts in ${files.join(', ')}. The board tried git pull --rebase and aborted it, so the working tree is clean and any local changes are already committed. Rebase ${branch} onto ${upstream} (git pull --rebase), resolve each conflict by keeping the intent of both sides, run the tests, continue the rebase, and push. If you cannot tell which side should win, stop and ask.`
+
+async function startConflictSession(conflict) {
+  const result = await postJson('/api/new-session', { folder: conflict.folder, prompt: conflictPrompt(conflict) }).catch(() => ({ ok: false, data: {} }))
+  toast(result.ok
+    ? { id: 'repo-push', title: 'Merge conflict: session started', kind: 'finished', message: `A new session is resolving ${plural(conflict.files.length, 'conflicting file')} (${conflict.files.join(', ')}).` }
+    : { id: 'repo-push', title: 'Merge conflict', kind: 'failed', message: `Conflicts in ${conflict.files.join(', ')}. Could not start a session: ${result.data?.error ?? 'unknown error'}` })
+}
+
 const syncRepo = () => withRepoSpinner(async (button) => {
   const result = await postJson('/api/repo/push', { pull: true })
   if (result.ok) {
@@ -5954,7 +5963,8 @@ const syncRepo = () => withRepoSpinner(async (button) => {
     toast({ id: 'repo-push', title: pushed ? 'Synced with origin' : 'Updated from origin', kind: 'finished', message: `${did.charAt(0).toUpperCase()}${did.slice(1)}.` })
     return
   }
-  toast({ id: 'repo-push', title: 'Could not sync', kind: 'failed', message: result.data.error ?? 'Could not sync' })
+  if (result.data.conflict) await startConflictSession(result.data.conflict)
+  else toast({ id: 'repo-push', title: 'Could not sync', kind: 'failed', message: result.data.error ?? 'Could not sync' })
   showRepoStatus(button, await signedOut(await fetch('/api/repo-status?force=1')).json())
 })
 

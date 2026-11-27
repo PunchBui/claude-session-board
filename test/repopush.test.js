@@ -134,6 +134,7 @@ test('pull: true aborts the rebase on a conflict and keeps the local commit', as
     const result = await createRepoPusher({ cwd: work })({ pull: true })
     assert.equal(result.ok, false)
     assert.match(result.error, /rebase aborted/)
+    assert.deepEqual(result.conflict, { branch: 'main', upstream: 'origin/main', files: ['a.txt'] })
     assert.equal(git(origin, 'log', '-1', '--format=%s', 'main'), 'remote change')
     assert.equal(git(work, 'log', '-1', '--format=%s'), 'Update a.txt')
     assert.equal(git(work, 'status', '--porcelain'), '')
