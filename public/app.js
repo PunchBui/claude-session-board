@@ -31,7 +31,7 @@ const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approva
 const $ = (id) => document.getElementById(id)
 
 const state = {
-  resume: new Map(),
+  boardOnly: new Set(),
   tab: 'all',
   sessions: [],
   focusIds: [],
@@ -161,23 +161,8 @@ const projectChip = (s) => {
   chip.style.setProperty('--project', projectColor(s.project))
   return chip
 }
-const copyResume = (command) => {
-  const button = el('button', 'btn', 'Copy resume')
-  button.title = `Board-only session: the desktop app cannot open it. Copies: ${command}`
-  button.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(command)
-      button.textContent = 'Copied'
-    } catch {
-      button.textContent = 'Copy failed'
-    }
-    setTimeout(() => { button.textContent = 'Copy resume' }, 1500)
-  }
-  return button
-}
 const openLink = (id, primary) => {
-  const resume = state.resume.get(id)
-  if (resume) return copyResume(resume)
+  if (state.boardOnly.has(id)) return el('span')
   const a = el('a', `btn${primary ? ' primary' : ''}`, 'Open')
   a.append(icon('arrow-up-right', { size: 14 }))
   a.href = `claude://code/continue?session=${encodeURIComponent(id)}`
@@ -5690,7 +5675,7 @@ async function refreshBoard() {
     if (signature !== state.signature) {
       state.signature = signature
       state.sessions = sessions
-      state.resume = new Map(sessions.filter((s) => s.resume).map((s) => [s.id, s.resume]))
+      state.boardOnly = new Set(sessions.filter((s) => s.source === 'board').map((s) => s.id))
       state.focusIds = focus.ids
       state.cards = carryMissingCards(state.cards, focus.ids, focus.cards)
       timeline.update({ prompts: focus.cards.map((c) => ({ sessionId: c.id, title: c.title, project: c.project, items: c.schedules ?? [] })) })

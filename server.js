@@ -188,7 +188,6 @@ function toSummary(raw) {
     detail: raw.postTurnSummary?.status_detail ?? raw.turnWrapUp?.description ?? null,
     cliSessionId: raw.cliSessionId ?? null,
     source: raw.source ?? 'desktop',
-    resume: raw.resume ?? null,
     sideChatOf: sideChatParent(raw),
     unfocused: raw.unfocused === true,
   }

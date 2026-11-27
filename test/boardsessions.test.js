@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { writeJsonAtomic, readJsonQuarantine } from '../lib/atomic.js'
 import {
   BOARD_PREFIX, MAX_BOARD_SESSIONS, MAX_TITLE_CHARS, validFolderPath, titleFrom, newBoardSession, validBoardEntry,
-  parseBoardFile, resumeCommand, shellQuote, boardStatus, boardRaw, createBoardStore, keptBoardIds, evictionOrder,
+  parseBoardFile, boardStatus, boardRaw, createBoardStore, keptBoardIds, evictionOrder,
 } from '../lib/boardsessions.js'
 
 const UUID = '3f2b8c1e-5a4d-4e6f-9a1b-2c3d4e5f6a7b'
@@ -46,11 +46,6 @@ test('entries are validated and the file loader drops bad and duplicate ones', (
   assert.deepEqual(parseBoardFile({ items: 'x' }), [])
 })
 
-test('the resume command quotes the folder', () => {
-  assert.equal(shellQuote("it's"), `'it'\\''s'`)
-  assert.equal(resumeCommand(entry({ cwd: "/Users/me/it's here" })), `cd '/Users/me/it'\\''s here' && claude --resume ${UUID}`)
-})
-
 test('status follows the board run', () => {
   assert.equal(boardStatus({ state: 'running' }), 'in_progress')
   assert.equal(boardStatus({ state: 'failed' }), 'unknown')
@@ -68,7 +63,6 @@ test('a board raw session looks like a desktop one plus the board markers', () =
   assert.equal(raw.isArchived, false)
   assert.equal(raw.source, 'board')
   assert.equal(raw.postTurnSummary.status_category, 'in_progress')
-  assert.match(raw.resume, new RegExp(`claude --resume ${UUID}$`))
   assert.equal(boardRaw(entry(), { run: null }).lastActivityAt, 1000)
 })
 
