@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle, isHandoffFile, isSystemWrapper, createScanStore } from '../lib/scan.js'
+import { newScanState, absorbLine, absorbBuffer, localDay, transcriptTitle, isHandoffFile, isSystemWrapper, createScanStore, MAX_SCAN_STATES } from '../lib/scan.js'
 import { usageOf, liveOf } from '../lib/live.js'
 
 const line = (value) => JSON.stringify(value)
@@ -238,4 +238,9 @@ test('the scan store keeps the most recently used states and rescans an evicted 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('the default scan store holds every session a poll rescans so a poll never re-reads transcripts from the start', () => {
+  assert.ok(MAX_SCAN_STATES >= 300)
+  assert.equal(createScanStore().capacity, MAX_SCAN_STATES)
 })

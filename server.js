@@ -6,7 +6,7 @@ import { readdir, readFile, stat, writeFile, mkdir, rm, open, chmod, rename } fr
 import { homedir, tmpdir } from 'node:os'
 import { join, extname, basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createScanStore, transcriptTitle, isHandoffFile, MAX_SCAN_STATES } from './lib/scan.js'
+import { createScanStore, transcriptTitle, isHandoffFile } from './lib/scan.js'
 import { shownSettings, parseOverride, mergeOverride, overridesFromFile } from './lib/sessionsettings.js'
 import { usageOf, liveOf } from './lib/live.js'
 import { gitInfo } from './lib/git.js'
@@ -306,6 +306,7 @@ async function buildCard(raw) {
 }
 
 const LOOP_LOOKBACK_MS = 8 * 24 * 60 * 60_000
+const WARM_SESSIONS = 50
 
 function backgroundCountFor(raw) {
   const path = transcriptPaths.get(raw.cliSessionId)
@@ -757,7 +758,7 @@ async function warmIndex() {
   if (indexStatus.running) return
   indexStatus.running = true
   try {
-    const raws = (await readRawSessions()).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0)).slice(0, MAX_SCAN_STATES)
+    const raws = (await readRawSessions()).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0)).slice(0, WARM_SESSIONS)
     indexStatus.total = raws.length
     indexStatus.done = 0
     for (const raw of raws) {
