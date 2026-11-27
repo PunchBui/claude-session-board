@@ -33,3 +33,10 @@ test('a session started unfocused is not added to Focus', () => {
   const { fresh } = newSessionIds(known, [session('a'), session('b', { unfocused: true }), session('c')], [])
   assert.deepEqual(fresh, ['c'])
 })
+
+test('a session that drops out of one poll and comes back is not reported again', () => {
+  const baseline = newSessionIds(null, [session('a'), session('b')], ['a']).next
+  const dropped = newSessionIds(baseline, [session('a')], ['a'])
+  assert.deepEqual(dropped.fresh, [])
+  assert.deepEqual(newSessionIds(dropped.next, [session('a'), session('b')], ['a']).fresh, [])
+})
