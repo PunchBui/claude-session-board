@@ -4,7 +4,7 @@ import { splitFences, parseBlocks } from './richtext.js'
 import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
-import { quickReplies } from './quickreply.js'
+import { quickReplies, stalledFor, lastAssistantText } from './quickreply.js'
 import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, mrsPollMs, failedCiBabysitTargets, pingDueTargets } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
@@ -31,6 +31,7 @@ const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approva
 const $ = (id) => document.getElementById(id)
 
 const state = {
+  chipsSeen: new Map(),
   boardOnly: new Set(),
   tab: 'all',
   sessions: [],
@@ -1411,6 +1412,31 @@ async function submitPrompt(id, box, chip) {
   if (state.pending.size) burstRefresh()
 }
 
+const quietLabel = (ms) => `${Math.floor(ms / 60_000)}m`
+
+function reportChips(c, replies) {
+  const key = `${replies.map((reply) => reply.label).join('|')}:${(lastAssistantText(c.details?.chat) ?? '').length}`
+  if (state.chipsSeen.get(c.id) === key) return
+  state.chipsSeen.set(c.id, key)
+  postJson('/api/chips/shown', { id: c.id, labels: replies.map((reply) => reply.label) }).catch(() => {})
+}
+
+async function askIfStuck(c, reply) {
+  setNote(c.id, 'Sending…')
+  const queued = await postJson('/api/queue', { id: c.id, prompt: reply.prompt, chip: reply.label })
+  const item = queued.ok ? queued.data.queue?.items?.at(-1) : null
+  if (!item) {
+    setNote(c.id, queued.data?.error ?? 'Could not send')
+    return resync()
+  }
+  const forced = await postJson('/api/queue/force', { id: c.id, qid: item.qid })
+  if (!forced.ok) toast({ id: 'force-send', title: 'Could not send now', kind: 'finished', message: forced.data?.error ?? 'Could not send' })
+  setNote(c.id, null)
+  state.signature = ''
+  await refresh()
+  if (state.pending.size) burstRefresh()
+}
+
 async function createSchedule(c, box) {
   const ui = uiOf(c.id)
   const typed = box.value.trim()
@@ -1827,12 +1853,14 @@ function renderComposer(c) {
   if (attachments) dock.append(attachments)
   const replies = quickReplies(c)
   if (replies.length) {
+    reportChips(c, replies)
     const chips = el('div', 'quick-replies')
     for (const reply of replies) {
       const chip = el('button', 'quick-reply', reply.label)
-      chip.title = `Send "${reply.prompt}"`
+      chip.title = reply.stuck ? 'Interrupt the running prompt and ask it what it is waiting on' : `Send "${reply.prompt}"`
       chip.onclick = () => {
         chips.querySelectorAll('button').forEach((b) => { b.disabled = true })
+        if (reply.stuck) return askIfStuck(c, reply)
         const sender = document.createElement('textarea')
         sender.value = reply.prompt
         submitPrompt(c.id, sender, reply.label)
@@ -2463,7 +2491,9 @@ function renderCard(c) {
   const mrs = mrLinks(c)
   if (mrs) titleBox.append(mrs)
   const live = el('span', 'live')
-  live.append(el('span', 'dot'), text(c.active ? 'Working' : `Idle · ${relative(c.touchedAt)}`))
+  const quiet = stalledFor(c)
+  live.append(el('span', 'dot'), text(quiet !== null ? `Quiet for ${quietLabel(quiet)}` : c.active ? 'Working' : `Idle · ${relative(c.touchedAt)}`))
+  if (quiet !== null) live.classList.add('quiet')
   const switcher = el('div', 'seg pane-switch')
   const panes = [['chat', 'Chat'], ['changes', 'Changes']]
   if (c.subagents?.total || ui.pane === 'agents') panes.push(['agents', 'Agents'])
@@ -2692,11 +2722,13 @@ function sideItem(c, selected) {
   let mono = false
   if (attention) note = attention.kind === 'question' ? (attention.text?.split('\n')[0] || 'Waiting for your answer') : `${attention.tool} may need approval`
   else if (working && c.live?.phase === 'tool') { note = `${c.live.current.name}${c.live.current.text ? ` · ${c.live.current.text}` : ''}`; mono = true }
+  else if (stalledFor(c) !== null) note = `No output for ${quietLabel(stalledFor(c))}, may be stuck`
   else if (working) note = phaseLabel(c.live) ?? 'Working'
   else if (c.babysit) note = babysitNote(c.babysit)
   sub.append(projectChip(c), el('span', `note${mono ? ' mono' : ''}`, note))
   const level = contextLevel(c.usage?.context ?? 0)
   if (level) sub.append(el('span', `tag ctx ${level}`, compact(c.usage.context)))
+  if (stalledFor(c) !== null) sub.append(el('span', 'tag stuck', `Quiet ${quietLabel(stalledFor(c))}`))
   const queued = c.queue?.items.length ?? 0
   if (queued) sub.append(el('span', 'tag q', `+${queued}`))
   const sides = sideChatCount(state.sessions, c.id)

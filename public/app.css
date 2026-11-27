@@ -942,6 +942,8 @@
   .tag.ctx { color: var(--muted); background: var(--surface-2); }
   .tag.ctx.caution { color: color-mix(in srgb, var(--caution) 55%, var(--text)); background: color-mix(in srgb, var(--caution) 22%, transparent); }
   .tag.ctx.danger { color: color-mix(in srgb, var(--danger) 70%, var(--text)); background: color-mix(in srgb, var(--danger) 20%, transparent); }
+  .tag.stuck { color: color-mix(in srgb, var(--caution) 55%, var(--text)); background: color-mix(in srgb, var(--caution) 22%, transparent); }
+  .live.quiet { color: color-mix(in srgb, var(--caution) 55%, var(--text)); }
   .item-bar { margin: 1px 0 0 17px; height: 2px; border-radius: 2px; background: var(--line); overflow: hidden; }
   .item-bar i { display: block; height: 100%; background: var(--info); border-radius: 2px; }
   .item-bar i.warn { background: var(--caution); }

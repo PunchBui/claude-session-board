@@ -30,7 +30,7 @@ import { resolveSpawnEnv } from './lib/env.js'
 import { createMrCache, InvalidMrUrlError, withSessions, withFocus, withPings, withPingDue, PING_AFTER_MS, recordPing, toggleFocus, autoFocusNew, isMrUrl, addLabel, closeMr, setAutoMerge, mrState, withAutoMerge, withLabel, ADDABLE_LABELS, glab, GITLAB_HOST } from './lib/mrs.js'
 import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from './lib/background.js'
 import { writeJsonAtomic, readJsonQuarantine, withFileLock, updateJsonFile } from './lib/atomic.js'
-import { actionFrom, isTrackedRoute, recordAction, summarizeActions, recordWhenSent } from './lib/actions.js'
+import { actionFrom, isTrackedRoute, recordAction, summarizeActions, recordWhenSent, parseShown } from './lib/actions.js'
 import { installCrashGuard, describeError } from './lib/crash.js'
 import { readNewSessionDefaults } from './lib/defaults.js'
 import { validFolderPath } from './lib/boardsessions.js'
@@ -71,6 +71,7 @@ const FOCUS_FILE = join(DATA_DIR, 'focus.json')
 const MR_FOCUS_FILE = join(DATA_DIR, 'mr-focus.json')
 const MR_PINGS_FILE = join(DATA_DIR, 'mr-pings.json')
 const ACTIONS_FILE = join(DATA_DIR, 'actions.json')
+const chipsShown = new Map()
 const PING_DUE_MS = (Number(process.env.PING_DUE_HOURS) > 0 ? Number(process.env.PING_DUE_HOURS) : PING_AFTER_MS / 3_600_000) * 3_600_000
 const MR_CACHE_FILE = join(DATA_DIR, 'mr-cache.json')
 const MR_BABYSIT_FILE = join(DATA_DIR, 'mr-babysit.json')
@@ -1198,6 +1199,13 @@ const postRoutes = {
     await persistQueues()
     return json(res, 200, { queue: publicQueue(body.id) })
   },
+  async '/api/chips/shown'(body, res) {
+    const parsed = parseShown(body)
+    if (!parsed) return json(res, 400, { error: 'bad request' })
+    if (chipsShown.get(parsed.id)?.labels.join() !== parsed.labels.join()) chipsShown.set(parsed.id, { at: Date.now(), labels: parsed.labels })
+    if (chipsShown.size > 200) chipsShown.delete(chipsShown.keys().next().value)
+    return json(res, 200, { ok: true })
+  },
   async '/api/queue/force'(body, res) {
     if (!SESSION_ID.test(body.id ?? '')) return json(res, 400, { error: 'bad request' })
     const queue = queueFor(body.id)
@@ -1546,7 +1554,13 @@ createServer(async (req, res) => {
       const route = postRoutes[url.pathname]
       if (!route) return send(res, 404, 'not found', 'text/plain')
       const body = await readBody(req)
-      if (isTrackedRoute(url.pathname)) recordWhenSent(res, (status) => logAction(actionFrom({ route: url.pathname, body, status, userAgent: req.headers['user-agent'], now: Date.now() })))
+      if (isTrackedRoute(url.pathname)) {
+        const shown = chipsShown.get(body?.id) ?? null
+        recordWhenSent(res, (status) => {
+          logAction(actionFrom({ route: url.pathname, body, status, userAgent: req.headers['user-agent'], now: Date.now(), shown }))
+          if (shown && status < 400 && (url.pathname === '/api/prompt' || url.pathname === '/api/queue')) chipsShown.delete(body.id)
+        })
+      }
       return await route(body, res)
     }
     if (req.method !== 'GET') return send(res, 405, 'method not allowed', 'text/plain')

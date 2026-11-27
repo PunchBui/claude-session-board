@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { recordWhenSent, actionFrom, isTrackedRoute, promptKind, recordAction, summarizeActions, MAX_ACTIONS } from '../lib/actions.js'
+import { recordWhenSent, actionFrom, isTrackedRoute, promptKind, recordAction, summarizeActions, MAX_ACTIONS, SHOWN_TTL_MS, replyShape, parseShown } from '../lib/actions.js'
 
 const MR = 'https://gitlab.example.com/t/r/-/merge_requests/1'
 const SESSION = 'local_5dd7e1f0-0000-4000-8000-000000000001'
@@ -89,4 +89,41 @@ test('chip clicks are counted per chip, apart from typed prompts', () => {
     { action: '/api/prompt chip:Yes', count: 1 },
     { action: '/api/queue chip:Yes', count: 1 },
   ])
+})
+
+test('a prompt typed while chips were shown logs its shape and the chips, never its text', () => {
+  const shown = { at: 1000, labels: ['Yes', 'No'] }
+  const entry = actionFrom({ route: '/api/prompt', body: { id: SESSION, prompt: 'yes, check it with the secret token' }, status: 202, userAgent: 'Mozilla', now: 2000, shown })
+  assert.equal(entry.chips, 'Yes,No')
+  assert.equal(entry.typedAfterChips, 'yes:7')
+  assert.equal(JSON.stringify(entry).includes('secret'), false)
+})
+
+test('a chip click, a stale display or no display adds no typed-after-chips mark', () => {
+  const shown = { at: 1000, labels: ['Yes'] }
+  assert.equal(actionFrom({ route: '/api/prompt', body: { id: SESSION, prompt: 'yes', chip: 'Yes' }, status: 202, userAgent: 'Mozilla', now: 2000, shown }).typedAfterChips, undefined)
+  assert.equal(actionFrom({ route: '/api/prompt', body: { id: SESSION, prompt: 'yes' }, status: 202, userAgent: 'Mozilla', now: 1000 + SHOWN_TTL_MS + 1, shown }).typedAfterChips, undefined)
+  assert.equal(actionFrom({ route: '/api/prompt', body: { id: SESSION, prompt: 'yes' }, status: 202, userAgent: 'Mozilla', now: 2000 }).typedAfterChips, undefined)
+})
+
+test('an unknown first word is logged as other', () => {
+  assert.equal(replyShape('please rebase it'), 'other:3')
+  assert.equal(replyShape(''), 'other:0')
+})
+
+test('the shown report keeps only valid chip labels and a valid session', () => {
+  assert.deepEqual(parseShown({ id: SESSION, labels: ['Yes', 'No', 'bad<label>', 5] }), { id: SESSION, labels: ['Yes', 'No'] })
+  assert.equal(parseShown({ id: 'x', labels: ['Yes'] }), null)
+  assert.equal(parseShown({ id: SESSION, labels: [] }), null)
+  assert.equal(actionFrom({ route: '/api/chips/shown', body: { id: SESSION, labels: ['Yes', 'No'] }, status: 200, userAgent: 'Mozilla', now: 1 }).chips, 'Yes,No')
+})
+
+test('the summary separates typed-after-chips, shown and chip clicks', () => {
+  const log = [
+    { at: 10, route: '/api/prompt', status: 202, source: 'ui', typedAfterChips: 'yes:3', chips: 'Yes,No' },
+    { at: 10, route: '/api/prompt', status: 202, source: 'ui', chip: 'Yes' },
+    { at: 10, route: '/api/chips/shown', status: 200, source: 'ui', chips: 'Yes,No' },
+  ]
+  const actions = Object.fromEntries(summarizeActions(log, { now: 20 }).map((a) => [a.action, a.count]))
+  assert.deepEqual(actions, { '/api/prompt typed-after-chips:yes': 1, '/api/prompt chip:Yes': 1, '/api/chips/shown Yes,No': 1 })
 })
