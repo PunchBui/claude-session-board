@@ -2162,6 +2162,8 @@ const BACKGROUND_LINES = 3
 
 const runningBackground = (c) => (c.backgroundTasks?.tasks ?? []).filter((task) => task.status === 'running')
 
+const startingSession = (c) => c.source === 'board' && !['failed', 'stalled', 'stopped'].includes(c.run?.state)
+
 function renderChat(c) {
   chatBase = c.cwd ?? ''
   const wrap = el('div', 'chat-wrap')
@@ -2170,7 +2172,7 @@ function renderChat(c) {
   const messages = c.details?.chat ?? []
   const waiting = (state.pending.get(c.id) ?? []).filter((entry) => !isDelivered(entry, messages))
   const working = renderWorking(c)
-  if (!c.transcriptFound && !waiting.length && !working) chat.append(el('div', 'chat-empty', 'Transcript file not found for this session.'))
+  if (!c.transcriptFound && !waiting.length && !working) chat.append(el('div', 'chat-empty', startingSession(c) ? 'Starting the session…' : 'Transcript file not found for this session.'))
   else if (!messages.length && !waiting.length && !working) chat.append(el('div', 'chat-empty', 'No messages yet.'))
   else {
     inner.append(...messages.map(renderMessage), ...waiting.map((entry) => renderMessage({ role: 'user', text: entry.text, pending: true })))
