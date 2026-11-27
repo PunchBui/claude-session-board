@@ -5,7 +5,7 @@ import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { quickReplies } from './quickreply.js'
-import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, mrsPollMs } from './mrs.js'
+import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, mrsPollMs, failedCiBabysitTargets, pingDueTargets } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
@@ -1371,7 +1371,7 @@ function autosize(box) {
   box.style.height = `${Math.min(box.scrollHeight, 180)}px`
 }
 
-async function submitPrompt(id, box) {
+async function submitPrompt(id, box, chip) {
   const typed = box.value.trim()
   const fresh = freshCommand(typed)
   if (fresh !== null) return startFreshChat(id, box, fresh)
@@ -1394,10 +1394,10 @@ async function submitPrompt(id, box) {
     renderFocus()
   }
   setNote(id, 'Sending…')
-  let result = await postJson(busy ? '/api/queue' : '/api/prompt', { id, prompt })
+  let result = await postJson(busy ? '/api/queue' : '/api/prompt', { id, prompt, chip })
   if (!busy && shouldQueue(result)) {
     dropPending(id, prompt)
-    result = await postJson('/api/queue', { id, prompt })
+    result = await postJson('/api/queue', { id, prompt, chip })
   }
   if (result.ok) {
     setNote(id, null)
@@ -1831,7 +1831,7 @@ function renderComposer(c) {
         chips.querySelectorAll('button').forEach((b) => { b.disabled = true })
         const sender = document.createElement('textarea')
         sender.value = reply.prompt
-        submitPrompt(c.id, sender)
+        submitPrompt(c.id, sender, reply.label)
       }
       chips.append(chip)
     }
@@ -4171,6 +4171,7 @@ function renderMrsPage() {
   const all = mergeMrs(data)
   const rows = visibleMrs(all, state.mrs)
   renderMrsSummary(all, rows)
+  renderMrsBulk()
   $('mrs-rows').replaceChildren(...rows.map(buildMrRow))
   scrollToPicked()
 }
@@ -4203,6 +4204,55 @@ function updateMrRow(url) {
   if (!mr || rows.length !== shown.length || rows.some((item, index) => item.url !== shown[index])) return renderMrsPage()
   current.replaceWith(buildMrRow(mr))
   renderMrsSummary(all, rows)
+  renderMrsBulk()
+}
+
+function renderMrsBulk() {
+  const data = state.mrs.data
+  const all = data ? mergeMrs(data) : []
+  const failed = failedCiBabysitTargets(all)
+  const due = pingDueTargets(all)
+  const babysit = $('mrs-babysit-failed')
+  babysit.hidden = !failed.length
+  babysit.textContent = `Babysit ${failed.length} failed CI`
+  babysit.disabled = false
+  const ping = $('mrs-ping-due')
+  ping.hidden = !due.length
+  ping.textContent = `Ping ${due.length} due`
+  ping.disabled = false
+}
+
+async function babysitAllFailed() {
+  const targets = failedCiBabysitTargets(mergeMrs(state.mrs.data))
+  if (!targets.length) return
+  if (!window.confirm(`Start a babysit session for ${targets.length} merge request${targets.length === 1 ? '' : 's'} with failed CI?\n\n${targets.map((mr) => mr.ref).join('\n')}`)) return
+  const button = $('mrs-babysit-failed')
+  button.disabled = true
+  for (const mr of targets) {
+    button.textContent = `Starting ${targets.indexOf(mr) + 1}/${targets.length}…`
+    const result = await startMrSession(mr, `/csb-babysit ${mr.url}`)
+    if (!result.ok) continue
+    const saved = await postJson('/api/mrs/babysit', { url: mr.url, state: 'starting', sessionId: result.data.id })
+    if (saved.ok) setMrBabysit(mr.url, saved.data.babysit)
+  }
+  renderMrsBulk()
+}
+
+async function pingAllDue() {
+  const targets = pingDueTargets(mergeMrs(state.mrs.data))
+  if (!targets.length) return
+  if (!window.confirm(`Send ${targets.length} Slack review ping${targets.length === 1 ? '' : 's'}?\n\n${targets.map(({ mr, reviewer }) => `${reviewer}: ${mr.ref}`).join('\n')}`)) return
+  const button = $('mrs-ping-due')
+  button.disabled = true
+  for (const { mr, reviewer } of targets) {
+    button.textContent = `Pinging ${targets.findIndex((t) => t.mr === mr && t.reviewer === reviewer) + 1}/${targets.length}…`
+    const { ok, data } = await postJson('/api/mrs/ping', { url: mr.url, reviewer })
+    if (!ok) continue
+    const mark = (list) => list.map((item) => (item.url === mr.url ? { ...item, pinged: { ...item.pinged, [reviewer]: data.pingedAt }, pingDue: { ...item.pingDue, reviewers: item.pingDue.reviewers.filter((name) => name !== reviewer) } } : item))
+    state.mrs.data = { ...state.mrs.data, authored: mark(state.mrs.data.authored), reviewing: mark(state.mrs.data.reviewing) }
+  }
+  renderMrsPage()
+  renderMrsBulk()
 }
 
 function renderMrsChannel() {
@@ -5785,6 +5835,8 @@ document.querySelectorAll('#mrs-temp button').forEach((b) => {
 })
 $('mrs-refresh').onclick = () => loadMrs(true)
 $('mrs-channel').onclick = editReviewChannel
+$('mrs-babysit-failed').onclick = babysitAllFailed
+$('mrs-ping-due').onclick = pingAllDue
 document.querySelectorAll('#usage-metric button').forEach((b) => {
   b.onclick = () => { state.usage.metric = b.dataset.metric; remember('board.usageMetric', state.usage.metric); renderUsagePage() }
 })

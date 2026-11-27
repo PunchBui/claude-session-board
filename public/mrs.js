@@ -157,3 +157,17 @@ export function refreshStatus({ fetchedAt, at, loading, autoOff, working = false
 
 export const replyPlanOffered = (mr) =>
   !mr.mergedAt && mr.babysit?.state === 'needs-you' && Boolean(mr.babysit.sessionId) && /reply plan ready/i.test(mr.babysit.note ?? '')
+
+const FAILED_CI_SKIP = new Set(['needs-you'])
+
+export const failedCiBabysitTargets = (mrs, now = Date.now()) =>
+  mrs.filter((mr) => mr.role === 'authored' && !mr.draft && mr.verdict?.code === 'ci-failed' && !FAILED_CI_SKIP.has(mr.babysit?.state) && babysitOffered(mr, now))
+
+export function pingDueTargets(mrs) {
+  const targets = []
+  for (const mr of mrs) {
+    if (mr.role !== 'authored' || mr.mergedAt) continue
+    for (const reviewer of mr.pingDue?.reviewers ?? []) targets.push({ mr, reviewer })
+  }
+  return targets
+}

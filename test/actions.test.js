@@ -70,3 +70,23 @@ test('the status is read once the response is sent, so a failure is recorded as 
   res.emit('close')
   assert.deepEqual(seen, [500])
 })
+
+test('a chip click is logged by label, other bodies are not', () => {
+  const chip = actionFrom({ route: '/api/prompt', body: { id: SESSION, prompt: 'yes', chip: 'Yes, push' }, status: 202, userAgent: 'Mozilla', now: 9 })
+  assert.equal(chip.chip, 'Yes, push')
+  assert.equal(actionFrom({ route: '/api/prompt', body: { id: SESSION, prompt: 'yes', chip: '<script>' }, status: 202, userAgent: 'Mozilla', now: 9 }).chip, undefined)
+  assert.equal(actionFrom({ route: '/api/mrs/ping', body: { url: MR, chip: 'Yes' }, status: 200, userAgent: 'Mozilla', now: 9 }).chip, undefined)
+})
+
+test('chip clicks are counted per chip, apart from typed prompts', () => {
+  const log = [
+    { at: 10, route: '/api/prompt', status: 202, source: 'ui', kind: 'text', chip: 'Yes' },
+    { at: 11, route: '/api/queue', status: 202, source: 'ui', chip: 'Yes' },
+    { at: 12, route: '/api/prompt', status: 202, source: 'ui', kind: 'text' },
+  ]
+  assert.deepEqual(summarizeActions(log, { now: 20, days: 1 }), [
+    { action: '/api/prompt', count: 1 },
+    { action: '/api/prompt chip:Yes', count: 1 },
+    { action: '/api/queue chip:Yes', count: 1 },
+  ])
+})

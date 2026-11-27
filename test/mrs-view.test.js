@@ -296,3 +296,26 @@ test('the reply plan can be approved only while the babysit waits on one for an 
   assert.equal(replyPlanOffered({ mergedAt: null, babysit: { ...plan, sessionId: null } }), false)
   assert.equal(replyPlanOffered({ mergedAt: null }), false)
 })
+
+test('failed-CI babysit targets skip drafts, active babysits and ones waiting on you', async () => {
+  const { failedCiBabysitTargets, pingDueTargets } = await import('../public/mrs.js')
+  const base = { role: 'authored', draft: false, folder: '/work/r', verdict: { code: 'ci-failed' } }
+  const mrs = [
+    { ...base, url: 'a' },
+    { ...base, url: 'draft', draft: true },
+    { ...base, url: 'watching', babysit: { state: 'watching', at: Date.now() } },
+    { ...base, url: 'needs', babysit: { state: 'needs-you', at: Date.now() } },
+    { ...base, url: 'nofolder', folder: null },
+    { ...base, url: 'green', verdict: { code: 'approved' } },
+    { ...base, url: 'review', role: 'reviewing' },
+    { ...base, url: 'stopped', babysit: { state: 'stopped', at: 1 } },
+  ]
+  assert.deepEqual(failedCiBabysitTargets(mrs).map((mr) => mr.url), ['a', 'stopped'])
+  const due = pingDueTargets([
+    { role: 'authored', url: 'p', pingDue: { reviewers: ['x', 'y'], team: false } },
+    { role: 'authored', url: 'm', mergedAt: 1, pingDue: { reviewers: ['z'] } },
+    { role: 'reviewing', url: 'r', pingDue: { reviewers: ['w'] } },
+    { role: 'authored', url: 'none' },
+  ])
+  assert.deepEqual(due.map((t) => `${t.mr.url}:${t.reviewer}`), ['p:x', 'p:y'])
+})
