@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { sideChatParent, isSideChat, isSpawnedTask, spawnedParent, ownChat, forkedAt, sideChatTitle, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow, MAX_CLOSED } from '../lib/sidechats.js'
+import { sideChatParent, isSideChat, ownsLoops, isSpawnedTask, spawnedParent, ownChat, forkedAt, sideChatTitle, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow, MAX_CLOSED } from '../lib/sidechats.js'
 import { mainSessions, sideChatGroups, sideChatCount, ownReplies } from '../public/sidechats.js'
 import { newSessionIds } from '../public/autofocus.js'
 import { newScanState, absorbLine, createScanStore } from '../lib/scan.js'
@@ -240,4 +240,9 @@ test('a task Claude desktop spawned into its own session is not a side chat for 
   assert.equal(spawnedParent({ sessionId: 'local_a', spawnedFrom: { sessionId: 'local_a' } }), null)
   assert.equal(spawnedParent({ sessionId: 'local_a', spawnedFrom: { sessionId: '../etc' } }), null)
   assert.equal(spawnedParent({ sessionId: 'local_a' }), null)
+})
+
+test('a side chat does not own the loop it copied from its parent', () => {
+  assert.equal(ownsLoops({ sessionId: 'local_board-child', sideChatOf: 'local_board-0a1b2c3d-0000-4000-8000-000000000001' }), false)
+  assert.equal(ownsLoops({ sessionId: 'local_board-main' }), true)
 })

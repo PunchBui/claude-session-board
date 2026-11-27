@@ -48,7 +48,7 @@ import { setBounded } from './lib/cache.js'
 import { settleForce } from './lib/queue.js'
 import { pruneOldFiles } from './lib/prune.js'
 import { createRunManager, SESSION_ID, BLOCKED_MESSAGE, NO_TRANSCRIPT_MESSAGE, validPrompt, isBlocked } from './lib/runs.js'
-import { sideChatParent, isSideChat, isSpawnedTask, spawnedParent, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
+import { sideChatParent, isSideChat, ownsLoops, isSpawnedTask, spawnedParent, ownChat, forkedAt, firstQuestion, parseClosedFile, setClosed, countOpenSideChats, sideChatRow } from './lib/sidechats.js'
 import { jiraConfig, cleanBaseUrl, reusableToken, createJiraClient, mrUrlOf } from './lib/jira.js'
 import { buildFlow, reviewPattern, branchKeys, parseMilestoneInput, recordMilestone, recordLink } from './lib/flow.js'
 import { createFlowSync } from './lib/flowsync.js'
@@ -301,7 +301,7 @@ async function buildCard(raw) {
     babysit: babysitBySession.get(raw.sessionId) ?? null,
     mrUrls: scanned ? sessionMrUrls(scanned.state) : [],
     live,
-    loop: scanned ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,
+    loop: scanned && ownsLoops(raw) ? loopOf(scanned.state.loops, { nowMs: Date.now(), working: active || running, idleMs: Date.now() - scanned.info.mtimeMs }) : null,
   }
 }
 
@@ -329,6 +329,7 @@ function loopFor(raw) {
   const path = transcriptPaths.get(raw.cliSessionId)
   const state = path ? scanStore.states.get(path) : null
   if (!state) return null
+  if (!ownsLoops(raw)) return null
   const mtimeMs = raw.lastActivityAt ?? 0
   const working = Date.now() - mtimeMs < ACTIVE_WINDOW_MS
   return loopOf(state.loops, { nowMs: Date.now(), working, idleMs: Date.now() - mtimeMs })
@@ -699,7 +700,7 @@ async function loopHistory() {
   for (const raw of raws) {
     const path = transcriptPaths.get(raw.cliSessionId)
     const state = path ? scanStore.states.get(path) : null
-    if (!state?.loops.history.length) continue
+    if (!state?.loops.history.length || !ownsLoops(raw)) continue
     const idleMs = Date.now() - (raw.lastActivityAt ?? 0)
     const summary = toSummary(raw)
     const session = { sessionId: raw.sessionId, title: summary.title, project: summary.project, cwd: summary.cwd, archived: summary.archived }
