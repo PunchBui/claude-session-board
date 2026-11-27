@@ -70,5 +70,3 @@ export function icon(name, { size = 16, strokeWidth = 2, fill = false, className
   }
   return svg
 }
-
-export const hasIcon = (name) => name in SHAPES

@@ -1,4 +1,4 @@
-import { STEPS, STEP_LABEL, PHASES, phaseOf, SOURCE_LABEL, deriveTicket, gapRows, kpiValues, inRange, matchesFilter, isMyWorkingTicket, fmtSpan, isWorking, DAY_MS } from './flow.js'
+import { STEPS, STEP_LABEL, PHASES, phaseOf, SOURCE_LABEL, deriveTicket, gapRows, kpiValues, inRange, matchesFilter, fmtSpan, isWorking, DAY_MS } from './flow.js'
 import { mapGraph, induced, foldLeaves, lineage, columns, hiddenNeighbours, flowRows, shape, kindName, KIND_ORDER, SESSION_LINK_LABEL } from './flowmap.js'
 import { attachTip, hideTip } from './tip.js'
 

@@ -5,14 +5,14 @@ import { newSessionIds } from './autofocus.js'
 import { listOps, phaseLabel } from './patch.js'
 import { warmthOf, warmthTip } from './warmth.js'
 import { quickReplies } from './quickreply.js'
-import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus } from './mrs.js'
+import { workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, mrsPollMs } from './mrs.js'
 import { diffLoops, withoutTickFinishes, untilLabel, spanLabel as shortSpan, loopTip, statusTip, byLatestEnded, diffBackground } from './loops.js'
 import { SCOPE_FILTERS, SKILL_SORTS, dailyUses, dayKeys, scopeLabel, skillCounts, skillTemperature, skillTip, summarize, usesInRange, visibleSkills } from './skills.js'
 import { attachTip, hideTip } from './tip.js'
 import { DraftStore } from './drafts.js'
-import { splitAttachments, visibleText } from './attachments.js'
+import { splitAttachments, visibleText, DEFAULT_ATTACH_TEXT } from './attachments.js'
 import { PATH_PATTERN, BARE_DOC_PATTERN, isBareDoc, isPath, isImagePath, isHtmlPath, isPdfPath, isRelativeHtml, stripLocation, fileUrl } from './filepaths.js'
-import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, flatten, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
+import { groupCards, groupOf, cardTitle, visibleGroups, COLLAPSIBLE, pickSelected, neighbour, shortAge, sortCards, sortKey, SORTS, moveWithin } from './sidebar.js'
 import { initMobile, isMobile } from './mobile.js'
 import { initLinkMenu } from './linkmenu.js'
 import { monthGrid, weekGrid, dayGrid, shiftAnchor, eventsByDay, dayKey, modelLabel, effortLabel } from './calendar.js'
@@ -22,6 +22,8 @@ import { createTimeline } from './timelineview.js'
 import { coalesce } from './coalesce.js'
 import { createFlowView } from './flowview.js'
 import { renderWidget, installWidgetHost } from './widgets.js'
+import { freshCommand, sideCommand } from './slash.js'
+import { latestOnly, forcedRerun, polledPane, broadcastState, defaultTicked, differs, navigationMode, BROADCAST_LIMIT } from './guards.js'
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/flow': 'flow', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', flow: 'Lifecycle', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
@@ -41,6 +43,7 @@ const state = {
   signature: '',
   timer: null,
   selected: null,
+  wanted: null,
   loaded: false,
   draft: false,
   history: [],
@@ -210,7 +213,7 @@ function withAttachments(id, prompt) {
   const files = attachmentsOf(id)
   if (!files.length) return prompt
   const lines = files.map((file) => `- ${file.path}`).join('\n')
-  return `${prompt || 'Please look at the attached files.'}\n\nAttached files:\n${lines}`
+  return `${prompt || DEFAULT_ATTACH_TEXT}\n\nAttached files:\n${lines}`
 }
 
 // Drop files anywhere on a card (chat, header or prompt box) to attach them. One set of
@@ -257,21 +260,20 @@ async function attachFiles(id, files) {
   note(`Uploading ${list.length} file${list.length === 1 ? '' : 's'}…`)
   renderFocus()
   const added = []
+  let failure = null
   for (const file of list) {
     const type = file.type || 'application/octet-stream'
     try {
       const res = signedOut(await fetch(`/api/upload?name=${encodeURIComponent(file.name || 'pasted')}`, { method: 'POST', headers: { 'content-type': type }, body: file }))
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) { note(data.error ?? `Could not upload ${file.name}`); renderFocus(); return }
-      added.push({ ...data, preview: data.image ? URL.createObjectURL(file) : null })
+      if (!res.ok) failure ??= data.error ?? `Could not upload ${file.name}`
+      else added.push({ ...data, preview: data.image ? URL.createObjectURL(file) : null })
     } catch {
-      note(`Could not upload ${file.name}`)
-      renderFocus()
-      return
+      failure ??= `Could not upload ${file.name}`
     }
   }
-  state.attachments.set(id, [...attachmentsOf(id), ...added])
-  note(null)
+  if (added.length) state.attachments.set(id, [...attachmentsOf(id), ...added])
+  note(failure ? (added.length ? `${failure}. ${added.length} of ${list.length} attached.` : failure) : null)
   renderFocus()
 }
 
@@ -318,7 +320,11 @@ async function postJson(path, body) {
   }
 }
 const shouldQueue = (result) => !result.ok && result.data.queueable === true
-const getJson = (path) => fetch(path, { cache: 'no-store' }).then((r) => signedOut(r).json())
+async function getJson(path) {
+  const res = signedOut(await fetch(path, { cache: 'no-store' }))
+  if (!res.ok) throw new Error(`${path} answered ${res.status}`)
+  return res.json()
+}
 const refresh = coalesce(refreshBoard)
 const resync = async () => { state.signature = ''; await refresh() }
 
@@ -482,12 +488,17 @@ async function toggleAlerts() {
   if (state.alertsOn) toast({ id: 'alerts', title: 'Alerts on', kind: 'finished', message: 'You will be told when a focused session finishes, asks a question or needs approval.' })
 }
 
+const failToast = (id, title, result) => toast({ id, title, kind: 'failed', message: result.data?.error ?? title })
+
 async function setFocus(id, focused) {
-  const { ok, data } = await postJson('/api/focus', { id, focused })
-  if (ok) {
-    state.focusIds = data.ids
-    await resync()
+  const result = await postJson('/api/focus', { id, focused })
+  if (!result.ok) {
+    failToast('focus-update', focused ? 'Could not add to Focus' : 'Could not remove from Focus', result)
+    return false
   }
+  state.focusIds = result.data.ids
+  await resync()
+  return true
 }
 
 function closeMenus() { document.querySelectorAll('.kebab-menu').forEach((m) => m.remove()) }
@@ -1352,10 +1363,10 @@ function autosize(box) {
 
 async function submitPrompt(id, box) {
   const typed = box.value.trim()
-  const fresh = FRESH_COMMAND.exec(typed)
-  if (fresh) return startFreshChat(id, box, fresh[1])
-  const side = SIDE_COMMAND.exec(typed)
-  if (side) return startSideFromComposer(id, box, side[1].trim())
+  const fresh = freshCommand(typed)
+  if (fresh !== null) return startFreshChat(id, box, fresh)
+  const side = sideCommand(typed)
+  if (side !== null) return startSideFromComposer(id, box, side)
   const files = attachmentsOf(id)
   if (!typed && !files.length) return
   const prompt = withAttachments(id, typed)
@@ -2180,7 +2191,7 @@ function renderChanges(c) {
   wrap.append(inner)
   const entry = state.changes.get(c.id)
   if (!entry?.data) {
-    inner.append(el('div', 'chat-empty', 'Loading changes…'))
+    inner.append(entry?.failed ? retryNotice('Could not load the changes.', () => loadChanges(c.id)) : el('div', 'chat-empty', 'Loading changes…'))
     return wrap
   }
   const { git, files, tickets, links } = entry.data
@@ -2238,25 +2249,42 @@ function renderChanges(c) {
   return wrap
 }
 
+function retryNotice(message, retry) {
+  const box = el('div', 'chat-empty')
+  const button = el('button', 'btn', 'Retry')
+  button.type = 'button'
+  button.onclick = retry
+  box.append(text(`${message} `), button)
+  return box
+}
+
 async function loadChanges(id) {
-  const entry = state.changes.get(id) ?? { data: null, at: 0, loading: false }
+  const entry = state.changes.get(id) ?? { data: null, at: 0, loading: false, failed: false }
   state.changes.set(id, entry)
   if (entry.loading) return
   entry.loading = true
+  let redraw = false
   try {
-    entry.data = await getJson(`/api/changes?id=${encodeURIComponent(id)}`)
-    entry.at = Date.now()
-  } catch {}
+    const data = await getJson(`/api/changes?id=${encodeURIComponent(id)}`)
+    redraw = entry.failed || differs(entry.data, data)
+    entry.data = data
+    entry.failed = false
+  } catch {
+    redraw = !entry.failed && !entry.data
+    entry.failed = !entry.data
+  }
+  entry.at = Date.now()
   entry.loading = false
-  renderFocus()
+  if (redraw) renderFocus()
 }
 
+const activePane = () => polledPane({ tab: state.tab, draft: state.draft, selectedId: selectedCard()?.id ?? null, paneOf: (id) => uiOf(id).pane })
+
 function pollChanges() {
-  for (const c of state.cards) {
-    if (uiOf(c.id).pane !== 'changes') continue
-    const entry = state.changes.get(c.id)
-    if (!entry || Date.now() - entry.at > 10_000) loadChanges(c.id)
-  }
+  if (activePane() !== 'changes') return
+  const id = selectedCard().id
+  const entry = state.changes.get(id)
+  if (!entry || Date.now() - entry.at > 10_000) loadChanges(id)
 }
 
 const AGENT_STATUS = { running: 'Running', done: 'Done', stopped: 'Stopped' }
@@ -2308,14 +2336,14 @@ function renderAgents(c) {
   const inner = el('div', 'changes-inner')
   wrap.append(inner)
   const entry = state.agents.get(c.id)
-  if (!entry?.items) inner.append(el('div', 'chat-empty', 'Loading subagents…'))
+  if (!entry?.items) inner.append(entry?.failed ? retryNotice('Could not load the subagents.', () => loadAgents(c.id)) : el('div', 'chat-empty', 'Loading subagents…'))
   else if (!entry.items.length) inner.append(el('div', 'chat-empty', 'This session has not started any subagents.'))
   else inner.append(...entry.items.map((item) => renderAgentRow(c, entry, item)))
   return wrap
 }
 
 function agentsEntry(id) {
-  if (!state.agents.has(id)) state.agents.set(id, { items: null, at: 0, open: null, chats: new Map(), loading: false })
+  if (!state.agents.has(id)) state.agents.set(id, { items: null, at: 0, open: null, chats: new Map(), loading: false, failed: false })
   return state.agents.get(id)
 }
 
@@ -2334,16 +2362,20 @@ async function loadAgents(id) {
   const entry = agentsEntry(id)
   if (entry.loading) return
   entry.loading = true
-  let changed = false
+  let redraw = false
   try {
     const { items } = await getJson(`/api/subagents?id=${encodeURIComponent(id)}`)
-    changed = JSON.stringify(items) !== JSON.stringify(entry.items)
+    redraw = entry.failed || differs(entry.items, items)
     entry.items = items
-    entry.at = Date.now()
-  } catch {}
-  if (entry.open && (await fetchAgentChat(entry, id, entry.open))) changed = true
+    entry.failed = false
+  } catch {
+    redraw = !entry.failed && !entry.items
+    entry.failed = !entry.items
+  }
+  entry.at = Date.now()
+  if (entry.open && (await fetchAgentChat(entry, id, entry.open))) redraw = true
   entry.loading = false
-  if (changed) renderFocus()
+  if (redraw) renderFocus()
 }
 
 async function loadAgentChat(id, agent) {
@@ -2352,12 +2384,11 @@ async function loadAgentChat(id, agent) {
 }
 
 function pollAgents() {
-  for (const c of state.cards) {
-    if (uiOf(c.id).pane !== 'agents') continue
-    const entry = agentsEntry(c.id)
-    const live = entry.items?.some((item) => item.status === 'running')
-    if (Date.now() - entry.at > (live ? 3000 : 15_000)) loadAgents(c.id)
-  }
+  if (activePane() !== 'agents') return
+  const id = selectedCard().id
+  const entry = agentsEntry(id)
+  const live = entry.items?.some((item) => item.status === 'running')
+  if (Date.now() - entry.at > (live ? 3000 : 15_000)) loadAgents(id)
 }
 
 function mrLinks(c) {
@@ -2546,16 +2577,18 @@ function patchCard(view, built) {
   card.className = built.className
   const oldKids = [...card.children]
   const newKids = [...built.children]
+  const held = new Set()
   newKids.forEach((node, i) => {
     const was = oldKids[i]
     if (!was) return card.append(node)
     if (was.className !== node.className) return was.replaceWith(node)
     if (view.parts[i] === next.parts[i]) return
+    if (was.contains(document.activeElement) && document.activeElement.matches('select')) return void held.add(i)
     if (node.classList.contains('chat-wrap')) patchChat(view, was, node, next)
     else if (node.classList.contains('changes')) replacePane(was, node)
     else was.replaceWith(node)
   })
-  view.parts = next.parts
+  view.parts = next.parts.map((part, i) => (held.has(i) ? view.parts[i] : part))
   view.msgs = next.msgs
 }
 
@@ -2805,10 +2838,12 @@ function groupSummaryNode({ running, idle, nextAt }) {
   return box
 }
 
+let sideMarkup = ''
+let sideSelectedId = null
+
 function renderSide(groups, selected) {
   const list = $('side-list')
-  const scroll = list.scrollTop
-  list.replaceChildren()
+  const next = el('div')
   for (const g of groups) {
     const collapsible = COLLAPSIBLE.has(g.key) && !$('side-q').value.trim()
     const head = el('div', `grp${g.key === 'need' ? ' need' : ''}${collapsible ? ' fold' : ''}`)
@@ -2822,13 +2857,25 @@ function renderSide(groups, selected) {
     }
     head.append(el('span', undefined, g.label), el('span', 'n', String(g.total ?? g.cards.length)))
     if (g.summary) head.append(groupSummaryNode(g.summary))
-    list.append(head)
-    for (const c of g.cards) list.append(sideItem(c, c.id === selected?.id))
+    next.append(head)
+    for (const c of g.cards) next.append(sideItem(c, c.id === selected?.id))
   }
-  if (!groups.length && !isMobile()) list.append(el('div', 'side-empty', $('side-q').value.trim() ? 'No focused session matches.' : ''))
-  if (isMobile()) renderOthers(list)
+  if (!groups.length && !isMobile()) next.append(el('div', 'side-empty', $('side-q').value.trim() ? 'No focused session matches.' : ''))
+  if (isMobile()) renderOthers(next)
+  const markup = next.innerHTML
+  const selectedId = selected?.id ?? null
+  if (markup === sideMarkup) {
+    sideSelectedId = selectedId
+    return
+  }
+  sideMarkup = markup
+  const scroll = list.scrollTop
+  const focusedId = list.contains(document.activeElement) ? document.activeElement.closest('.item')?.dataset.id : null
+  list.replaceChildren(...next.childNodes)
   list.scrollTop = scroll
-  list.querySelector('.item.sel')?.scrollIntoView({ block: 'nearest' })
+  if (selectedId !== sideSelectedId) list.querySelector('.item.sel')?.scrollIntoView({ block: 'nearest' })
+  sideSelectedId = selectedId
+  if (focusedId) list.querySelector(`.item[data-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true })
 }
 
 function renderFocus() {
@@ -2840,6 +2887,11 @@ function renderFocus() {
   const caret = keep && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null
   const pageTop = window.scrollY
   const pageLeft = window.scrollX
+  if (state.wanted && state.loaded) {
+    const asked = state.wanted
+    state.wanted = null
+    if (!state.focusIds.includes(asked) && state.sessions.some((s) => s.id === asked)) openInFocus(asked)
+  }
   const groups = sideGroups()
   const current = selectedCard(groups)
   // A selection that never showed up (stale id from an earlier visit) is replaced by the card we fell
@@ -2851,6 +2903,7 @@ function renderFocus() {
       state.selected = current.id
       state.selectedSeen = current.id
       remember('board.selected', current.id)
+      if (state.tab === 'focus' && new URLSearchParams(location.search).get('card') && new URLSearchParams(location.search).get('card') !== current.id) history.replaceState(history.state, '', `/focus?card=${encodeURIComponent(current.id)}`)
     }
   }
   const wanted = current && !state.draft ? [current] : []
@@ -3031,21 +3084,6 @@ function settingSelect(c, name) {
   return select
 }
 
-const defaultChipText = (name, value) => (name === 'effort' ? `${value} effort` : value.replace(/^claude-/, ''))
-
-function defaultChip(c, name) {
-  const chip = el('span', 'dotted default-chip')
-  const apply = (found) => {
-    const value = found?.[name]
-    chip.textContent = value ? `${defaultChipText(name, value)} (default)` : `default ${name}`
-    chip.title = value ? `This session did not pick a ${name}, so it uses ${value} from the Claude settings files.` : `This session did not pick a ${name}, so it uses the account's default.`
-  }
-  const known = defaultsByFolder.get(c.cwd || '')
-  apply(known)
-  if (!known) defaultsOf(c.cwd).then((found) => { if (found) apply(found) })
-  return chip
-}
-
 function buildDraft() {
   const node = el('article', 'card new-chat')
   const head = el('div', 'card-head')
@@ -3158,8 +3196,6 @@ function clearDraftAttachments() {
   syncDraftAttachments()
 }
 
-const FRESH_COMMAND = /^\/(?:clear|reset|new)\b\s*([\s\S]*)$/i
-const SIDE_COMMAND = /^\/(?:btw|side)\b\s*([\s\S]*)$/i
 
 function startSideFromComposer(id, box, question) {
   const card = state.cards.find((c) => c.id === id)
@@ -3287,15 +3323,24 @@ function startNewChat() {
   toast({ id: 'new-chat', title: 'Opening Claude', kind: 'finished', message: 'The new session joins Focus once the app records it.' })
 }
 
+function syncBroadcast() {
+  const ticked = $('broadcast-targets').querySelectorAll('input:checked').length
+  const view = broadcastState(state.cards.length, ticked)
+  $('broadcast-status').textContent = state.cards.length ? view.note : 'Star some sessions first.'
+  $('broadcast-send').disabled = !view.canSend
+}
+
 function openBroadcast() {
   const targets = $('broadcast-targets')
   targets.replaceChildren()
+  const defaults = new Set(defaultTicked(state.cards.map((c) => c.id)))
   for (const c of state.cards) {
     const label = el('label')
     const box = document.createElement('input')
     box.type = 'checkbox'
-    box.checked = true
+    box.checked = defaults.has(c.id)
     box.value = c.id
+    box.onchange = syncBroadcast
     label.append(box, projectChip(c), el('span', undefined, c.title))
     targets.append(label)
   }
@@ -3306,13 +3351,14 @@ function openBroadcast() {
     b.onclick = () => { const t = $('broadcast-text'); t.value = t.value ? `${t.value}\n${snippet.text}` : snippet.text }
     snips.append(b)
   }
-  $('broadcast-status').textContent = state.cards.length ? '' : 'Star some sessions first.'
+  syncBroadcast()
   $('broadcast').showModal()
 }
 
 async function sendBroadcast() {
   const ids = [...$('broadcast-targets').querySelectorAll('input:checked')].map((box) => box.value)
   const prompt = $('broadcast-text').value.trim()
+  if (ids.length > BROADCAST_LIMIT) return syncBroadcast()
   if (!ids.length || !prompt) {
     $('broadcast-status').textContent = 'Pick at least one session and type a prompt.'
     return
@@ -3375,6 +3421,7 @@ function renderSearch(data) {
 }
 
 async function runSearch() {
+  if (state.tab !== 'search') return
   const q = $('search-q').value.trim()
   const project = $('search-project').value
   const params = new URLSearchParams()
@@ -3579,7 +3626,7 @@ async function sendMrFix(mr, kind, button) {
 }
 
 function mrFixButton(mr, kind) {
-  const b = el('button', 'btn mr-fix', MR_FIXES[kind].label ?? 'Fix')
+  const b = el('button', 'btn mr-fix', 'Fix')
   b.title = MR_FIXES[kind].title(mr)
   b.onclick = (event) => { event.stopPropagation(); sendMrFix(mr, kind, b) }
   return b
@@ -3593,7 +3640,7 @@ function mrThreads(mr) {
 }
 
 function mrFixControl(mr, kind) {
-  return fixSent(mr, kind) ? el('span', 'dim mr-fix-sent', MR_FIXES[kind].sent ?? 'Fix sent') : mrFixButton(mr, kind)
+  return fixSent(mr, kind) ? el('span', 'dim mr-fix-sent', 'Fix sent') : mrFixButton(mr, kind)
 }
 
 function mrTempBadge(mr) {
@@ -4080,7 +4127,7 @@ const clockSeconds = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digi
 function paintMrsStatus() {
   const { data, statusBase, loading, at } = state.mrs
   if (!data || !statusBase) return
-  const line = refreshStatus({ fetchedAt: data.fetchedAt, at, loading, autoOff: Number($('interval').value) === 0 }, Date.now(), clockSeconds)
+  const line = refreshStatus({ fetchedAt: data.fetchedAt, at, loading, autoOff: Number($('interval').value) === 0, working: mrHasWorking() }, Date.now(), clockSeconds)
   $('mrs-status').textContent = `${statusBase} · ${line}`
 }
 
@@ -4185,8 +4232,7 @@ function renderMrsLoading() {
   if (first) $('mrs-status').textContent = ''
 }
 
-async function loadMrs(force = false) {
-  if (state.mrs.loading) return
+async function fetchMrs(force) {
   state.mrs.loading = true
   state.mrs.manual = force
   renderMrsLoading()
@@ -4203,10 +4249,12 @@ async function loadMrs(force = false) {
     }
   } finally {
     state.mrs.loading = false
-    state.mrs.at = state.mrs.data?.refreshing ? Date.now() - 55_000 : Date.now()
+    state.mrs.at = state.mrs.data?.refreshing ? Date.now() - (mrsPollMs(mrHasWorking()) - 5_000) : Date.now()
     renderMrsLoading()
   }
 }
+
+const loadMrs = forcedRerun(fetchMrs)
 
 const REPEAT_LABELS = { none: 'Once', daily: 'Every day', weekdays: 'Weekdays', weekly: 'Every week' }
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -4498,11 +4546,16 @@ async function saveSchedule() {
   renderSchedulePage()
 }
 
+const scheduleRequest = latestOnly()
+
 async function loadSchedule() {
   if (!state.schedule.built) buildScheduleForm()
   fillScheduleFolders()
+  const isLatest = scheduleRequest()
   try {
-    state.schedule.data = await getJson('/api/routines')
+    const data = await getJson('/api/routines')
+    if (!isLatest()) return
+    state.schedule.data = data
     state.schedule.at = Date.now()
     timeline.update({ routines: state.schedule.data.routines })
     renderSchedulePage()
@@ -5205,9 +5258,14 @@ function loadTaskData() {
   state.sideChats.open.forEach(loadSideChat)
 }
 
+const usageRequest = latestOnly()
+
 async function loadUsage() {
+  const isLatest = usageRequest()
   try {
-    state.usage.data = await getJson(`/api/usage?days=${state.usage.days}`)
+    const data = await getJson(`/api/usage?days=${state.usage.days}`)
+    if (!isLatest()) return
+    state.usage.data = data
     state.usage.at = Date.now()
     renderUsagePage()
   } catch {}
@@ -5440,7 +5498,11 @@ function readFilters() {
 // `back`: a page opened from inside another one (the Lifecycle map from a session, say) remembers
 // where it came from, so the phone header shows Back: a fullscreen web app has no browser Back button.
 function navigate(path, { back = false } = {}) {
-  if (location.pathname + location.search !== path) history.pushState(back ? { back: location.pathname + location.search } : {}, '', path)
+  const mode = navigationMode(history.state, location.pathname + location.search === path)
+  const entry = back ? { back: location.pathname + location.search } : {}
+  if (mode === 'back') return void history.back()
+  if (mode === 'push') history.pushState(entry, '', path)
+  else if (mode === 'replace') history.replaceState(entry, '', path)
   applyRoute()
 }
 
@@ -5459,6 +5521,7 @@ function applyRoute() {
   state.tab = tab
   const query = new URLSearchParams(location.search)
   state.draft = tab === 'focus' && query.has('new')
+  state.wanted = tab === 'focus' ? query.get('card') : null
   if (tab === 'focus') state.selected = query.get('card') ?? state.selected
   for (const name of Object.values(ROUTES)) {
     $(`tab-${name}`).setAttribute('aria-selected', String(name === tab))
@@ -5473,7 +5536,10 @@ function applyRoute() {
   renderSummary()
   renderRows()
   renderFocus()
-  if (tab === 'search') {
+  if (tab !== 'search') {
+    clearTimeout(state.search.timer)
+    state.search.runId++
+  } else {
     const params = new URLSearchParams(location.search)
     $('search-q').value = params.get('q') ?? ''
     renderProjectOptions([], params.get('project') ?? '')
@@ -5551,7 +5617,7 @@ async function refreshBoard() {
     if (state.tab === 'flow' && Date.now() - state.flow.at > 60_000 && !flowView.busy()) loadFlow()
     if (state.tab === 'skills' && !state.skills.open.size && Date.now() - state.skills.at > 30_000) loadSkills()
     if (state.tab === 'schedule' && Date.now() - state.schedule.at > 5_000) loadSchedule()
-    if (Date.now() - state.mrs.at > (mrHasWorking() ? 10_000 : 60_000)) loadMrs()
+    if (Date.now() - state.mrs.at > mrsPollMs(mrHasWorking())) loadMrs()
     if (!isMobile() && Date.now() - state.timeline.at > 15_000) loadTimeline()
     if (state.tab === 'focus' && state.panel.open) {
       if (Date.now() - state.background.at > 4_000) loadBackground()
@@ -5666,11 +5732,10 @@ $('new-chat').onclick = openNewChat
 $('focus-clear').onclick = async () => {
   if (!state.focusIds?.length) return
   if (!confirm(`Remove all ${state.focusIds.length} sessions from Focus? The sessions themselves are kept.`)) return
-  const { ok, data } = await postJson('/api/focus/clear', {})
-  if (ok) {
-    state.focusIds = data.ids
-    await resync()
-  }
+  const result = await postJson('/api/focus/clear', {})
+  if (!result.ok) return failToast('focus-update', 'Could not clean Focus', result)
+  state.focusIds = result.data.ids
+  await resync()
 }
 $('broadcast-open').onclick = openBroadcast
 $('broadcast-cancel').onclick = () => $('broadcast').close()

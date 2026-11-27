@@ -144,12 +144,14 @@ export const deployOffered = (mr, now = Date.now()) =>
 export const deployFocusId = (mr) => mr.deploy?.sessionId ?? null
 
 export const MRS_POLL_MS = 60_000
+export const MRS_FAST_POLL_MS = 10_000
+export const mrsPollMs = (working) => (working ? MRS_FAST_POLL_MS : MRS_POLL_MS)
 
-export function refreshStatus({ fetchedAt, at, loading, autoOff }, now, format) {
+export function refreshStatus({ fetchedAt, at, loading, autoOff, working = false }, now, format) {
   const updated = `updated ${format(fetchedAt)} (${spanLabel(now - fetchedAt)} ago)`
   if (loading) return `${updated} · refreshing now`
   if (autoOff) return `${updated} · auto refresh off`
-  const remaining = at + MRS_POLL_MS - now
+  const remaining = at + mrsPollMs(working) - now
   return `${updated} · ${remaining > 0 ? `next refresh in ${spanLabel(remaining)}` : 'next refresh due'}`
 }
 

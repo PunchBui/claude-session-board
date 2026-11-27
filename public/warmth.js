@@ -16,10 +16,6 @@ export function warmthOf(session, now = Date.now(), keptAt = 0) {
   return { ...TIERS.find((t) => age < t.maxAgeMs), at: prompted }
 }
 
-export function byWarmth(a, b) {
-  return b.at - a.at
-}
-
 const MEANING = {
   hot: 'You prompted this within the last hour.',
   warm: 'You prompted this within the last day.',

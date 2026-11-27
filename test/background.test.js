@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { newScanState, absorbLine } from '../lib/scan.js'
 import { backgroundTasks, backgroundCounts, sessionBackground, safeOutputPath } from '../lib/background.js'
-import { backgroundTip, byBackgroundOrder, BACKGROUND_FILTERS, backgroundProgress, diffBackground } from '../public/loops.js'
+import { diffBackground } from '../public/loops.js'
 
 const T0 = Date.parse('2026-10-30T03:00:00.000Z')
 const iso = (minutes) => new Date(T0 + minutes * 60_000).toISOString()
@@ -111,21 +111,6 @@ test('only task output files are readable', () => {
   assert.equal(safeOutputPath(null), false)
 })
 
-test('ordering, filters and tooltip for the page', () => {
-  const list = [
-    { id: 'old', status: 'completed', startedAt: 1, endedAt: 100, exitCode: 0 },
-    { id: 'run-old', status: 'running', startedAt: 2, endedAt: null },
-    { id: 'recent', status: 'failed', startedAt: 3, endedAt: 300, exitCode: 1 },
-    { id: 'run-new', status: 'running', startedAt: 9, endedAt: null },
-  ]
-  assert.deepEqual([...list].sort(byBackgroundOrder).map((t) => t.id), ['run-new', 'run-old', 'recent', 'old'])
-  assert.deepEqual(list.filter(BACKGROUND_FILTERS.problems).map((t) => t.id), ['recent'])
-  assert.deepEqual(list.filter(BACKGROUND_FILTERS.finished).map((t) => t.id), ['old', 'recent'])
-  const tip = backgroundTip({ status: 'failed', kind: 'command', startedAt: T0, endedAt: T0 + 60_000, durationMs: 60_000, exitCode: 143, eventCount: 0 }, T0 + 120_000)
-  assert.equal(tip.heading, 'failed')
-  assert.deepEqual(tip.rows.map((r) => r[0]), ['Type', 'Started', 'Ended', 'Exit code'])
-})
-
 test('counts only recent finished tasks and ignores stale running ones', () => {
   const state = newScanState()
   startCommand(state, 'ok1')
@@ -137,17 +122,6 @@ test('counts only recent finished tasks and ignores stale running ones', () => {
   assert.deepEqual(backgroundCounts(state.background, { nowMs: now, idleMs: 60_000 }), { running: 1, done: 2, failed: 1, lastEndedAt: T0 + 6 * 60_000 })
   assert.equal(backgroundCounts(state.background, { nowMs: now, idleMs: 2 * 24 * 3_600_000 }).running, 0)
   assert.equal(backgroundCounts(state.background, { nowMs: T0 + 3 * 3_600_000, idleMs: 60_000 }).done, 0)
-})
-
-test('backgroundProgress shows running progress, then a finish indicator until seen', () => {
-  const session = (id, counts) => ({ id, title: id, background: counts })
-  const running = backgroundProgress([session('a', { running: 2, done: 1, failed: 0, lastEndedAt: 5 }), session('b', { running: 1, done: 4, failed: 0, lastEndedAt: 9 })])
-  assert.deepEqual([running.mode, running.done, running.total, running.pct], ['running', 5, 8, 63])
-  const finished = [session('a', { running: 0, done: 3, failed: 0, lastEndedAt: 100 })]
-  assert.equal(backgroundProgress(finished, 50).mode, 'finished')
-  assert.equal(backgroundProgress(finished, 100).mode, 'idle')
-  assert.equal(backgroundProgress([session('a', { running: 0, done: 3, failed: 1, lastEndedAt: 100 })], 0).mode, 'failed')
-  assert.equal(backgroundProgress([{ id: 'x', background: null }]).mode, 'idle')
 })
 
 test('diffBackground announces when a session runs out of running tasks', () => {

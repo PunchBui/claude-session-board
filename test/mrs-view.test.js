@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FILTERS, workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, MRS_POLL_MS, DEPLOY_STALL_MS, BABYSIT_STALL_MS } from '../public/mrs.js'
+import { FILTERS, workingCount, mrsHref, pickedMrs, viewShowing, mergeMrs, orderMrs, visibleMrs, tempCounts, mrTemperature, mrWarmthTip, fixOffered, startOutcome, folderName, babysitView, babysitOffered, babysitFocusId, babysitStoppable, replyPlanOffered, withMrReference, deployOffered, deployView, deployFocusId, refreshStatus, MRS_POLL_MS, MRS_FAST_POLL_MS, mrsPollMs, DEPLOY_STALL_MS, BABYSIT_STALL_MS } from '../public/mrs.js'
 
 const NOW = Date.parse('2026-11-03T12:00:00Z')
 const HOUR = 3_600_000
@@ -231,6 +231,14 @@ test('the refresh line says refreshing while a load is running and due once the 
   assert.match(refreshStatus({ fetchedAt: NOW - 70_000, at: NOW - 70_000, loading: true, autoOff: false }, NOW, fmt), /\(1m ago\) · refreshing now$/)
   assert.match(refreshStatus({ fetchedAt: NOW - 70_000, at: NOW - 70_000, loading: false, autoOff: false }, NOW, fmt), /next refresh due$/)
   assert.match(refreshStatus({ fetchedAt: NOW - MRS_POLL_MS, at: NOW - MRS_POLL_MS, loading: false, autoOff: false }, NOW, fmt), /next refresh due$/)
+})
+
+test('the refresh countdown follows the fast interval while a merge request session works', () => {
+  assert.equal(mrsPollMs(false), MRS_POLL_MS)
+  assert.equal(mrsPollMs(true), MRS_FAST_POLL_MS)
+  const line = refreshStatus({ fetchedAt: NOW - 4_000, at: NOW - 4_000, loading: false, autoOff: false, working: true }, NOW, fmt)
+  assert.equal(line, `updated t${NOW - 4_000} (4s ago) · next refresh in 6s`)
+  assert.match(refreshStatus({ fetchedAt: NOW - 12_000, at: NOW - 12_000, loading: false, autoOff: false, working: true }, NOW, fmt), /next refresh due$/)
 })
 
 test('the refresh line says automatic refresh is off when the page interval is off', () => {

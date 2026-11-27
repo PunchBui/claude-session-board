@@ -102,60 +102,6 @@ export function byLatestEnded(a, b) {
   return b.endedAt - a.endedAt || b.createdAt - a.createdAt
 }
 
-export const BACKGROUND_MEANING = {
-  running: 'Still running in the background. Claude is notified when it finishes.',
-  completed: 'Finished normally.',
-  failed: 'Exited with an error.',
-  killed: 'Stopped by the app, usually after hitting its background time limit.',
-  stopped: 'Did not finish before the Claude session ended, so it was marked stopped. It may have been cut off.',
-  expired: 'The monitor reached its time limit. Claude has to re-arm it to keep watching.',
-  unknown: 'No completion was recorded and the session has been quiet for a day, so the real state is unknown.',
-}
-
-export function backgroundTip(task, nowMs = Date.now()) {
-  const rows = [['Type', task.kind === 'monitor' ? 'Monitor (streams events)' : 'Background command']]
-  rows.push(['Started', ago(task.startedAt, nowMs)])
-  if (task.endedAt) rows.push(['Ended', `${ago(task.endedAt, nowMs)} · took ${spanLabel(task.durationMs)}`])
-  else rows.push(['Running for', spanLabel(nowMs - task.startedAt)])
-  if (task.exitCode !== null && task.exitCode !== undefined) rows.push(['Exit code', String(task.exitCode)])
-  if (task.eventCount) rows.push(['Events', String(task.eventCount)])
-  if (task.expiresAt && !task.endedAt) rows.push(['Expires', ahead(task.expiresAt, nowMs)])
-  return { heading: task.status, text: BACKGROUND_MEANING[task.status] ?? 'Status reported by the Claude app.', rows }
-}
-
-export function byBackgroundOrder(a, b) {
-  const aRunning = a.status === 'running'
-  const bRunning = b.status === 'running'
-  if (aRunning !== bRunning) return aRunning ? -1 : 1
-  if (aRunning) return b.startedAt - a.startedAt
-  return (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt)
-}
-
-export const BACKGROUND_FILTERS = {
-  all: () => true,
-  running: (task) => task.status === 'running',
-  finished: (task) => task.status !== 'running',
-  problems: (task) => ['failed', 'killed', 'stopped', 'unknown'].includes(task.status) || (task.status === 'completed' && task.exitCode > 0),
-}
-
-export function backgroundProgress(sessions, seenAt = 0) {
-  let running = 0
-  let done = 0
-  let failed = 0
-  let lastEndedAt = 0
-  for (const session of sessions) {
-    const counts = session.background
-    if (!counts) continue
-    running += counts.running
-    done += counts.done
-    failed += counts.failed
-    lastEndedAt = Math.max(lastEndedAt, counts.lastEndedAt ?? 0)
-  }
-  if (running > 0) return { mode: 'running', running, done, total: running + done, failed, pct: Math.round((done / (running + done)) * 100) }
-  if (done > 0 && lastEndedAt > seenAt) return { mode: failed ? 'failed' : 'finished', running: 0, done, total: done, failed, pct: 100 }
-  return { mode: 'idle', running: 0, done, total: done, failed, pct: 0 }
-}
-
 export function diffBackground(previous, sessions) {
   const events = []
   const next = new Map()
