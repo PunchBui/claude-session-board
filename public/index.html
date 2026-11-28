@@ -134,6 +134,11 @@
       <div class="sched-cal" id="schedule-cal" hidden></div>
       <div class="rt-list" id="schedule-rows"></div>
       <div class="empty" id="schedule-empty" hidden>No schedules yet.</div>
+      <div class="watch-section" id="guard-section" hidden>
+        <div class="sched-head"><h3>Paused by the 5h guard</h3><span id="guard-status"></span></div>
+        <div class="watch-sub">These sessions stopped at their cap. They wait for the last hour before the 5h reset (or the reset itself), then continue one after another, 30 seconds apart.</div>
+        <div class="rt-list" id="guard-rows"></div>
+      </div>
       <div class="watch-section">
         <div class="sched-head"><h3>Watching</h3><span id="watch-status"></span></div>
         <div class="watch-sub">Checks a condition every few minutes from a board session, until it is true or the time runs out. It keeps running when you close the page or restart the board, and it never posts or changes anything.</div>

@@ -3176,7 +3176,7 @@ function settingSelect(c, name) {
 
 function guardLabel(guard) {
   if (!guard) return '5h guard: off'
-  if (guard.pausedAt) return `5h guard: paused at ${guard.percent}% (cap ${guard.allowed}%)`
+  if (guard.pausedAt) return `5h guard: paused at ${guard.percent}%${guard.resumesAt ? `, continues ${clock(new Date(guard.resumesAt).toISOString())}` : ''}`
   if (guard.over) return `5h guard: holding at ${guard.used}% (cap ${guard.cap}%)`
   return guard.cap === null || guard.cap >= 100 ? '5h guard: on' : `5h guard: on, cap ${guard.cap}%`
 }
@@ -4719,6 +4719,7 @@ async function loadSchedule() {
   if (!state.schedule.built) buildScheduleForm()
   fillScheduleFolders()
   loadWatches()
+  loadGuardList()
   const isLatest = scheduleRequest()
   try {
     const data = await getJson('/api/routines')
@@ -4780,6 +4781,40 @@ function fillWatchFolders() {
   const previous = folder.value
   folder.replaceChildren(...[...roots].map(([root, name]) => new Option(`${name} — ${home(root)}`, root)))
   if (previous && roots.has(previous)) folder.value = previous
+}
+
+async function loadGuardList() {
+  try {
+    const { paused } = await getJson('/api/limit-guard')
+    const section = $('guard-section')
+    section.hidden = !paused.length
+    $('guard-status').textContent = paused.length ? `${paused.length} waiting` : ''
+    const list = $('guard-rows')
+    list.replaceChildren()
+    for (const item of paused) {
+      const row = el('div', 'rt-item')
+      const main = el('div', 'rt-main')
+      const meta = el('div', 'rt-meta')
+      meta.append(el('span', undefined, `Paused ${relative(item.pausedAt)} at ${item.percent}% (cap ${item.allowed}%)`))
+      meta.append(el('span', undefined, item.resumesAt ? `Continues about ${clock(new Date(item.resumesAt).toISOString())}` : 'Continues at the next reset'))
+      const link = el('a', undefined, 'Open session')
+      link.href = `/focus?card=${encodeURIComponent(item.id)}`
+      link.onclick = (event) => { event.preventDefault(); openInFocus(item.id) }
+      meta.append(link)
+      main.append(el('div', 'rt-title', item.title), meta)
+      const actions = el('div', 'rt-actions')
+      const go = el('button', 'btn', 'Continue now')
+      go.title = 'Turn the guard off for this session and continue it right away'
+      go.onclick = async () => {
+        go.disabled = true
+        await postJson('/api/limit-guard', { id: item.id, on: false })
+        loadGuardList()
+      }
+      actions.append(go)
+      row.append(main, actions)
+      list.append(row)
+    }
+  } catch {}
 }
 
 async function loadWatches() {

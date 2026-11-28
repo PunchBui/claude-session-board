@@ -15,7 +15,7 @@ import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, r
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { createLimitsReader } from './lib/limits.js'
-import { guardStatus, decideGuard, paused as pausedGuard, released as releasedGuard, publicGuard, parseGuardsFile, CONTINUE_PROMPT, MAX_GUARDS } from './lib/limitguard.js'
+import { guardStatus, decideGuard, resumesAt, paused as pausedGuard, released as releasedGuard, publicGuard, parseGuardsFile, CONTINUE_PROMPT, MAX_GUARDS } from './lib/limitguard.js'
 import { createRepoStatusReader } from './lib/repostatus.js'
 import { createRepoPusher } from './lib/repopush.js'
 import { createRepoPuller } from './lib/repopull.js'
@@ -523,7 +523,7 @@ async function kickIdleBabysits() {
 
 function guardOf(id) {
   const guard = publicGuard(guards[id])
-  return guard && { ...guard, cap: guardState.allowed, used: guardState.percent, over: guardState.over }
+  return guard && { ...guard, resumesAt: resumesAt(guards[id]), cap: guardState.allowed, used: guardState.percent, over: guardState.over }
 }
 
 async function refreshGuardState() {
@@ -550,7 +550,9 @@ async function runGuards() {
   if (!ids.length) return
   const status = await refreshGuardState()
   let changed = false
-  for (const id of ids) {
+  let resumed = false
+  const turn = [...ids].sort((a, b) => (guards[a].pausedAt ?? Infinity) - (guards[b].pausedAt ?? Infinity))
+  for (const id of turn) {
     const guard = guards[id]
     if (!(await findRaw(id))) {
       const { [id]: gone, ...rest } = guards
@@ -560,12 +562,14 @@ async function runGuards() {
     }
     const running = manager.runFor(id)?.state === 'running'
     const action = decideGuard(guard, status, running)
+    if (action === 'resume' && resumed) continue
     if (action === 'pause') {
       guards = { ...guards, [id]: pausedGuard(guard, status, Date.now(), true) }
       changed = true
       await persistGuards()
       await manager.interruptPrompt(id)
     } else if (action === 'resume') {
+      resumed = true
       guards = { ...guards, [id]: releasedGuard(guard) }
       changed = true
       if (guard.resumeWithPrompt) await enqueue(id, CONTINUE_PROMPT, { front: true })
@@ -1681,6 +1685,14 @@ const getRoutes = {
     const key = (url.searchParams.get('key') ?? '').slice(0, 400)
     const skill = (await installedSkills()).find((item) => item.key === key)
     return skill ? json(res, 200, await skillDetail(skill)) : json(res, 404, { error: 'skill not found' })
+  },
+  async '/api/limit-guard'(url, res) {
+    const raws = await readRawSessions()
+    const paused = Object.entries(guards)
+      .filter(([, guard]) => guard.pausedAt)
+      .sort(([, a], [, b]) => a.pausedAt - b.pausedAt)
+      .map(([id, guard]) => ({ id, title: raws.find((raw) => raw.sessionId === id)?.title ?? id, pausedAt: guard.pausedAt, percent: guard.percent, allowed: guard.allowed, resumesAt: resumesAt(guard) }))
+    return json(res, 200, { guarded: Object.keys(guards).length, paused })
   },
   async '/api/limits'(url, res) {
     const limits = await readLimits()

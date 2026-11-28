@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { allowedPercent, guardStatus, decideGuard, paused, released, publicGuard, parseGuardsFile } from '../lib/limitguard.js'
+import { allowedPercent, guardStatus, decideGuard, windowMoved, resumesAt, paused, released, publicGuard, parseGuardsFile } from '../lib/limitguard.js'
 
 const HOUR = 3_600_000
 const NOW = Date.UTC(2026, 10, 28, 10, 0, 0)
@@ -31,30 +31,45 @@ test('guardStatus is unknown without limits, and over only when a cap applies', 
   assert.equal(guardStatus(limits(79, 2), NOW).over, false)
   assert.equal(guardStatus(limits(80, 2), NOW).over, true)
   assert.equal(guardStatus(limits(99, 0.5), NOW).over, false)
-  assert.equal(guardStatus(limits(99, 0.5), NOW).clear, true)
 })
 
-test('a pause is released only once usage is 5 points under the cap', () => {
-  const limits = (percent, hours) => ({ available: true, fiveHour: { percent, resetsAt: at(hours) } })
-  assert.equal(guardStatus(limits(77, 2), NOW).clear, false)
-  assert.equal(guardStatus(limits(75, 2), NOW).clear, true)
-  assert.equal(guardStatus(limits(90, 1.5), NOW).clear, false)
-  assert.equal(guardStatus(limits(90, 0.9), NOW).clear, true)
+test('windowMoved sees a new 5h window but not a small shift in the reset time', () => {
+  assert.equal(windowMoved({ resetsAt: at(1) }, { resetsAt: at(1.001) }), false)
+  assert.equal(windowMoved({ resetsAt: at(1) }, { resetsAt: at(5.2) }), true)
+  assert.equal(windowMoved({ resetsAt: null }, { resetsAt: at(5) }), false)
+  assert.equal(windowMoved({ resetsAt: at(1) }, { resetsAt: null }), false)
 })
 
-test('decideGuard pauses a running guarded session over the cap and resumes a paused one when clear', () => {
-  const over = { known: true, over: true, clear: false }
-  const clear = { known: true, over: false, clear: true }
-  const between = { known: true, over: false, clear: false }
-  assert.equal(decideGuard({ on: true }, over, true), 'pause')
-  assert.equal(decideGuard({ on: true }, over, false), null)
-  assert.equal(decideGuard({ on: true }, between, true), null)
-  assert.equal(decideGuard({ on: false }, over, true), null)
-  assert.equal(decideGuard(undefined, over, true), null)
-  assert.equal(decideGuard({ on: true }, { known: false }, true), null)
-  assert.equal(decideGuard({ on: true, pausedAt: 5 }, between, false), null)
-  assert.equal(decideGuard({ on: true, pausedAt: 5 }, clear, false), 'resume')
-  assert.equal(decideGuard({ on: true, pausedAt: 5 }, over, true), null)
+test('resumesAt is one hour before the reset', () => {
+  assert.equal(resumesAt({ resetsAt: at(2) }), NOW + HOUR)
+  assert.equal(resumesAt({ resetsAt: null }), null)
+})
+
+test('decideGuard pauses a running guarded session over the cap', () => {
+  const over = { known: true, over: true, allowed: 60 }
+  assert.equal(decideGuard({ on: true }, over, true, NOW), 'pause')
+  assert.equal(decideGuard({ on: true }, over, false, NOW), null)
+  assert.equal(decideGuard({ on: true }, { known: true, over: false, allowed: 60 }, true, NOW), null)
+  assert.equal(decideGuard({ on: false }, over, true, NOW), null)
+  assert.equal(decideGuard(undefined, over, true, NOW), null)
+  assert.equal(decideGuard({ on: true }, { known: false }, true, NOW), null)
+})
+
+test('a paused session waits for the last hour or a new window, not for the cap to rise', () => {
+  const guard = { on: true, pausedAt: 5, resetsAt: at(2.5) }
+  const status = (allowed, resetsAt, over = false) => ({ known: true, over, allowed, resetsAt })
+  assert.equal(decideGuard(guard, status(60, at(2.5), true), false, NOW), null)
+  assert.equal(decideGuard(guard, status(60, at(2.5), false), false, NOW), null)
+  assert.equal(decideGuard(guard, status(80, at(1.5), false), false, NOW + HOUR), null)
+  assert.equal(decideGuard(guard, status(100, at(0.9), false), false, NOW + 1.6 * HOUR), 'resume')
+  assert.equal(decideGuard(guard, status(20, at(5), false), false, NOW + 3 * HOUR), 'resume')
+})
+
+test('a paused session whose reset has long passed is released even if usage cannot be read', () => {
+  const guard = { on: true, pausedAt: 5, resetsAt: at(1) }
+  assert.equal(decideGuard(guard, { known: false }, false, NOW + 0.5 * HOUR), null)
+  assert.equal(decideGuard(guard, { known: false }, false, NOW + 1.5 * HOUR), 'resume')
+  assert.equal(decideGuard({ on: true, pausedAt: 5, resetsAt: null }, { known: false }, false, NOW + 9 * HOUR), null)
 })
 
 test('paused and released round-trip the guard', () => {
