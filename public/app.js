@@ -28,7 +28,7 @@ import { latestOnly, forcedRerun, polledPane, broadcastState, defaultTicked, dif
 
 const ROUTES = { '/': 'all', '/focus': 'focus', '/loops': 'focus', '/background': 'focus', '/mrs': 'mrs', '/flow': 'flow', '/search': 'search', '/usage': 'usage', '/skills': 'skills', '/schedule': 'schedule' }
 const PAGE_TITLES = { all: 'Sessions', focus: 'Focus', mrs: 'Merge requests', flow: 'Lifecycle', search: 'Search', usage: 'Usage', skills: 'Skills', schedule: 'Schedule' }
-const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', failed: 'x-circle', paused: 'pause-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
+const ALERT_ICONS = { finished: 'check-circle', question: 'help-circle', approval: 'pause-circle', blocked: 'octagon-x', failed: 'x-circle', paused: 'pause-circle', resumed: 'check-circle', loopdone: 'repeat', stalled: 'triangle-alert', bgdone: 'check-circle', bgfailed: 'x-circle' }
 const $ = (id) => document.getElementById(id)
 
 const state = {
@@ -2522,7 +2522,7 @@ function renderCard(c) {
   for (const t of tags) {
     if (t) meta.append(el('span', 'dotted', t))
   }
-  meta.append(settingSelect(c, 'model'), settingSelect(c, 'effort'), settingSelect(c, 'permissionMode'))
+  meta.append(settingSelect(c, 'model'), settingSelect(c, 'effort'), settingSelect(c, 'permissionMode'), guardToggle(c))
   titleBox.append(el('div', 'title', c.title), meta)
   const mrs = mrLinks(c)
   if (mrs) titleBox.append(mrs)
@@ -3172,6 +3172,27 @@ function settingSelect(c, name) {
     else resync()
   })
   return select
+}
+
+function guardLabel(guard) {
+  if (!guard) return '5h guard: off'
+  if (guard.pausedAt) return `5h guard: paused at ${guard.percent}% (cap ${guard.allowed}%)`
+  if (guard.over) return `5h guard: holding at ${guard.used}% (cap ${guard.cap}%)`
+  return guard.cap === null || guard.cap >= 100 ? '5h guard: on' : `5h guard: on, cap ${guard.cap}%`
+}
+
+function guardToggle(c) {
+  const guard = c.limitGuard
+  const button = el('button', `dotted guard-toggle${guard ? ' on' : ''}${guard?.pausedAt || guard?.over ? ' held' : ''}`, guardLabel(guard))
+  button.type = 'button'
+  button.title = guard ? 'Click to turn the 5h limit guard off for this session. A paused session continues right away.' : 'Click to pause this session when 5h usage passes the cap for the time left before the reset.'
+  button.onclick = async () => {
+    button.disabled = true
+    const result = await postJson('/api/limit-guard', { id: c.id, on: !guard })
+    button.disabled = false
+    if (result.ok) resync()
+  }
+  return button
 }
 
 function buildDraft() {
@@ -4486,6 +4507,10 @@ function buildScheduleForm() {
     f[name].setAttribute('aria-label', label)
     opts.append(labelled('sched-opt', label, f[name]))
   }
+  f.limitGuard = select([['', 'Off'], ['on', 'Pace by the 5h limit']])
+  f.limitGuard.setAttribute('aria-label', '5h limit guard')
+  f.limitGuard.title = 'Pauses the session when 5h usage reaches the cap for the time left (100% in the last hour, then 80, 60, 40, 20), continues when it clears. Held back at start if already over. Turn it off on the running session any time.'
+  opts.append(labelled('sched-opt', '5h guard', f.limitGuard))
 
   const composer = el('div', 'composer')
   f.prompt = document.createElement('textarea')
@@ -4596,6 +4621,7 @@ function loadScheduleForm(r) {
   f.day.value = String(at.getDay())
   f.at.value = f.at.type === 'time' ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : toLocalInput(Math.max(r.at, Date.now() + 60_000))
   for (const [name] of NEW_OPTIONS) f[name].value = name === 'chrome' ? (r.chrome ? 'on' : '') : (r[name] ?? '')
+  f.limitGuard.value = r.limitGuard ? 'on' : ''
   f.prompt.value = r.prompt
   renderSchedulePage()
   f.prompt.focus()
@@ -4674,6 +4700,7 @@ async function saveSchedule() {
   const at = f.at.type === 'time' ? nextOccurrence(f.at.value, f.repeat.value === 'weekly' ? Number(f.day.value) : null) : new Date(f.at.value).getTime()
   const body = { name: f.name.value, folder: f.folder.value, prompt: f.prompt.value, at, repeat: f.repeat.value }
   for (const [name] of NEW_OPTIONS) body[name] = f[name].value
+  body.limitGuard = f.limitGuard.value === 'on'
   setSchedNote('Saving…')
   const editing = sched.editing
   const { ok, data } = await postJson(editing ? '/api/routines/update' : '/api/routines', editing ? { ...body, rid: editing } : body)
@@ -4916,6 +4943,8 @@ function renderSchedulePage() {
       meta.append(link)
     }
     meta.append(el('span', 'rt-model', `${modelLabel(r.model)} · ${effortLabel(r.effort)} effort`))
+    if (r.limitGuard) meta.append(el('span', 'rt-guard', '5h guard'))
+    if (r.heldNote) meta.append(el('span', 'err', `Held: ${r.heldNote}`))
     if (r.runs) meta.append(el('span', undefined, `${r.runs} run${r.runs === 1 ? '' : 's'}`))
     if (r.lastError) meta.append(el('span', 'err', r.lastError))
     main.append(el('div', 'rt-title', r.name), meta)
@@ -6105,7 +6134,7 @@ function resetIn(ms) {
   return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
 }
 
-function limitNode(label, w) {
+function limitNode(label, w, cap = null) {
   const box = el('div', `limit${w.percent >= 90 ? ' high' : w.percent >= 70 ? ' warn' : ''}`)
   const left = w.resetsAt ? Math.max(0, new Date(w.resetsAt) - Date.now()) : 0
   box.title = `${label} limit: ${w.percent}% used${w.resetsAt ? `, resets in ${resetIn(left)} (${dateTime(new Date(w.resetsAt).getTime())})` : ''}`
@@ -6115,6 +6144,12 @@ function limitNode(label, w) {
   const fill = document.createElement('i')
   fill.style.width = `${Math.min(w.percent, 100)}%`
   bar.append(fill)
+  if (cap !== null && cap < 100) {
+    const mark = el('u', 'cap')
+    mark.style.left = `${cap}%`
+    bar.append(mark)
+    box.title += `\nGuarded sessions pause at ${cap}%`
+  }
   box.append(head, bar)
   return box
 }
@@ -6123,7 +6158,7 @@ async function refreshLimits() {
   const box = $('limits')
   try {
     const data = await signedOut(await fetch('/api/limits')).json()
-    const nodes = data.available ? [['5h', data.fiveHour], ['Week', data.weekly]].filter(([, w]) => w).map(([l, w]) => limitNode(l, w)) : []
+    const nodes = data.available ? [['5h', data.fiveHour], ['Week', data.weekly]].filter(([, w]) => w).map(([l, w]) => limitNode(l, w, l === '5h' && data.guard?.sessions ? data.guard.allowed : null)) : []
     box.replaceChildren(...nodes)
     box.hidden = !nodes.length
   } catch { box.hidden = true }

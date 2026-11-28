@@ -94,6 +94,7 @@ function harness(t, { timeoutMs = 5000, sessions = [{ sessionId: SID, cliSession
     findRaw: async (id) => h.raws.find((raw) => raw.sessionId === id) ?? null,
     queues: h.queues,
     persistQueues: async () => { h.persisted += 1 },
+    isHeld: (id) => Boolean(h.held?.has(id)),
     readOverride: async () => h.override ?? {},
     runsFile: h.runsFile,
     transcriptPaths: h.transcriptPaths,
@@ -385,6 +386,21 @@ test('pump skips paused queues, running sessions and refused sessions and starts
   assert.equal(h.queues.get('local_nocli').items.length, 1)
   assert.equal(h.queues.get('local_unlisted').items.length, 1)
   assert.deepEqual(h.logs, [])
+})
+
+test('pump leaves a queue alone while the limit guard holds that session', async (t) => {
+  const ids = ['held', 'free'].map((name) => `local_${name}`)
+  const h = harness(t, { sessions: ids.map((sessionId) => ({ sessionId, cliSessionId: `cli-${sessionId}` })) })
+  h.held = new Set([ids[0]])
+  h.queue(ids[0], 'h1')
+  h.queue(ids[1], 'f1')
+  const before = h.spawned.length
+  await h.manager.pump()
+  assert.deepEqual(h.spawned.slice(before).map((child) => child.input), ['f1'])
+  assert.equal(h.queues.get(ids[0]).items.length, 1)
+  h.held.clear()
+  await h.manager.pump()
+  assert.equal(h.queues.get(ids[0]).items.length, 0)
 })
 
 test('pump survives a queue emptied by a concurrent removal and a session that throws', async (t) => {

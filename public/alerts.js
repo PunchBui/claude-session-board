@@ -14,6 +14,8 @@ export function snapshot(card) {
     attention: card.live?.attention?.kind ?? null,
     paused: Boolean(card.queue?.paused),
     looping: card.loop?.state === 'looping',
+    guardPaused: Boolean(card.limitGuard?.pausedAt),
+    guardPercent: card.limitGuard?.percent ?? null,
   }
 }
 
@@ -26,7 +28,9 @@ export function diffAlerts(previous, cards) {
     const before = previous?.get(card.id)
     if (!before) continue
     const add = (kind, message) => events.push({ id: card.id, title: card.title, kind, message })
-    if (before.active && !now.active && !now.running && !now.looping && now.runState !== 'stalled') add('finished', 'Finished working')
+    if (before.active && !now.active && !now.running && !now.looping && now.runState !== 'stalled' && !now.guardPaused) add('finished', 'Finished working')
+    if (!before.guardPaused && now.guardPaused) add('paused', `Paused by the 5h guard at ${now.guardPercent}%`)
+    if (before.guardPaused && !now.guardPaused && card.limitGuard) add('resumed', 'The 5h guard let it continue')
     if (!before.attention && now.attention === 'question') add('question', `Asking you: ${card.live.attention.text || 'a question'}`.slice(0, 160))
     if (!before.attention && now.attention === 'approval') add('approval', `Possibly waiting for approval: ${card.live.attention.tool}`)
     if (before.status !== 'blocked' && now.status === 'blocked') add('blocked', 'Marked blocked')

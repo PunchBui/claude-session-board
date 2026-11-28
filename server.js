@@ -15,6 +15,7 @@ import { MAX_ROUTINES, parseRoutineInput, parseRoutinesFile, isDue, afterFire, r
 import { searchSessions } from './lib/search.js'
 import { aggregateUsage } from './lib/usage.js'
 import { createLimitsReader } from './lib/limits.js'
+import { guardStatus, decideGuard, paused as pausedGuard, released as releasedGuard, publicGuard, parseGuardsFile, CONTINUE_PROMPT, MAX_GUARDS } from './lib/limitguard.js'
 import { createRepoStatusReader } from './lib/repostatus.js'
 import { createRepoPusher } from './lib/repopush.js'
 import { createRepoPuller } from './lib/repopull.js'
@@ -80,6 +81,7 @@ const MR_BABYSIT_FILE = join(DATA_DIR, 'mr-babysit.json')
 const MR_DEPLOY_FILE = join(DATA_DIR, 'mr-deploy.json')
 const QUEUE_FILE = join(DATA_DIR, 'queue.json')
 const SCHEDULE_FILE = join(DATA_DIR, 'schedules.json')
+const GUARD_FILE = join(DATA_DIR, 'limit-guard.json')
 const ROUTINE_FILE = join(DATA_DIR, 'routines.json')
 const WATCH_FILE = join(DATA_DIR, 'watches.json')
 const SNIPPET_FILE = join(DATA_DIR, 'snippets.json')
@@ -135,6 +137,8 @@ const transcriptPaths = new Map()
 const queues = new Map()
 let schedules = []
 let routines = []
+let guards = {}
+let guardState = guardStatus(null)
 let watches = []
 let firingWatches = false
 let firingRoutines = false
@@ -447,11 +451,13 @@ async function loadStores() {
   const storedSchedules = await readJson(SCHEDULE_FILE, {})
   schedules = Array.isArray(storedSchedules.items) ? storedSchedules.items : []
   routines = parseRoutinesFile(await readJson(ROUTINE_FILE, {}))
+guards = parseGuardsFile(await readJson(GUARD_FILE, {}))
 watches = parseWatchesFile(await readJson(WATCH_FILE, {}))
   const storedSnippets = await readJson(SNIPPET_FILE, null)
   customSnippets = Array.isArray(storedSnippets?.items) ? storedSnippets.items : null
 }
 
+const persistGuards = () => writeJson(GUARD_FILE, { items: guards })
 const persistRoutines = () => writeJson(ROUTINE_FILE, { items: routines })
 const persistWatches = () => writeJson(WATCH_FILE, { items: watches })
 const persistSchedules = () => writeJson(SCHEDULE_FILE, { items: schedules })
@@ -471,10 +477,12 @@ function openHandoff(raw, file) {
   execFile('open', [handoffLink({ folder: raw.cwd ?? raw.originCwd ?? null, file })], () => {})
 }
 
-async function enqueue(id, prompt) {
+async function enqueue(id, prompt, { front = false } = {}) {
   const queue = queueFor(id)
   if (queue.items.length >= MAX_QUEUE) return false
-  queue.items.push({ qid: randomUUID(), prompt, addedAt: Date.now() })
+  const item = { qid: randomUUID(), prompt, addedAt: Date.now() }
+  if (front) queue.items.unshift(item)
+  else queue.items.push(item)
   await persistQueues()
   return true
 }
@@ -513,12 +521,69 @@ async function kickIdleBabysits() {
   if (kicked) pump()
 }
 
+function guardOf(id) {
+  const guard = publicGuard(guards[id])
+  return guard && { ...guard, cap: guardState.allowed, used: guardState.percent, over: guardState.over }
+}
+
+async function refreshGuardState() {
+  guardState = guardStatus(await readLimits())
+  return guardState
+}
+
+async function switchGuard(id, on) {
+  const current = guards[id]
+  if (on) {
+    if (!current) guards = { ...guards, [id]: { on: true, pausedAt: null, resumeWithPrompt: false, percent: null, allowed: null, resetsAt: null } }
+  } else if (current) {
+    const { [id]: gone, ...rest } = guards
+    guards = rest
+    if (gone.pausedAt && gone.resumeWithPrompt) await enqueue(id, CONTINUE_PROMPT, { front: true })
+  }
+  await persistGuards()
+  pump()
+  return publicGuard(guards[id])
+}
+
+async function runGuards() {
+  const ids = Object.keys(guards)
+  if (!ids.length) return
+  const status = await refreshGuardState()
+  let changed = false
+  for (const id of ids) {
+    const guard = guards[id]
+    if (!(await findRaw(id))) {
+      const { [id]: gone, ...rest } = guards
+      guards = rest
+      changed = true
+      continue
+    }
+    const running = manager.runFor(id)?.state === 'running'
+    const action = decideGuard(guard, status, running)
+    if (action === 'pause') {
+      guards = { ...guards, [id]: pausedGuard(guard, status, Date.now(), true) }
+      changed = true
+      await persistGuards()
+      await manager.interruptPrompt(id)
+    } else if (action === 'resume') {
+      guards = { ...guards, [id]: releasedGuard(guard) }
+      changed = true
+      if (guard.resumeWithPrompt) await enqueue(id, CONTINUE_PROMPT, { front: true })
+    }
+  }
+  if (changed) {
+    await persistGuards()
+    pump()
+  }
+}
+
 // Starts one new board-only session for a routine and puts it in Focus.
 async function startRoutineSession(routine) {
   try {
     const result = await manager.requestNewSession(routine)
     if (result.status !== 202) return { error: result.body?.error ?? 'Could not start the session.' }
     await updateFocus((ids) => [...new Set([...ids, result.body.id])])
+    if (routine.limitGuard) await switchGuard(result.body.id, true)
     return { sessionId: result.body.id }
   } catch (error) {
     return { error: String(error?.message ?? error) }
@@ -529,8 +594,18 @@ async function fireDueRoutines() {
   if (firingRoutines) return
   firingRoutines = true
   try {
-    for (const routine of routines.filter((r) => isDue(r, Date.now()))) {
+    const due = routines.filter((r) => isDue(r, Date.now()))
+    const status = due.some((r) => r.limitGuard) ? await refreshGuardState() : guardState
+    for (const routine of due) {
       const now = Date.now()
+      if (routine.limitGuard && status.over) {
+        const heldNote = `5h usage ${status.percent}% is at the ${status.allowed}% cap`
+        if (routine.heldNote !== heldNote) {
+          routines = routines.map((r) => (r.rid === routine.rid ? { ...r, heldAt: r.heldAt ?? now, heldNote } : r))
+          await persistRoutines()
+        }
+        continue
+      }
       const outcome = await startRoutineSession(routine)
       routines = routines.map((r) => (r.rid === routine.rid ? afterFire(r, outcome, now) : r))
       await persistRoutines()
@@ -588,7 +663,7 @@ async function focusVersion(raw, override) {
   const path = await findTranscript(raw.cliSessionId)
   const info = path ? await stat(path).catch(() => null) : null
   const id = raw.sessionId
-  return cardVersion([toSummary(raw), ownsLoops(raw), info?.mtimeMs ?? null, info?.size ?? null, manager.publicRun(id), publicQueue(id), schedulesFor(id), babysitBySession.get(id) ?? null, override ?? null, timeBucket(Date.now(), Math.max(info?.mtimeMs ?? 0, raw.lastActivityAt ?? 0))])
+  return cardVersion([toSummary(raw), ownsLoops(raw), info?.mtimeMs ?? null, info?.size ?? null, manager.publicRun(id), publicQueue(id), schedulesFor(id), babysitBySession.get(id) ?? null, override ?? null, guardOf(id), timeBucket(Date.now(), Math.max(info?.mtimeMs ?? 0, raw.lastActivityAt ?? 0))])
 }
 
 async function loadFocusCards(have = new Map()) {
@@ -601,7 +676,7 @@ async function loadFocusCards(have = new Map()) {
     have,
     cache: focusCardCache,
     versionOf: (id) => focusVersion(byId.get(id), overrides[id]),
-    build: async (id) => ({ ...(await buildCard(byId.get(id))), run: manager.publicRun(id), queue: publicQueue(id), schedules: schedulesFor(id) }),
+    build: async (id) => ({ ...(await buildCard(byId.get(id))), run: manager.publicRun(id), queue: publicQueue(id), schedules: schedulesFor(id), limitGuard: guardOf(id) }),
   })
   return { ids: shown, cards, same }
 }
@@ -990,6 +1065,7 @@ const manager = createRunManager({
   findRaw,
   queues,
   persistQueues,
+  isHeld: (id) => Boolean(guards[id]?.on && (guards[id].pausedAt || guardState.over)),
   readJson,
   readOverride: async (id) => (await readOverrides())[id] ?? {},
   writeJson,
@@ -1224,6 +1300,12 @@ const postRoutes = {
       return { items: all }
     })
     return json(res, 200, { override: next })
+  },
+  async '/api/limit-guard'(body, res) {
+    if (!SESSION_ID.test(body.id ?? '') || typeof body.on !== 'boolean') return json(res, 400, { error: 'bad request' })
+    if (!(await findRaw(body.id))) return json(res, 404, { error: 'session not found' })
+    if (body.on && !guards[body.id] && Object.keys(guards).length >= MAX_GUARDS) return json(res, 409, { error: 'too many guarded sessions' })
+    return json(res, 200, { limitGuard: await switchGuard(body.id, body.on) })
   },
   async '/api/side-chats'(body, res) {
     return reply(res, await manager.requestSideChat(body))
@@ -1601,7 +1683,9 @@ const getRoutes = {
     return skill ? json(res, 200, await skillDetail(skill)) : json(res, 404, { error: 'skill not found' })
   },
   async '/api/limits'(url, res) {
-    return json(res, 200, await readLimits())
+    const limits = await readLimits()
+    const status = guardStatus(limits)
+    return json(res, 200, { ...limits, guard: { allowed: status.allowed, over: status.over, sessions: Object.keys(guards).length } })
   },
   async '/api/repo-status'(url, res) {
     return json(res, 200, await readRepoStatus({ force: url.searchParams.has('force') }))
@@ -1626,6 +1710,7 @@ pruneRunLogs().catch((error) => console.error(`pruning run logs: ${describeError
 setInterval(tick, 2000)
 warmIndex()
 setInterval(warmIndex, 60_000)
+setInterval(() => runGuards().catch((error) => console.error(`limit guard: ${describeError(error)}`)), 30_000)
 setInterval(() => kickIdleBabysits().catch((error) => console.error(`babysit watchdog: ${describeError(error)}`)), 60_000)
 
 async function login(req, res) {

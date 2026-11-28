@@ -22,6 +22,17 @@ test('attention, blocked and failure each fire once', () => {
   assert.equal(third.events.length, 0)
 })
 
+test('the 5h guard pausing a session alerts once, is not reported as finished, and alerts again on continue', () => {
+  const first = diffAlerts(null, [card({ active: true, run: { state: 'running' }, limitGuard: { on: true, pausedAt: null } })]).next
+  const paused = diffAlerts(first, [card({ active: false, limitGuard: { on: true, pausedAt: 5, percent: 82, allowed: 80 } })])
+  assert.deepEqual(paused.events.map((e) => [e.kind, e.message]), [['paused', 'Paused by the 5h guard at 82%']])
+  assert.equal(diffAlerts(paused.next, [card({ active: false, limitGuard: { on: true, pausedAt: 5, percent: 82, allowed: 80 } })]).events.length, 0)
+  const resumed = diffAlerts(paused.next, [card({ active: false, limitGuard: { on: true, pausedAt: null } })])
+  assert.deepEqual(resumed.events.map((e) => e.kind), ['resumed'])
+  const off = diffAlerts(paused.next, [card({ active: false })])
+  assert.equal(off.events.length, 0)
+})
+
 test('a stalled board run alerts once and does not also claim the session finished', () => {
   const first = diffAlerts(null, [card({ active: true, run: { state: 'running' } })]).next
   const second = diffAlerts(first, [card({ active: false, run: { state: 'stalled' }, queue: { paused: true } })])

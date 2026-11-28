@@ -15,6 +15,19 @@ test('a valid routine is enabled and named from the prompt', () => {
   assert.equal(routine.runs, 0)
 })
 
+test('the 5h guard is off unless asked for, and an edit can change it but not the hold', () => {
+  assert.equal(parse().routine.limitGuard, false)
+  assert.equal(parse({ limitGuard: true }).routine.limitGuard, true)
+  assert.equal(parse({ limitGuard: 'on' }).routine.limitGuard, true)
+  assert.equal(parse({ limitGuard: 'yes' }).routine.limitGuard, false)
+  const held = { ...parse({ limitGuard: true }).routine, heldAt: 5, heldNote: 'over' }
+  assert.equal(applyEdit(held, { ...parse({ limitGuard: false }).routine, heldAt: null, heldNote: null }).heldNote, 'over')
+  assert.equal(applyEdit(held, parse({ limitGuard: false }).routine).limitGuard, false)
+  assert.equal(recordRun(held, { sessionId: 's' }, NOW).heldNote, null)
+  assert.equal(parseRoutinesFile({ items: [{ rid: 'a', prompt: 'p', folder: '/x', at: NOW, repeat: 'none', limitGuard: 'on' }] })[0].limitGuard, false)
+  assert.equal(parseRoutinesFile({ items: [{ rid: 'a', prompt: 'p', folder: '/x', at: NOW, repeat: 'none', limitGuard: true }] })[0].limitGuard, true)
+})
+
 test('rejects bad prompt, folder, time, repeat and options', () => {
   assert.ok(parse({ prompt: '  ' }).error)
   assert.ok(parse({ folder: 'relative/path' }).error)
