@@ -65,6 +65,14 @@ test('a paused session waits for the last hour or a new window, not for the cap 
   assert.equal(decideGuard(guard, status(20, at(5), false), false, NOW + 3 * HOUR), 'resume')
 })
 
+test('a paused session is released once its reset time has passed, whatever the new reading says', () => {
+  const guard = { on: true, pausedAt: 5, resetsAt: at(1) }
+  const fresh = { known: true, over: false, allowed: 20, resetsAt: null }
+  assert.equal(decideGuard(guard, fresh, false, NOW + 0.5 * HOUR), null)
+  assert.equal(decideGuard(guard, fresh, false, NOW + 1.1 * HOUR), 'resume')
+  assert.equal(decideGuard(guard, { known: true, over: true, allowed: 20, resetsAt: at(1.1 + 5) }, false, NOW + 1.1 * HOUR), 'resume')
+})
+
 test('a paused session whose reset has long passed is released even if usage cannot be read', () => {
   const guard = { on: true, pausedAt: 5, resetsAt: at(1) }
   assert.equal(decideGuard(guard, { known: false }, false, NOW + 0.5 * HOUR), null)
